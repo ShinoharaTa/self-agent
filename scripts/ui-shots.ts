@@ -164,10 +164,13 @@ function newShellNames(vp: Viewport, theme: Theme, full: boolean): string[] {
     // 一覧を末尾まで送った所（ダークのスマホ・タブレット）と、入口が読めないとき（ダークのスマホ）
     ...(theme === "dark" && vp !== "pc" ? ["a-list-end"] : []),
     ...(theme === "dark" && vp === "phone" ? ["a-entry-missing"] : []),
-    // 流れの列（D1。640px 以上の 3 組）: 帯と 3 列の所と、項目から席を開いた所
-    ...(vp !== "phone" ? ["a-deck", "a-deck-seat"] : []),
-    // 列の中の操作（D1 の PR-2。ダークの PC だけ）: タスクを［完了］にした直後
-    ...(vp === "pc" && theme === "dark" ? ["a-deck-done"] : []),
+    // 流れの列（D1。スマホは D2）: 帯と列の所と、項目から席（スマホはスレッド）を開いた所
+    "a-deck",
+    "a-deck-seat",
+    // スマホの流れの列（D2。ダークだけ）: 下のバーでタスク・通知へ送った所と、歯車の板
+    ...(vp === "phone" && theme === "dark" ? ["a-deck-tasks", "a-deck-feed", "a-deck-more"] : []),
+    // 列の中の操作（D1 の PR-2。ダークの PC と、D2 からダークのスマホ）: タスクを［完了］にした直後
+    ...(vp !== "tablet" && theme === "dark" ? ["a-deck-done"] : []),
     // 列のリマインドの［次を飛ばす］［止める］（#472 の PR-1。ダークの PC だけ）: ［止める］の確認が出た所
     ...(vp === "pc" && theme === "dark" ? ["a-deck-rem"] : []),
     "b-chat-top",
@@ -1069,6 +1072,8 @@ const LEAK_SELECTORS_PHONE = [".c-turn", ".c-turn-title", ".c-turn-sub"];
 const LEAK_SELECTORS_PC = [".c-turns-jump"];
 /** 下のバーで比べる要素（スマホの形・広い幅の形） */
 const LEAK_BOTTOM_PHONE = [".c-bottom", ".c-bottom-btn", ".c-bottom-btn-label", ".c-bottom-hand", ".c-bottom-hand-label", ".c-bottom > .c-btn"];
+/** スマホの流れの列の下のバー（D2。#c-foot-root と見本 bottom-deck） */
+const LEAK_BOTTOM_DECK = [".c-bottom", ".c-bottom-page", ".c-bottom-page-label", ".c-bottom-hand", ".c-bottom-hand-label"];
 const LEAK_BOTTOM_WIDE = [".c-bottom", ".c-bottom > .c-btn", ".c-bottom > .c-btn .c-btn-label"];
 const LEAK_PROPS = [
   "font-size", "font-weight", "line-height", "letter-spacing", "color", "background-color", "text-align",
@@ -1225,8 +1230,12 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     await (which === "first" ? rows.first() : rows.last()).click();
   }
 
-  /** 右腕を開くボタン（流れの列は帯の［右腕］、ほかは畳んだ帯の #v3-hand-show） */
-  const handShow = async (page: Page): Promise<string> => ((await deckOn(page)) ? bandButton("hand") : "#v3-hand-show");
+  /** スマホの下のバーの右腕のボタン（流れの列は列の下のバー #c-foot-root。D2） */
+  const BAR_HAND = '#c-foot-root button[data-act="hand"]';
+
+  /** 右腕を開くボタン（スマホの流れの列は下のバーの右腕、広い幅の流れの列は帯の［右腕］、ほかは畳んだ帯の #v3-hand-show） */
+  const handShow = async (page: Page): Promise<string> =>
+    (await deckOn(page)) ? ((await page.$('#v3[data-seat="full"]')) !== null ? BAR_HAND : bandButton("hand")) : "#v3-hand-show";
 
   /** 一覧を読み直し、流れの列なら「探す」の板を開いた形にする（一覧の検査は板の中で走らせる） */
   async function loadList(page: Page): Promise<void> {
@@ -1441,6 +1450,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     const pairs = [
       { real: "#c-list-root", demo: '[data-demo="list-full"]', sels: [...LEAK_SELECTORS, ...(vp === "phone" ? LEAK_SELECTORS_PHONE : LEAK_SELECTORS_PC)] },
       { real: "#c-bottom-root", demo: vp === "phone" ? '[data-demo="bottom-phone"]' : '[data-demo="bottom-wide"]', sels: vp === "phone" ? LEAK_BOTTOM_PHONE : LEAK_BOTTOM_WIDE },
+      // スマホの流れの列の下のバー（D2）と見本 bottom-deck
+      ...(vp === "phone" ? [{ real: "#c-foot-root", demo: '[data-demo="bottom-deck"]', sels: LEAK_BOTTOM_DECK }] : []),
     ];
     const styles = ({ root, sels, props }: { root: string; sels: string[]; props: string[] }): Record<string, Record<string, string> | null> => {
       const out: Record<string, Record<string, string> | null> = {};
@@ -1456,8 +1467,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       }
       return out;
     };
-    // 流れの列は下のバーを描かないので、比べる間だけ広い幅のバーを描かせる（形は見本の bottom-wide と同じ）
-    if (vp !== "phone" && (await deckOn(page))) {
+    // 流れの列は一覧の下のバーを描かないので、比べる間だけ一覧のバーを描かせる（形は幅で決まり、見本の bottom-wide・bottom-phone と同じ）
+    if (await deckOn(page)) {
       await page.evaluate(() => {
         const noop = (): void => undefined;
         (window as unknown as { SA: { list: { drawBar: (bar: unknown) => boolean } } }).SA.list.drawBar({
@@ -1514,7 +1525,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         on: { list: noop, hand: noop, tab: noop, more: noop },
       });
       if (!drawn) out.push(`${label}: バーを一番きつい形に描けない`);
-      const shown = (sel: string): HTMLElement[] => [...document.querySelectorAll<HTMLElement>(`:is(#c-list-root, #c-bottom-root) ${sel}`)].filter((el) => el.getClientRects().length > 0);
+      const shown = (sel: string): HTMLElement[] => [...document.querySelectorAll<HTMLElement>(`:is(#c-list-root, #c-bottom-root, #c-foot-root) ${sel}`)].filter((el) => el.getClientRects().length > 0);
       const name = (el: HTMLElement): string => (el.textContent ?? "").trim().slice(0, 20);
       // R1 はみ出ない
       for (const sel of [".c-list", ".c-bottom", ".c-row", ".c-turn", ".c-group-head"]) {
@@ -1523,7 +1534,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         }
       }
       // R2 省かれない字（右端は親の button か見出しの中）
-      for (const sel of [".c-row-state", ".c-row-time", ".c-turn-meta", ".c-group-note", ".c-turns-jump-label", ".c-bottom-btn-label", ".c-bottom-hand-label", ".c-bottom .c-btn-label"]) {
+      for (const sel of [".c-row-state", ".c-row-time", ".c-turn-meta", ".c-group-note", ".c-turns-jump-label", ".c-bottom-btn-label", ".c-bottom-hand-label", ".c-bottom-page-label", ".c-bottom .c-btn-label"]) {
         for (const el of shown(sel)) {
           if (el.scrollWidth > el.clientWidth) out.push(`${label} R2: ${sel}「${name(el)}」が省かれる 幅 ${el.clientWidth} 要る幅 ${el.scrollWidth}`);
           const box = el.closest("button, .c-group-head");
@@ -1613,8 +1624,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
   async function checkBar(page: Page, vp: Viewport, p: string): Promise<string[]> {
     const lines: string[] = [];
     const phone = vp === "phone";
-    // 流れの列（640px 以上）は下のバーを描かず、行き先は上の帯
-    if (!phone && (await deckOn(page))) return checkBarDeck(page, vp, p);
+    // 流れの列は一覧の下のバーを描かず、行き先は上の帯（スマホは列の下のバー #c-foot-root。D2）
+    if (await deckOn(page)) return checkBarDeck(page, vp, p);
     // 形
     const form = await page.evaluate(() => {
       const root = document.querySelector("#c-bottom-root");
@@ -1840,12 +1851,221 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
   }
 
   /**
-   * 流れの列のバーの検査（pc・tablet のダークの組。checkBar の広い幅の代わり）: 下のバーの根の子が 0・上の帯のボタン 4 つと id なし・
+   * スマホの流れの列の下のバー（#c-foot-root。D2）の検査（ダークのスマホ。checkBarDeck から）: 形・数は あなたの番 だけで列の見出しと同じ・高さと下端と最後の項目・
+   * バーで送る（余分な描き直しが無く印が 1 回で移る・今の列をもう一度押しても変わらない・焦点はバーに残る）・scrollLeft を書くと印が付いてくる・
+   * 右腕のボタンの同じ要素と印と名前と閉じた後の焦点・幅をまたぐ（広い幅で列を送っても下のバーが出ない）・開いたボタンの無い戻り。最後は あなたの番 の列に戻す
+   */
+  async function checkFootBar(page: Page): Promise<string[]> {
+    const lines: string[] = [];
+    const say = (text: string): void => void lines.push(`バー: ${text}`);
+    const PAGE = (id: string): string => `#c-foot-root button[data-act="page"][data-page="${id}"]`;
+    // 形（2）・数は あなたの番 だけ（入口の口の 6）
+    const form = await page.evaluate(() => {
+      const root = document.querySelector("#c-foot-root");
+      const bar = root === null ? null : root.firstElementChild;
+      const buttons = bar === null ? [] : [...bar.querySelectorAll("button")];
+      return {
+        kids: root === null ? -1 : root.children.length,
+        isBar: bar !== null && bar.matches('.c-bottom[data-variant="deck"]'),
+        ids: root === null ? 0 : root.querySelectorAll("[id]").length,
+        texts: buttons.map((b) => (b.querySelector(".c-bottom-page-label, .c-bottom-hand-label")?.textContent ?? "").trim()),
+        badges: buttons.map((b) => b.querySelector(".c-badge") !== null),
+      };
+    });
+    if (form.kids !== 1 || !form.isBar) say(`#c-foot-root の子が .c-bottom[data-variant="deck"] 1 つでない（子 ${form.kids}）`);
+    if (JSON.stringify(form.texts) !== JSON.stringify(["あなたの番", "タスク", "通知", "右腕"])) say(`下のバーが あなたの番・タスク・通知・右腕 でない（${form.texts.join("・")}）`);
+    if (form.ids !== 0) say(`下のバーの中に id の付いた要素が ${form.ids} 個`);
+    if (form.badges.slice(1).some(Boolean)) say("タスク・通知・右腕に数の印が在る（あなたの番 だけのはず）");
+    // 数は列の見出しと同じ（入口の口の 5。番の数を作り物で替える手段が無いので、右腕を番にした前後で見出しと同じかを見る）
+    const counts = (): Promise<{ head: string; bar: string }> =>
+      page.evaluate(() => ({
+        head: (document.querySelector('#c-deck-root .c-col[data-col="turn"] .c-col-head .c-badge')?.textContent ?? "").trim(),
+        bar: (document.querySelector('#c-foot-root button[data-page="turn"] .c-badge')?.textContent ?? "").trim(),
+      }));
+    const c0 = await counts();
+    if (c0.head !== c0.bar) say(`あなたの番 の数が 列の見出し「${c0.head}」・下のバー「${c0.bar}」`);
+    // 高さ・下端（3）・最後の項目: 今の列を末尾まで送った最後の項目がバーに隠れない
+    await page.evaluate(() => {
+      const body = document.querySelector('#c-deck-root .c-col[data-col="turn"] .c-col-body');
+      if (body !== null) body.scrollTop = body.scrollHeight;
+    });
+    await settled(page);
+    const end = await page.evaluate(() => {
+      const bar = document.querySelector("#c-foot-root .c-bottom");
+      const items = [...document.querySelectorAll('#c-deck-root .c-col[data-col="turn"] .c-item')];
+      const last = items[items.length - 1];
+      const r = bar === null ? null : bar.getBoundingClientRect();
+      return { lastBottom: last === undefined ? null : last.getBoundingClientRect().bottom, top: r?.top ?? null, bottom: r?.bottom ?? null, height: r?.height ?? null, inner: window.innerHeight };
+    });
+    if (end.top === null || end.bottom === null || end.height === null) say(".c-bottom が無い");
+    else {
+      if (end.lastBottom === null || end.lastBottom > end.top + 0.5) say(`列の最後の項目の下端 ${String(end.lastBottom)} がバーの上端 ${end.top} より下`);
+      if (Math.abs(end.bottom - end.inner) > 0.5) say(`下端 ${end.bottom} が画面の下端 ${end.inner} と合わない`);
+      if (Math.abs(end.height - 64) > 0.5) say(`高さ ${end.height}（64 のはず）`);
+    }
+    await page.evaluate(() => {
+      const body = document.querySelector('#c-deck-root .c-col[data-col="turn"] .c-col-body');
+      if (body !== null) body.scrollTop = 0;
+    });
+    // 印の移り（aria-current が付いた列）と、指で送った知らせ（on.paged）を記録する。drawBar に渡る on.paged を包む
+    await page.evaluate(() => {
+      const w = window as unknown as { __cur: string[]; __paged: string[]; SA: { deck: { drawBar: (bar: unknown) => boolean } } };
+      w.__cur = [];
+      w.__paged = [];
+      new MutationObserver((records) => {
+        for (const r of records) {
+          const el = r.target as Element;
+          if (el.getAttribute("aria-current") === "true") w.__cur.push(el.getAttribute("data-page") ?? "");
+        }
+      }).observe(document.querySelector("#c-foot-root")!, { subtree: true, attributes: true, attributeFilter: ["aria-current"] });
+      const draw = w.SA.deck.drawBar;
+      w.SA.deck.drawBar = (bar: unknown) => {
+        if (bar === null || typeof bar !== "object") return draw(bar);
+        const b = bar as { on: { paged: (id: string) => unknown } };
+        return draw({ ...b, on: { ...b.on, paged: (id: string) => (w.__paged.push(id), b.on.paged(id)) } });
+      };
+    });
+    const seen = (): Promise<{ cur: string[]; paged: string[]; left: number; at: Record<string, number>; current: string | null; focus: string | null }> =>
+      page.evaluate(() => {
+        const w = window as unknown as { __cur: string[]; __paged: string[] };
+        const box = document.querySelector<HTMLElement>("#c-deck-root .c-deck");
+        const at: Record<string, number> = {};
+        for (const col of document.querySelectorAll<HTMLElement>("#c-deck-root .c-deck > .c-col")) {
+          if (box !== null) at[col.dataset.col ?? ""] = box.scrollLeft + col.getBoundingClientRect().left - box.getBoundingClientRect().left;
+        }
+        const a = document.activeElement;
+        return {
+          cur: [...w.__cur],
+          paged: [...w.__paged],
+          left: box?.scrollLeft ?? -1,
+          at,
+          current: document.querySelector('#c-foot-root [aria-current="true"]')?.getAttribute("data-page") ?? null,
+          focus: a !== null && a.matches("#c-foot-root button") ? (a.getAttribute("data-page") ?? a.getAttribute("data-act")) : null,
+        };
+      });
+    // バーで送る（4・入口の口の 1）: 列の左端へ・印が 1 回で移る・paged 由来の描き直しが無い・焦点はバーに残る
+    await page.click(PAGE("tasks"));
+    await settled(page);
+    let s1 = await seen();
+    if (Math.abs(s1.left - (s1.at.tasks ?? -1)) > 1) say(`タスクを押した後の列の位置 ${s1.left}（タスクの列の左端 ${String(s1.at.tasks)} のはず）`);
+    if (JSON.stringify(s1.cur) !== JSON.stringify(["tasks"])) say(`タスクを押した後の印の移り ${s1.cur.join("→")}（tasks の 1 回のはず）`);
+    if (s1.paged.length !== 0) say(`バーで送った後に指の送りの知らせが来た（${s1.paged.join("・")}）`);
+    if (s1.focus !== "tasks") say(`タスクを押した後の焦点が ${String(s1.focus)}（タスクのボタンのはず）`);
+    // 今の列をもう一度押しても位置も印も変わらない（入口の口の 2）
+    await page.click(PAGE("tasks"));
+    await settled(page);
+    const s2 = await seen();
+    if (Math.abs(s2.left - s1.left) > 1 || s2.cur.length !== s1.cur.length || s2.current !== "tasks") say(`今の列をもう一度押すと位置か印が変わる（${s1.left}→${s2.left}・${s2.cur.join("→")}）`);
+    // scrollLeft を通知の列に書くと印が付いてくる（指の代わり。入口の口の 4）
+    await page.evaluate((x: number) => {
+      const box = document.querySelector<HTMLElement>("#c-deck-root .c-deck");
+      if (box !== null) box.scrollLeft = x;
+    }, s2.at.feed ?? 0);
+    const followed = await page
+      .waitForFunction(() => document.querySelector('#c-foot-root [aria-current="true"]')?.getAttribute("data-page") === "feed", undefined, { timeout: 5000 })
+      .then(() => true, () => false);
+    await settled(page);
+    s1 = await seen();
+    if (!followed) say(`列の位置を通知に書いても印が通知に付かない（${String(s1.current)}）`);
+    if (JSON.stringify(s1.paged) !== JSON.stringify(["feed"])) say(`列の位置を通知に書いた後の指の送りの知らせが ${s1.paged.join("・") || "無い"}（feed の 1 回のはず）`);
+    // あなたの番 に戻す
+    await page.click(PAGE("turn"));
+    await settled(page);
+    // 右腕のボタン（5）: 同じ要素・番の印・名前。右腕を あなたの番 にして描き直させる
+    await page.evaluate(() => {
+      const hand = document.querySelector('#c-foot-root [data-act="hand"]');
+      if (hand !== null) (hand as unknown as { __k: number }).__k = 1;
+    });
+    let hands = true;
+    await loadEdited(page, (json) => {
+      const hand = json.rightHands[0];
+      if (hand === undefined) hands = false;
+      else hand.turn = { kind: "confirm", since: "2026-01-01T00:00:00.000Z", summary: null };
+    });
+    if (!hands) say("作り物のデータに右腕が無い");
+    else {
+      const same = await page.evaluate(() => {
+        const hand = document.querySelector('#c-foot-root [data-act="hand"]');
+        return {
+          hand: hand !== null && (hand as unknown as { __k?: number }).__k === 1,
+          turn: hand !== null && hand.querySelector('[data-state="turn"]') !== null,
+          label: hand === null ? null : hand.getAttribute("aria-label"),
+        };
+      });
+      if (!same.hand) say("描き直した後の右腕のボタンが同じ要素でない");
+      if (!same.turn) say("右腕のボタンに「あなたの番」の印が無い");
+      if (same.label !== "右腕に頼む・訊く（あなたの番）") say(`右腕のボタンの名前が ${String(same.label)}`);
+      const c1 = await counts();
+      if (c1.head !== c1.bar) say(`右腕を番にした後の あなたの番 の数が 列の見出し「${c1.head}」・下のバー「${c1.bar}」`);
+      // 閉じた後の焦点: 開いている間に描き直されても、閉じたら右腕のボタンへ
+      await page.click(BAR_HAND);
+      await page.waitForSelector('#v3[data-hand="open"]', { timeout: 5000 });
+      await loadEdited(page, () => undefined);
+      await page.evaluate(() => history.back());
+      await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
+      await settled(page);
+      if (!(await page.evaluate(() => (document.activeElement as unknown as { __k?: number } | null)?.__k === 1))) say("右腕を閉じた後の焦点が右腕のボタンに戻らない");
+    }
+    // 幅をまたぐ（6）: 800 は広い幅の流れの列で下のバーは空・帯のボタン 4 つ。列を横に送っても下のバーは出ない（入口の口の 3）。390 に戻すと下のバー 4 つ・帯 3 つ
+    const pagedBefore = (await seen()).paged.length;
+    try {
+      await page.setViewportSize({ width: 800, height: VIEWPORTS.phone.viewport.height });
+      await settled(page);
+      const band = (): Promise<Array<string | null>> =>
+        page.evaluate(() => [...document.querySelectorAll<HTMLElement>("#c-band-root .c-band-ops [data-act]")].filter((el) => el.getClientRects().length > 0).map((el) => el.getAttribute("data-act")));
+      const kids = (): Promise<number> => page.evaluate(() => document.querySelector("#c-foot-root")?.children.length ?? -1);
+      const wideBand = await band();
+      if ((await kids()) !== 0 || JSON.stringify(wideBand) !== JSON.stringify(["find", "hand", "start", "more"])) say(`800 で下のバーが空で帯のボタン 4 つの形にならない（子 ${await kids()}・帯 ${wideBand.join("・")}）`);
+      const scrolled = await page.evaluate(() => {
+        const box = document.querySelector<HTMLElement>("#c-deck-root .c-deck");
+        if (box === null) return { paged: true, moved: false };
+        box.scrollLeft = 200;
+        return { paged: box.hasAttribute("data-paged"), moved: box.scrollLeft > 0 };
+      });
+      await settled(page);
+      if (scrolled.paged) say("800 の列に data-paged が付いている");
+      if (!scrolled.moved) say("800 で列を横に送れない（送っても下のバーが出ないかを確かめられない）");
+      if ((await kids()) !== 0 || (await seen()).paged.length !== pagedBefore) say("800 で列を横に送ると下のバーが出るか、指の送りの知らせが来る");
+    } finally {
+      await page.setViewportSize(VIEWPORTS.phone.viewport);
+      await settled(page);
+    }
+    const narrow = await page.evaluate(() => ({
+      foot: document.querySelectorAll("#c-foot-root button").length,
+      band: [...document.querySelectorAll<HTMLElement>("#c-band-root .c-band-ops [data-act]")].filter((el) => el.getClientRects().length > 0).map((el) => el.getAttribute("data-act")),
+      current: document.querySelector('#c-foot-root [aria-current="true"]')?.getAttribute("data-page") ?? null,
+    }));
+    if (narrow.foot !== 4 || JSON.stringify(narrow.band) !== JSON.stringify(["find", "start", "more"]) || narrow.current !== "turn") say(`390 に戻しても下のバー 4 つ・帯 3 つ・今の列 あなたの番 にならない（${narrow.foot}・${narrow.band.join("・")}・${String(narrow.current)}）`);
+    // 開いたボタンの無い戻り（7）: 焦点の無いまま右腕のチャンネルを開き、閉じたら下のバーの右腕のボタンへ
+    const opened = await page.evaluate(() => {
+      const sa = (window as unknown as { SA: { topics: { data: () => { rightHands: Array<{ id: string }> } | null }; app: { open: (id: string) => void } } }).SA;
+      const hand = sa.topics.data()?.rightHands[0];
+      if (hand === undefined) return false;
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+      sa.app.open(hand.id);
+      return true;
+    });
+    if (!opened) say("作り物のデータに右腕が無い（開いたボタンの無い戻り）");
+    else {
+      await page.waitForSelector('#v3[data-hand="open"]', { timeout: 5000 });
+      await page.evaluate(() => history.back());
+      await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
+      await settled(page);
+      if (!(await activeIs(page, BAR_HAND))) say("開いたボタンの無い右腕を閉じた後の焦点が下のバーの右腕のボタンに無い");
+    }
+    return lines;
+  }
+
+  /**
+   * 流れの列のバーの検査（ダークの組。checkBar の代わり。スマホは列の下のバーの検査 checkFootBar も）: 下のバーの根の子が 0・上の帯のボタン 4 つと id なし・
    * タブレットは「探す」の板で一覧を末尾まで送って最後の行が板の中・歯車の「ほか」の板（タスクが無い。閉じたら歯車へ）・最初の 1 回（応答の前から帯）。
    * 最後は「探す」の板を開き直して終える（続く幅の検査は板の中で測る）
    */
   async function checkBarDeck(page: Page, vp: Viewport, p: string): Promise<string[]> {
     const lines: string[] = [];
+    // スマホ（D2）の帯は［右腕］を出さない（口は下のバー）
+    const phone = vp === "phone";
+    const bandActs = phone ? ["find", "start", "more"] : ["find", "hand", "start", "more"];
     const form = await page.evaluate(() => {
       const root = document.querySelector("#c-bottom-root");
       const band = document.querySelector("#c-band-root > .c-band");
@@ -1859,7 +2079,16 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     if (form.kids !== 0) lines.push(`バー: 流れの列で #c-bottom-root の子が ${form.kids}（0 のはず）`);
     if (!form.band) lines.push("バー: 上の帯（.c-band）が無い");
     if (form.ids !== 0) lines.push(`バー: 上の帯の中に id の付いた要素が ${form.ids} 個`);
-    if (JSON.stringify(form.acts) !== JSON.stringify(["find", "hand", "start", "more"])) lines.push(`バー: 上の帯のボタンが 探す・右腕・始める・ほか でない（${form.acts.join("・")}）`);
+    if (JSON.stringify(form.acts) !== JSON.stringify(bandActs)) lines.push(`バー: 上の帯のボタンが ${phone ? "探す・始める・ほか" : "探す・右腕・始める・ほか"} でない（${form.acts.join("・")}）`);
+    // スマホの列の下のバー（板が開いていれば先に閉じる）
+    if (phone) {
+      if ((await page.$('#v3[data-find="open"]')) !== null) {
+        await page.keyboard.press("Escape");
+        await page.waitForSelector('#v3[data-find="closed"]', { timeout: 5000 });
+        await settled(page);
+      }
+      lines.push(...(await checkFootBar(page)));
+    }
     // 末尾（タブレット）: 板の中で一覧を末尾まで送ると、最後の行が板の中・板は画面の中
     if (vp !== "pc") {
       await openFind(page);
@@ -1913,14 +2142,19 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       await page.goto("about:blank");
       await page.goto(base + "/", { waitUntil: "load" });
       await page.waitForSelector("#c-band-root .c-band", { timeout: 5000 });
+      if (phone) await page.waitForSelector("#c-foot-root .c-bottom", { timeout: 5000 });
       const first = await page.evaluate(() => ({
         loading: document.querySelector('.c-list[data-phase="loading"]') !== null,
         buttons: document.querySelectorAll("#c-band-root .c-band-ops [data-act]").length,
         kids: document.querySelector("#c-bottom-root")?.children.length ?? -1,
+        foot: document.querySelectorAll("#c-foot-root button").length,
+        footMarks: document.querySelectorAll("#c-foot-root :is(.c-badge, [data-state])").length,
       }));
       if (!first.loading) lines.push("バー: 最初の応答の前に一覧が読み込み中でない");
-      if (first.buttons !== 4) lines.push(`バー: 最初の応答の前の帯のボタンが ${first.buttons} 個`);
-      if (first.kids !== 0) lines.push(`バー: 最初の応答の前に下のバーが在る（子 ${first.kids}）`);
+      if (first.buttons !== bandActs.length) lines.push(`バー: 最初の応答の前の帯のボタンが ${first.buttons} 個`);
+      if (first.kids !== 0) lines.push(`バー: 最初の応答の前に一覧の下のバーが在る（子 ${first.kids}）`);
+      // スマホは列の下のバー 4 つが数・印なしで出ている。広い幅は無い
+      if (phone ? first.foot !== 4 || first.footMarks !== 0 : first.foot !== 0) lines.push(`バー: 最初の応答の前の列の下のバーのボタンが ${first.foot} 個・数か印が ${first.footMarks} 個`);
     } finally {
       release();
       await wait(100);
@@ -2148,7 +2382,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       await page.click(HAND_CLOSE);
       await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
       await settled(page);
-      await page.click('#c-bottom-root [data-act="hand"]');
+      await page.click(BAR_HAND);
       await settled(page);
       if (!(await activeIs(page, "#v3-hand-ed textarea.c-composer-input"))) {
         const at = await page.evaluate(() => {
@@ -2253,7 +2487,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     // 会話を開く（スマホは一覧の行から。焦点は「一覧へ」・押すと一覧へ）
     if (phone) {
       await load(page, "/");
-      await page.locator(`#c-list-root button[data-topic="ch:${open}"]`).last().click();
+      // 流れの列（D2）は「探す」の板の行から
+      await clickRow(page, `#c-list-root button[data-topic="ch:${open}"]`, "last");
       await page.waitForSelector("#ed textarea", { timeout: 5000 });
       await settled(page);
       if (!(await activeIs(page, TOP_BACK))) lines.push("本番の見出し: 一覧から話題を開いた後の焦点が「一覧へ」に無い");
@@ -2312,7 +2547,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     if (phone) {
       const controls = await page.evaluate(() => {
         const top = document.querySelector('#c-top-root button[data-act="hand"]');
-        const bottom = document.querySelector('#c-bottom-root button[data-act="hand"]');
+        const bottom = document.querySelector('#c-foot-root button[data-act="hand"]');
         const a = top === null ? null : top.getAttribute("aria-controls");
         const b = bottom === null ? null : bottom.getAttribute("aria-controls");
         return { a, b, exists: a !== null && document.getElementById(a) !== null };
@@ -4260,9 +4495,101 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
    * 流れの列の検査（D1）: 見える列の数が data-deck と c-deck.js の deckFit と合う・列の幅は 420 以下・席の幅は deckFit と同じ・
    * 列と項目と帯で字が横にはみ出ない・番の項目の地は --turn-surface で左の線は --warning・帯のボタンは 4 つ（data-act）。足りない物の文
    */
+  /**
+   * スマホの流れの列（D2。ダークのスマホの段 deck の続き。スレッドを開いた所から）: スレッドの間は帯・列・下のバーが見えない・戻ると列で焦点は押した項目（UI-7）・
+   * 下のバーと帯の当たり 44・帯の「self-agent」が省かれない・下のバーでタスク・通知へ送った所を撮る・通知の列を下へ送って項目を開き戻ると同じ列と縦の位置・
+   * 歯車の板を撮る・#/tasks で読み込むとタスクの列・動きを減らす設定でもバーで切り替わる。足りない物の文
+   */
+  async function phoneDeck(page: Page, p: string): Promise<string[]> {
+    const lines: string[] = [];
+    const say = (text: string): void => void lines.push(`スマホの流れの列: ${text}`);
+    const PAGE = (id: string): string => `#c-foot-root button[data-act="page"][data-page="${id}"]`;
+    const current = (): Promise<{ page: string | null; left: number; at: number }> =>
+      page.evaluate(() => {
+        const box = document.querySelector<HTMLElement>("#c-deck-root .c-deck");
+        const id = document.querySelector('#c-foot-root [aria-current="true"]')?.getAttribute("data-page") ?? null;
+        const col = id === null ? null : [...document.querySelectorAll<HTMLElement>("#c-deck-root .c-deck > .c-col")].find((c) => c.dataset.col === id);
+        return {
+          page: id,
+          left: box?.scrollLeft ?? -1,
+          at: box === null || col === undefined || col === null ? -2 : box.scrollLeft + col.getBoundingClientRect().left - box.getBoundingClientRect().left,
+        };
+      });
+    // スレッドの間は帯・列・下のバーが見えない（場所は残す）
+    const hidden = await page.evaluate(() => ["#v3-band", "#v3-deck", "#v3-foot"].map((sel) => (document.querySelector(sel) === null ? "無い" : getComputedStyle(document.querySelector(sel)!).visibility)));
+    if (hidden.some((v) => v !== "hidden")) say(`スレッドの間の帯・列・下のバーが ${hidden.join("・")}（hidden のはず）`);
+    // 戻ると列。焦点は押した項目
+    await page.evaluate(() => history.back());
+    await page.waitForSelector('#v3[data-view="list"]', { timeout: 5000 });
+    await settled(page);
+    if (!(await activeIs(page, '#c-deck-root .c-col[data-col="turn"] .c-item[data-turn="true"] button.c-item-main'))) say("スレッドから戻った後の焦点が押した項目に無い");
+    // 当たり 44・帯の名前
+    for (const line of await page.evaluate(hitProblems, { min: 44, scopes: "#c-foot-root, #c-band-root", targets: "button", toast: false })) say(line);
+    const name = await page.evaluate(() => {
+      const el = document.querySelector<HTMLElement>("#c-band-root .c-band-name");
+      return el === null ? null : { text: (el.textContent ?? "").trim(), cut: el.scrollWidth > el.clientWidth };
+    });
+    if (name === null || name.text !== "self-agent" || name.cut) say(`帯の「self-agent」が省かれる・無い（${JSON.stringify(name)}）`);
+    // 下のバーで送った所
+    for (const id of ["tasks", "feed"] as const) {
+      await page.click(PAGE(id));
+      await settled(page);
+      const c = await current();
+      if (c.page !== id || Math.abs(c.left - c.at) > 1) say(`${id} を押した後の今の列 ${String(c.page)}・位置 ${c.left}（列の左端 ${c.at} のはず）`);
+      await shot(page, `${p}-a-deck-${id}`);
+    }
+    // 通知の列を下へ送って項目を開き、戻ると同じ列・同じ縦の位置
+    const FEED = '#c-deck-root .c-col[data-col="feed"]';
+    const top = await page.evaluate((sel: string) => {
+      const body = document.querySelector<HTMLElement>(`${sel} .c-col-body`);
+      if (body === null) return -1;
+      body.scrollTop = Math.min(120, body.scrollHeight - body.clientHeight);
+      return body.scrollTop;
+    }, FEED);
+    const item = page.locator(`${FEED} .c-item button.c-item-main`).last();
+    if ((await item.count()) === 0) say("通知の列に開ける項目が無い（戻った後の縦の位置を確かめられない）");
+    else {
+      await item.click();
+      await page.waitForSelector('#v3[data-view="body"]', { timeout: 5000 });
+      await settled(page);
+      await page.evaluate(() => history.back());
+      await page.waitForSelector('#v3[data-view="list"]', { timeout: 5000 });
+      await settled(page);
+      const c = await current();
+      const after = await page.evaluate((sel: string) => document.querySelector<HTMLElement>(`${sel} .c-col-body`)?.scrollTop ?? -1, FEED);
+      if (c.page !== "feed" || Math.abs(c.left - c.at) > 1) say(`通知の列から開いて戻った後の今の列 ${String(c.page)}・位置 ${c.left}`);
+      if (Math.abs(after - top) > 1) say(`通知の列から開いて戻った後の縦の位置 ${after}（${top} のはず）`);
+    }
+    // 歯車の板
+    await page.click(bandButton("more"));
+    await page.waitForSelector("#v3-sheet[open]", { timeout: 5000 });
+    await settled(page);
+    await shot(page, `${p}-a-deck-more`);
+    await page.click("#v3-sheet button.sheet-close");
+    await page.waitForSelector("#v3-sheet:not([open])", { state: "attached", timeout: 5000 });
+    await settled(page);
+    // 古い hash: #/tasks で読み込むとタスクの列（hash は消える）
+    await load(page, "/#/tasks");
+    await page.waitForSelector("#c-foot-root .c-bottom", { timeout: 5000 });
+    await settled(page);
+    const old = { ...(await current()), hash: await page.evaluate(() => location.hash), view: await page.getAttribute("#v3", "data-view") };
+    if (old.page !== "tasks" || Math.abs(old.left - old.at) > 1 || old.hash !== "" || old.view !== "list") say(`#/tasks で読み込んだ後が ${JSON.stringify(old)}（タスクの列・hash なし・列のはず）`);
+    // 動きを減らす設定でもバーで切り替わる（絵なし）
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    try {
+      await page.click(PAGE("feed"));
+      await settled(page);
+      const c = await current();
+      if (c.page !== "feed" || Math.abs(c.left - c.at) > 1) say(`動きを減らす設定で通知を押した後の今の列 ${String(c.page)}・位置 ${c.left}（列の左端 ${c.at} のはず）`);
+    } finally {
+      await page.emulateMedia({ reducedMotion: null });
+    }
+    return lines;
+  }
+
   async function deckLines(page: Page, vp: Viewport, label: string): Promise<string[]> {
     return page.evaluate(
-      ({ label, width }: { label: string; width: number }) => {
+      ({ label, width, phone }: { label: string; width: number; phone: boolean }) => {
         const out: string[] = [];
         const say = (text: string): void => void out.push(`流れの列（${label}・幅 ${width}）: ${text}`);
         const v3 = document.querySelector<HTMLElement>("#v3");
@@ -4279,12 +4606,20 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         });
         if (want > 0 && shown.length !== want) say(`見える列が ${shown.length} 本（data-deck ${want}）`);
         if (deck.getAttribute("data-cols") !== String(want)) say(`.c-deck の data-cols が ${deck.getAttribute("data-cols")}（${want} のはず）`);
-        for (const c of shown) if (c.getBoundingClientRect().width > 420.5) say(`列 ${c.dataset.col} の幅 ${c.getBoundingClientRect().width.toFixed(1)}（420 以下のはず）`);
-        const main = document.querySelector<HTMLElement>("#v3-main");
-        const seat = main === null || !seatOpen ? 0 : main.getBoundingClientRect().width;
-        const fit = (window as unknown as { SA: { deck: { fit: (w: number, open: boolean) => { cols: number; seat: number } } } }).SA.deck.fit(v3.clientWidth, seatOpen);
-        if (fit.cols !== want) say(`deckFit の列 ${fit.cols}・data-deck ${want}`);
-        if (Math.abs(seat - fit.seat) > 1) say(`席の幅 ${seat.toFixed(1)}（deckFit では ${fit.seat}）`);
+        if (phone) {
+          // スマホ（D2）: 1 列ずつ全幅（420 の上限を当てない）。席（スレッド）は列の上に重ねるので deckFit を使わない。文書が横にはみ出さない
+          if (want !== 1 || v3.getAttribute("data-seat") !== "full") say(`data-deck ${want}・data-seat ${String(v3.getAttribute("data-seat"))}（1・full のはず）`);
+          if (deck.getAttribute("data-paged") !== "true") say(".c-deck に data-paged が無い");
+          for (const c of shown) if (Math.abs(c.getBoundingClientRect().width - width) > 0.5) say(`列 ${c.dataset.col} の幅 ${c.getBoundingClientRect().width.toFixed(1)}（画面の幅 ${width} のはず）`);
+          if (document.documentElement.scrollWidth > window.innerWidth) say(`文書が横にはみ出る（${document.documentElement.scrollWidth}）`);
+        } else {
+          for (const c of shown) if (c.getBoundingClientRect().width > 420.5) say(`列 ${c.dataset.col} の幅 ${c.getBoundingClientRect().width.toFixed(1)}（420 以下のはず）`);
+          const main = document.querySelector<HTMLElement>("#v3-main");
+          const seat = main === null || !seatOpen ? 0 : main.getBoundingClientRect().width;
+          const fit = (window as unknown as { SA: { deck: { fit: (w: number, open: boolean) => { cols: number; seat: number } } } }).SA.deck.fit(v3.clientWidth, seatOpen);
+          if (fit.cols !== want) say(`deckFit の列 ${fit.cols}・data-deck ${want}`);
+          if (Math.abs(seat - fit.seat) > 1) say(`席の幅 ${seat.toFixed(1)}（deckFit では ${fit.seat}）`);
+        }
         // はみ出る字（列・項目・帯）
         for (const sel of [".c-deck", ".c-col", ".c-col-head", ".c-item", ".c-item-main", ".c-band", ".c-band-ops"]) {
           for (const el of document.querySelectorAll<HTMLElement>(`:is(#c-deck-root, #c-band-root) ${sel}`)) {
@@ -4311,10 +4646,11 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         }
         // 帯のボタン
         const acts = [...document.querySelectorAll("#c-band-root .c-band-ops [data-act]")].map((el) => el.getAttribute("data-act"));
-        if (JSON.stringify(acts) !== JSON.stringify(["find", "hand", "start", "more"])) say(`帯のボタンが ${acts.join("・")}（探す・右腕・始める・ほか のはず）`);
+        const wantActs = phone ? ["find", "start", "more"] : ["find", "hand", "start", "more"];
+        if (JSON.stringify(acts) !== JSON.stringify(wantActs)) say(`帯のボタンが ${acts.join("・")}（${phone ? "探す・始める・ほか" : "探す・右腕・始める・ほか"} のはず）`);
         return out;
       },
-      { label, width: VIEWPORTS[vp].viewport.width },
+      { label, width: VIEWPORTS[vp].viewport.width, phone: vp === "phone" },
     );
   }
 
@@ -4331,7 +4667,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         await shot(page, `${p}-a-list`);
         // 一覧の列の検査（ダークの組だけ）。全部を測ってから、1 つでもあれば段を失敗にする
         if (theme !== "dark") return;
-        const problems = [...(await checkParts(page, vp, [".c-list", ".c-bottom"])), ...(await checkList(page, vp)), ...(await checkBar(page, vp, p))];
+        // 当たりは一覧と一覧の下のバー（#v3-list の中）。スマホの列の下のバー（#c-foot-root）は「探す」の板の幕の下なので、板を閉じた所で測る（checkFootBar・phoneDeck）
+        const problems = [...(await checkParts(page, vp, [".c-list", "#v3-list .c-bottom"])), ...(await checkList(page, vp)), ...(await checkBar(page, vp, p))];
         if (vp !== "tablet") problems.push(...(await checkLeaks(page, vp)));
         problems.push(...(await checkWidths(page, vp, mono)));
         // 絞り込み欄の箱の左端は一覧の列の左から 16（スマホ・PC。流れの列は「探す」の板を開くと絞り込み欄が出ている）
@@ -4396,9 +4733,11 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           if (problems.length > 0) throw new Error(`入口の検査で ${problems.length} 件`);
         });
       }
-      // 流れの列（D1。640px 以上）: 列の数と幅・はみ出し・番の項目の面と線・帯のボタン。項目から席を開いて、列と席の幅・開いた項目の印
-      if (vp !== "phone") {
-        await step(`${p} deck`, [`${p}-a-deck`, `${p}-a-deck-seat`], async () => {
+      // 流れの列（D1。スマホは D2）: 列の数と幅・はみ出し・番の項目の面と線・帯のボタン。項目から席（スマホはスレッド）を開いて、列と席の幅・開いた項目の印。
+      // ダークのスマホは続けて、スレッドの間の帯とバー・戻る・当たり・帯の名前・下のバーで送った列・通知の列の縦の位置・歯車の板・古い hash・動きを減らす設定（phoneDeck）
+      {
+        const deckShots = [`${p}-a-deck`, `${p}-a-deck-seat`, ...(vp === "phone" && theme === "dark" ? [`${p}-a-deck-tasks`, `${p}-a-deck-feed`, `${p}-a-deck-more`] : [])];
+        await step(`${p} deck`, deckShots, async () => {
           await load(page, "/");
           await page.waitForSelector("#v3[data-deck] #c-deck-root .c-deck .c-col", { timeout: 5000 });
           await settled(page);
@@ -4411,12 +4750,14 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           const current = await page.evaluate(() => document.querySelectorAll('#c-deck-root .c-item[data-current="true"] > button.c-item-main[aria-current="true"]').length);
           if (current !== 1) problems.push(`流れの列（席）: 開いた項目の印（aria-current）が ${current} 個（1 個のはず）`);
           await shot(page, `${p}-a-deck-seat`);
+          if (vp === "phone" && theme === "dark") problems.push(...(await phoneDeck(page, p)));
           for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
           if (problems.length > 0) throw new Error(`流れの列の検査で ${problems.length} 件`);
         });
       }
-      // 列の中の操作（D1 の PR-2。ダークの PC だけ）: ［完了］の当たり・列から 1 つ消える・知らせと［取り消す］・焦点の行き先。撮った後に［取り消す］で戻す（戻せなければ段を失敗にする）
-      if (vp === "pc" && theme === "dark") {
+      // 列の中の操作（D1 の PR-2。ダークの PC と、D2 からダークのスマホ）: ［完了］の当たり・列から 1 つ消える・知らせと［取り消す］（スマホは知らせが上）・焦点の行き先。
+      // 撮った後に［取り消す］で戻す（戻せなければ段を失敗にする）。スマホは先に下のバーでタスクの列へ送る
+      if (vp !== "tablet" && theme === "dark") {
         await step(`${p} done`, [`${p}-a-deck-done`], async () => {
           const TASK = '#c-deck-root .c-col[data-col="tasks"] .c-item[data-kind="task"]';
           const UNDO = "#c-notice-root .c-toast-item button";
@@ -4425,6 +4766,10 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           await load(page, "/");
           await page.waitForSelector(TASK, { timeout: 5000 });
           await settled(page);
+          if (vp === "phone") {
+            await page.click('#c-foot-root button[data-act="page"][data-page="tasks"]');
+            await settled(page);
+          }
           const keys = (): Promise<string[]> => page.evaluate((sel: string) => [...document.querySelectorAll(sel)].map((el) => el.getAttribute("data-key") ?? ""), TASK);
           const before = await keys();
           for (const line of await page.evaluate(hitProblems, { min: 44, scopes: '#c-deck-root .c-col[data-col="tasks"]', targets: ".c-item-meta .c-iconbtn", toast: false })) say(line);
@@ -4439,6 +4784,11 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
             .then(() => page.evaluate(() => (document.querySelector('#c-notice-root .c-toast-list[role="status"]')?.textContent ?? "").trim()), () => null);
           if (notice === null) say("知らせに［取り消す］が無い");
           else if (!notice.includes("を完了にしました")) say(`知らせが「${notice.slice(0, 40)}」`);
+          // スマホの知らせは上（下のバーと親指の所を塞がない。polish §5 の UI-8）
+          if (vp === "phone" && notice !== null) {
+            const top = await page.evaluate(() => document.querySelector('#c-notice-root .c-toast-list[role="status"]')?.getBoundingClientRect().top ?? -1);
+            if (top < 0 || top > VIEWPORTS.phone.viewport.height / 2) say(`知らせの上端 ${top}（画面の上半分のはず）`);
+          }
           await settled(page);
           // 押したボタンは項目ごと消える。焦点は c-app.js の drawDeck の決まりで、同じ列の次の項目（ここでは次のタスク）の［完了］へ
           const focus = await page.evaluate((sel: string) => {
@@ -4650,7 +5000,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       await step(`${p} c`, vp === "phone" ? [handName] : [handName, `${p}-c-hand-with-chat`], async () => {
         await load(page, "/");
         if (vp === "phone") {
-          await page.click('#c-bottom-root [data-act="hand"]');
+          await page.click(BAR_HAND);
         } else {
           const show = await handShow(page);
           const expanded = await page.getAttribute(show, "aria-expanded");
