@@ -4673,4 +4673,6 @@ test("web components: 入口の流れの列の焦点は、タスクの列だけ�
   assert.match(app, /^\s*kind,\n\s*\);/m);
   // リマインドは .c-item-ops の最後のボタン、ほかは今のまま最初の押せる物
   assert.match(app, /item\.dataset\.kind === "reminder" \? item\.querySelector\("\.c-item-ops button:last-child"\) : item\.querySelector\("button, a\[href\]"\)/);
+  // 焦点のあった物が残っているのに焦点だけ外れたら（並び替えで節が動いた。moveBefore の無いブラウザ）、同じ物へ戻す（消えた物の道の else）
+  assert.match(app, /if \(!moved\) focusBand\("find"\);\n\s*\} else if \(inside && document\.activeElement !== before\) \{\n(?:\s*\/\/.*\n)*\s*before\.focus\(\);\n\s*\}/);
 });
