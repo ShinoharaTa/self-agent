@@ -4130,11 +4130,14 @@ test("web components: Deck は 3 つの section.c-col を常に出し、項目�
   // 席に開けない物は div（押せない）、時刻・要約が無ければ出さない
   const taskMain = find(taskItem, "c-item-main")[0]!;
   assert.equal(taskMain.type, "div");
-  assert.equal(find(taskMain, "c-item-time").length + find(taskMain, "c-item-sum").length + find(taskMain, "c-item-link").length, 0);
+  assert.equal(find(taskMain, "c-item-time").length + find(taskMain, "c-item-sum").length + find(taskItem, "c-item-link").length, 0);
   assert.equal(find(taskMain, "c-mark")[0]?.props["aria-hidden"], "true");
+  // 外へのリンクだけの物は項目ごとリンク（押した所が狭くならない）
   const link = find(ghItem, "c-item-link")[0]!;
   assert.deepEqual([link.type, link.props.href, link.props.target, link.props.rel], ["a", "https://github.com/o/r/pull/2", "_blank", "noreferrer noopener"]);
+  assert.equal(find(ghItem, "c-item-main").length, 0);
   assert.equal(textOf(find(link, "c-item-title")), "PR の題 #2");
+  assert.equal(textOf(find(link, "c-item-word")), "PR・o/r");
   // 読み込み中・空
   const loading = one(html`<${deck.Deck} model=${deck.deckModel(flowOf({ topics: null, tasks: null, reminders: null, notices: null }))} on=${on} />`);
   assert.equal(find(loading, "c-col").length, 3);

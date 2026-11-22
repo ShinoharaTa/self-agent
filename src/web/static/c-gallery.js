@@ -839,12 +839,14 @@ const BAND_ON = { status: noop, find: noop, hand: noop, start: noop, more: noop 
 /** 帯と 3 つの列の見本（列は見本の幅で 3 等分）。押しても何も起きない */
 function Decks() {
   return html`<${Section} name="deck" title="流れの列と上の帯">
-    <div class="c-gallery-deck" data-demo="band">
-      <${DeckBand} conn=${{ tone: "ok", label: "見本の Bot: 接続中" }} hand=${{ mark: "turn", open: false }} controls="v3-hand" on=${BAND_ON} />
+    <div class="c-gallery-slide" data-demo="band">
+      <div class="c-gallery-deck c-gallery-band">
+        <${DeckBand} conn=${{ tone: "ok", label: "見本の Bot: 接続中" }} hand=${{ mark: "turn", open: false }} controls="v3-hand" on=${BAND_ON} />
+      </div>
     </div>
     <div class="c-gallery-deck" data-demo="deck-3"><${Deck} model=${deckModel(deckState())} on=${DECK_ON} /></div>
     <div class="c-gallery-deck" data-demo="deck-empty">
-      <${Deck} model=${deckModel(deckState({ topics: QUIET_DATA, tasks: [], reminders: [], github: [], notices: [] }))} on=${DECK_ON} />
+      <${Deck} model=${deckModel(deckState({ topics: QUIET_DATA, tasks: [], reminders: [], github: [], notices: [], isUnread: () => false }))} on=${DECK_ON} />
     </div>
     <div class="c-gallery-deck" data-demo="deck-loading">
       <${Deck} model=${deckModel(deckState({ topics: null, tasks: null, reminders: null, github: null, notices: null }))} on=${DECK_ON} />
