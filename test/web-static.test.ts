@@ -820,6 +820,19 @@ test("web static: store.ccNeedsInputCount（api.js）は連携が有効で一覧
   assert.equal(run({ ccEnabled: () => true, cc: null }), 0);
 });
 
+test("web static: store.isUnread（api.js）は最後の行が返事か統括のまとめ（last.lead === true）で、既読より後のときだけ真（#457 の L2）", () => {
+  const src = /store\.isUnread = [^\n]*;/.exec(read("api.js"))?.[0];
+  assert.ok(src, "api.js から store.isUnread = …; の 1 行を抜き出せない（書き方が変わった）");
+  assert.ok(src.includes("last.lead === true"));
+  const store: Record<string, unknown> = { seen: { "ch:100": 5 } };
+  vm.runInNewContext(src, { store });
+  const isUnread = store.isUnread as (channel: unknown) => boolean;
+  assert.equal(isUnread({ id: "ch:100", last: { id: 6, kind: "notice", lead: true } }), true);
+  assert.equal(isUnread({ id: "ch:100", last: { id: 5, kind: "notice", lead: true } }), false);
+  assert.equal(isUnread({ id: "ch:100", last: { id: 6, kind: "notice" } }), false);
+  assert.equal(isUnread({ id: "ch:100", last: { id: 6, kind: "agent" } }), true);
+});
+
 test("web static: 一覧を描き直しても .sb-body のスクロール位置を保つ（同じアクティビティのときだけ）", () => {
   const { sidebar, container, store } = loadSidebar({ ccEnabled: false, cc: null });
   const bodyOf = () => container.children.find((c) => c.classes.has("sb-body")) as (FakeNode & { scrollTop?: number }) | undefined;

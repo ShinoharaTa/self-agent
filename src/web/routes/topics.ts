@@ -10,6 +10,7 @@
 import { CC_CONFIRM_TTL_MS } from "../../app/commands/cc-confirm.ts";
 import { SESSION_LIST_LIMITS } from "../../app/commands/sessions.ts";
 import type { Handler } from "../../app/handler.ts";
+import { isLeadText } from "../../app/lead.ts";
 import type { OwnerPosts, PersonaRouter, PersonaRuntime } from "../../app/personas.ts";
 import { normalizeTopicTitle, type StartTopicDeps, type StartTopicPlace, startTopic } from "../../app/session-ops.ts";
 import {
@@ -195,6 +196,17 @@ export function createTopicCollector(deps: TopicRouteDeps): (at: number, done: s
     if (last === undefined || last.kind !== "notice" || last.source !== "system" || last.text !== CLOSE_CONFIRM_NOTICE) return undefined;
     if ((topicSessions.getCloseDraft(channelId) ?? null) === null) return undefined;
     return { kind: "confirm", summary: "閉じる前の確認", since: last.at, expiresAt: null };
+  };
+
+  /**
+   * 右腕の last。最後の行が統括のまとめの notice（source system・isLeadText）なら lead: true を足す（#457 の L2。Web の未読に数える）。
+   * latest が notice のときだけ history.list を読む（closeConfirm と同じ読み方）
+   */
+  const handLast = (channelId: string, latest: TopicLast): TopicLast => {
+    if (latest === null || latest.kind !== "notice") return latest;
+    const last = history.list(channelId, { limit: 1 })[0];
+    if (last === undefined || last.kind !== "notice" || last.source !== "system" || !isLeadText(last.text)) return latest;
+    return { ...latest, lead: true };
   };
 
   const collect = (at: number, done: string | null): TopicsInput => {
@@ -395,7 +407,7 @@ export function createTopicCollector(deps: TopicRouteDeps): (at: number, done: s
           id: `ch:${settings.inboxChannelId}`,
           guildId,
           title: "右腕",
-          last: lastOf(settings.inboxChannelId),
+          last: handLast(settings.inboxChannelId, lastOf(settings.inboxChannelId)),
           link: channelLink(guildId, settings.inboxChannelId),
           turns,
         });
