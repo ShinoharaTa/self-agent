@@ -168,6 +168,8 @@ function newShellNames(vp: Viewport, theme: Theme, full: boolean): string[] {
     ...(vp !== "phone" ? ["a-deck", "a-deck-seat"] : []),
     // 列の中の操作（D1 の PR-2。ダークの PC だけ）: タスクを［完了］にした直後
     ...(vp === "pc" && theme === "dark" ? ["a-deck-done"] : []),
+    // 列のリマインドの［次を飛ばす］［止める］（#472 の PR-1。ダークの PC だけ）: ［止める］の確認が出た所
+    ...(vp === "pc" && theme === "dark" ? ["a-deck-rem"] : []),
     "b-chat-top",
     "b-chat-middle",
     "b-chat-bottom",
@@ -4459,6 +4461,105 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           if (problems.length > 0) throw new Error(`列の中の操作の検査で ${problems.length} 件`);
         });
       }
+      // 列のリマインドの操作（#472 の PR-1。ダークの PC だけ）: 操作の行（当たり・1 行・字の端の揃え）、［次を飛ばす］で並びが入れ替わり焦点が残る・知らせ、
+      // ［止める］の確認 → OK で 1 つ減る・知らせ・焦点が次のリマインドの［止める］。撮った後にリマインドを入れ直す（後ろの段のため）
+      if (vp === "pc" && theme === "dark") {
+        await step(`${p} rem`, [`${p}-a-deck-rem`], async () => {
+          const REM = '#c-deck-root .c-col[data-col="tasks"] .c-item[data-kind="reminder"]';
+          const TOAST = '#c-notice-root .c-toast-list[role="status"]';
+          const problems: string[] = [];
+          const say = (text: string): void => void problems.push(`列のリマインド: ${text}`);
+          try {
+            await load(page, "/");
+            await page.waitForFunction((sel: string) => document.querySelectorAll(sel).length === 2, REM, { timeout: 5000 });
+            await settled(page);
+            const keys = (): Promise<string[]> => page.evaluate((sel: string) => [...document.querySelectorAll(sel)].map((el) => el.getAttribute("data-key") ?? ""), REM);
+            const toast = (): Promise<string> => page.evaluate((sel: string) => (document.querySelector(sel)?.textContent ?? "").trim(), TOAST);
+            // 操作の行: 繰り返しは 2 つ・1 回だけは 1 つ、ボタンは 1 行で項目の中、［次を飛ばす］の字の左端は題の左端・［止める］の字の右端は時刻の右端
+            const rows = await page.evaluate((sel: string) => {
+              return [...document.querySelectorAll(sel)].map((item) => {
+                const box = item.getBoundingClientRect();
+                const btns = [...item.querySelectorAll(".c-item-ops .c-btn")];
+                const label = (b: Element | undefined): DOMRect | null => b?.querySelector(".c-btn-label")?.getBoundingClientRect() ?? null;
+                const title = item.querySelector(".c-item-title")?.getBoundingClientRect() ?? null;
+                const time = item.querySelector(".c-item-time")?.getBoundingClientRect() ?? null;
+                return {
+                  key: item.getAttribute("data-key") ?? "",
+                  row: item.getAttribute("data-ops"),
+                  texts: btns.map((b) => (b.textContent ?? "").trim()),
+                  tops: btns.map((b) => b.getBoundingClientRect().top),
+                  outside: btns.some((b) => b.getBoundingClientRect().left < box.left - 0.5 || b.getBoundingClientRect().right > box.right + 0.5),
+                  first: btns.length > 1 && title !== null ? (label(btns[0])?.left ?? 0) - title.left : 0,
+                  last: time !== null ? (label(btns.at(-1))?.right ?? 0) - time.right : NaN,
+                };
+              });
+            }, REM);
+            for (const r of rows) {
+              if (r.row !== "row") say(`${r.key} に data-ops="row" が無い`);
+              if (new Set(r.tops.map((t) => Math.round(t))).size > 1) say(`${r.key} のボタンが 1 行に入らない`);
+              if (r.outside) say(`${r.key} のボタンが項目の外`);
+              if (Math.abs(r.first) > 1.5) say(`${r.key} の［次を飛ばす］の字の左端が題の左端から ${r.first.toFixed(1)}`);
+              if (!(Math.abs(r.last) <= 1.5)) say(`${r.key} の［止める］の字の右端が時刻の右端から ${r.last.toFixed(1)}`);
+            }
+            if (JSON.stringify(rows.map((r) => r.texts)) !== JSON.stringify([["次を飛ばす", "止める"], ["止める"]])) say(`操作の字 ${JSON.stringify(rows.map((r) => r.texts))}`);
+            for (const line of await page.evaluate(hitProblems, { min: 44, scopes: '#c-deck-root .c-col[data-col="tasks"]', targets: ".c-item-ops .c-btn", toast: false })) say(line);
+            const before = await keys();
+            // ［次を飛ばす］: 確認なし・知らせ・並びが入れ替わる（毎日の次の回が 1 回だけの後へ）・焦点は押したボタンに残る
+            await page.locator(`${REM}[data-key="${before[0]}"] .c-item-ops .c-btn`).filter({ hasText: /^次を飛ばす$/ }).click();
+            const swapped = await page
+              .waitForFunction(([sel, first]: [string, string]) => document.querySelectorAll(sel)[1]?.getAttribute("data-key") === first, [REM, before[0]!] as [string, string], { timeout: 5000 })
+              .then(() => true, () => false);
+            if (!swapped) say(`［次を飛ばす］の後の並びが ${(await keys()).join(",")}（${before[1]},${before[0]} のはず）`);
+            await page.waitForFunction((sel: string) => (document.querySelector(sel)?.textContent ?? "").includes("次の回を飛ばしました"), TOAST, { timeout: 5000 }).catch(() => undefined);
+            if (!(await toast()).includes("次の回を飛ばしました。次は ")) say(`［次を飛ばす］の知らせが「${(await toast()).slice(0, 40)}」`);
+            if (await page.evaluate(() => document.querySelector("dialog[open]") !== null)) say("［次を飛ばす］で確認が出た");
+            await settled(page);
+            const kept = await page.evaluate((sel: string) => {
+              const a = document.activeElement;
+              const item = a === null ? null : a.closest(sel);
+              return { key: item === null ? null : item.getAttribute("data-key"), text: (a?.textContent ?? "").trim(), tag: a?.tagName ?? null };
+            }, REM);
+            if (kept.key !== before[0] || kept.text !== "次を飛ばす") say(`［次を飛ばす］の後の焦点が ${String(kept.key)}「${kept.text}」（${String(kept.tag)}。${before[0]} の［次を飛ばす］のはず）`);
+            // ［止める］（先頭の 1 回だけ）: 確認が開くまで送らない・確認の字 → 撮る → OK で 1 つ減る・知らせ・焦点は次のリマインドの［止める］
+            const order = await keys();
+            await page.locator(`${REM}[data-key="${order[0]}"] .c-item-ops .c-btn`).filter({ hasText: /^止める$/ }).click();
+            const asked = await page.waitForSelector("dialog.c-sheet[open] .c-confirm-body", { timeout: 5000 }).then(() => true, () => false);
+            await settled(page);
+            const ask = await page.evaluate(() => {
+              const open = document.querySelector("dialog.c-sheet[open]");
+              return {
+                title: (open?.querySelector("h2")?.textContent ?? "").trim(),
+                target: (open?.querySelector(".c-confirm-target")?.textContent ?? "").trim(),
+                body: (open?.querySelector(".c-confirm-body")?.textContent ?? "").trim(),
+                ok: [...(open?.querySelectorAll(".c-btn") ?? [])].map((b) => `${(b.textContent ?? "").trim()}:${b.getAttribute("data-kind")}`),
+              };
+            });
+            if (!asked || ask.title !== "止めますか" || ask.target !== "「ゴミの分別表を冷蔵庫に貼る」" || ask.body !== "止めたリマインドは戻せません。") say(`確認が ${JSON.stringify(ask)}`);
+            if (!ask.ok.includes("止める:danger")) say(`確認のボタンが ${ask.ok.join("・")}（［止める］は danger のはず）`);
+            if ((await keys()).length !== 2) say("確認の間に項目が減った");
+            await shot(page, `${p}-a-deck-rem`);
+            await page.locator("dialog.c-sheet[open] .c-btn").filter({ hasText: /^止める$/ }).click();
+            const gone = await page
+              .waitForFunction(([sel, key]: [string, string]) => document.querySelectorAll(sel).length === 1 && document.querySelector(sel)?.getAttribute("data-key") !== key, [REM, order[0]!] as [string, string], { timeout: 5000 })
+              .then(() => true, () => false);
+            if (!gone) say(`［止める］の後の列が ${(await keys()).join(",")}（${order[1]} だけのはず）`);
+            await page.waitForFunction((sel: string) => (document.querySelector(sel)?.textContent ?? "").includes("を止めました"), TOAST, { timeout: 5000 }).catch(() => undefined);
+            if (!(await toast()).includes("「ゴミの分別表を冷蔵庫に貼る」を止めました")) say(`［止める］の知らせが「${(await toast()).slice(0, 40)}」`);
+            await settled(page);
+            const next = await page.evaluate((sel: string) => {
+              const a = document.activeElement;
+              const item = a === null ? null : a.closest(sel);
+              return { key: item === null ? null : item.getAttribute("data-key"), text: (a?.textContent ?? "").trim(), tag: a?.tagName ?? null };
+            }, REM);
+            if (next.key !== order[1] || next.text !== "止める") say(`［止める］の後の焦点が ${String(next.key)}「${next.text}」（${String(next.tag)}。${order[1]} の［止める］のはず）`);
+          } finally {
+            // 後ろの段のためにリマインドを入れ直す
+            fixture.resetReminders();
+          }
+          for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
+          if (problems.length > 0) throw new Error(`列のリマインドの検査で ${problems.length} 件`);
+        });
+      }
       await step(`${p} b`, [`${p}-b-chat-top`, `${p}-b-chat-middle`, `${p}-b-chat-bottom`], async () => {
         await load(page, `/#/ch/${open}`);
         await page.waitForSelector("#ed textarea", { timeout: 5000 });
@@ -4810,7 +4911,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
 
   /**
    * スマホの流れの列の見本（D2）: 下のバーの deck の 2 つ（外側 390 の枠・列 3 つと右腕・今の列は 1 つ・数の Badge は番の列だけ・4 つの字が省かれない・id なし）、
-   * 帯の phone（点・探す・始める・ほかで右腕なし・「self-agent」が省かれない）、deck-paged（列 3 つが枠の幅で、1 列ずつ止まる横送り）と当たり（PC でも 44）。
+   * 帯の phone（点・探す・始める・ほかで右腕なし・「self-agent」が省かれない）、deck-paged（列 3 つが枠の幅で、1 列ずつ止まる横送り）、
+   * deck-phone-ops（リマインドの操作の行が 1 行で項目の中）と当たり（PC でも 44）。
    * 足りない物は 1 行ずつ console.log に書き、1 つでもあれば投げて段を失敗にする
    */
   async function checkDeckPhone(page: Page, label: string): Promise<void> {
@@ -4874,10 +4976,33 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         if (!(Math.abs(second) <= 1)) out.push(`deck-paged: 送った後に 2 つ目の列の頭で止まっていない（2 つ目の列の左 ${second.toFixed(1)}）`);
         deck.scrollLeft = 0;
       }
+      // deck-phone-ops（タスクの列だけ・操作つき）: 枠 390 の中で、リマインドの操作の行が 1 行で項目からはみ出さない
+      const opsBox = document.querySelector('[data-demo="deck-phone-ops"] .c-gallery-phone');
+      const rems = opsBox === null ? [] : [...opsBox.querySelectorAll('.c-item[data-kind="reminder"]')];
+      if (opsBox === null) out.push("deck-phone-ops: 枠が無い");
+      else {
+        const outer = opsBox.getBoundingClientRect().width;
+        if (Math.abs(outer - 390) > 0.5) out.push(`deck-phone-ops: 枠の幅 ${outer.toFixed(1)}（390 のはず）`);
+        if (rems.length === 0) out.push("deck-phone-ops: リマインドが無い");
+        if (!rems.some((item) => item.querySelectorAll(".c-item-ops .c-btn").length === 2)) out.push("deck-phone-ops: ボタンが 2 つのリマインドが無い");
+      }
+      for (const item of rems) {
+        const key = item.getAttribute("data-key");
+        const box = item.getBoundingClientRect();
+        const btns = [...item.querySelectorAll(".c-item-ops .c-btn")];
+        if (btns.length === 0) out.push(`deck-phone-ops: ${key} に操作が無い`);
+        if (new Set(btns.map((b) => Math.round(b.getBoundingClientRect().top))).size > 1) out.push(`deck-phone-ops: ${key} のボタンが 1 行に入らない`);
+        for (const b of btns) {
+          const r = b.getBoundingClientRect();
+          if (r.left < box.left - 0.5 || r.right > box.right + 0.5) out.push(`deck-phone-ops: ${key} の「${(b.textContent ?? "").trim()}」が項目の外`);
+          if (cut(b.querySelector(".c-btn-label"))) out.push(`deck-phone-ops: ${key} の「${(b.textContent ?? "").trim()}」が省かれている`);
+        }
+        if (cut(item)) out.push(`deck-phone-ops: ${key} が横にはみ出している`);
+      }
       return out;
     });
     lines.push(
-      ...(await page.evaluate(hitProblems, { min: 44, scopes: '[data-demo="bottom-deck"], [data-demo="bottom-deck-quiet"], [data-demo="band-phone"], [data-demo="deck-paged"]', targets: "button, a[href]", toast: false })).map(
+      ...(await page.evaluate(hitProblems, { min: 44, scopes: '[data-demo="bottom-deck"], [data-demo="bottom-deck-quiet"], [data-demo="band-phone"], [data-demo="deck-paged"], [data-demo="deck-phone-ops"]', targets: "button, a[href]", toast: false })).map(
         (line) => `スマホの流れの列: ${line}`,
       ),
     );
