@@ -15,7 +15,7 @@ const JS_FILES = readdirSync(STATIC_DIR).filter((n) => /^c-.*\.js$/.test(n)).sor
 const C_TOKENS = [
   "tap", "bar-h", "bottom-h", "row-h", "gutter", "list-w", "hand-w", "bubble-r", "bubble-tail", "card-r", "btn-sm-h", "round-r",
   "icon", "icon-sm", "mark", "mark-ring", "badge-h", "badge-pad", "seg-h", "seg-pad", "toast-w", "spin", "font-body", "row-indent", "list-gap",
-  "top-full-min", "top-place-min", "talk-max", "bubble-pad-y", "bubble-pad-x", "card-max", "check",
+  "top-full-min", "top-place-min", "talk-max", "bubble-pad-y", "bubble-pad-x", "card-max", "check", "deck-band-h", "deck-col-max", "deck-line",
 ].map((n) => `--c-${n}`);
 
 /** c-*.css が var() で使ってよい --c-* 以外の変数（base.css の目盛り・tokens.css の色・動き・重なり・字） */
@@ -24,7 +24,7 @@ const ALLOWED_VARS: ReadonlySet<string> = new Set([
   "font-xs", "font-sm", "font-base", "leading-normal", "leading-tight", "weight-normal", "weight-medium", "weight-semibold",
   "radius-sm", "radius-md", "radius-lg", "radius-full", "border-width", "ring-width", "dialog-max", "container-max",
   "bg", "surface", "muted", "border", "text", "text-secondary", "text-muted", "primary", "primary-text", "accent", "danger", "success", "warning", "backdrop", "shadow-sm",
-  "dur-micro", "dur-short", "dur-long", "ease-out", "z-toast", "font-mono", "bubble-owner", "bubble-agent", "bubble-inset",
+  "dur-micro", "dur-short", "dur-long", "ease-out", "z-toast", "font-mono", "bubble-owner", "bubble-agent", "bubble-inset", "turn-surface",
 ].map((n) => `--${n}`));
 
 /** ファイルごとのセレクタの頭（c-gallery.css は test/web-vendor.test.ts がもっと狭く見ている） */
@@ -197,6 +197,41 @@ test("web components: c-*.css が使う --c-* は tokens.css に在り、PC の�
   for (const file of CSS_FILES) {
     for (const v of varsIn(stripCssComments(read(file)))) if (v.startsWith("--c-")) assert.ok(base.has(v), `${file}: ${v} が tokens.css に無い`);
   }
+});
+
+/** WCAG の相対輝度（#rrggbb） */
+function luminance(hex: string): number {
+  const ch = (i: number): number => {
+    const c = parseInt(hex.slice(1 + i * 2, 3 + i * 2), 16) / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * ch(0) + 0.7152 * ch(1) + 0.0722 * ch(2);
+}
+
+const contrast = (a: string, b: string): number => {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x) as [number, number];
+  return (hi + 0.05) / (lo + 0.05);
+};
+
+test("web components: --turn-surface は tokens.css の色の 4 つの塊に在り、ダーク・ライトで値が揃い、その上の字は 4.5 以上・--warning と --accent は 3 以上", () => {
+  const blocks = parseCss(read("tokens.css")).filter((r) => r.body.includes("--turn-surface:"));
+  assert.equal(blocks.length, 4);
+  const valuesOf = (r: CssRule): Map<string, string> => new Map([...r.body.matchAll(/(--[a-z0-9-]+):\s*(#[0-9a-f]{6})\b/g)].map((m) => [m[1] ?? "", m[2] ?? ""]));
+  const dark = blocks.filter((r) => r.selectors.includes(':root[data-theme="dark"]') || r.at.some((at) => at.includes("prefers-color-scheme: dark")));
+  const light = blocks.filter((r) => !dark.includes(r));
+  assert.equal(dark.length, 2);
+  assert.equal(light.length, 2);
+  for (const [group, want] of [[dark, "#2c2721"], [light, "#f4ebe1"]] as const) {
+    for (const block of group) {
+      const v = valuesOf(block);
+      const surface = v.get("--turn-surface");
+      assert.equal(surface, want, block.selectors.join(","));
+      for (const name of ["--text", "--text-secondary", "--text-muted", "--danger"]) assert.ok(contrast(v.get(name)!, want) >= 4.5, `${name} ${contrast(v.get(name)!, want)}`);
+      for (const name of ["--warning", "--accent"]) assert.ok(contrast(v.get(name)!, want) >= 3, `${name} ${contrast(v.get(name)!, want)}`);
+    }
+  }
+  // 計算の見本（GUIDELINES §2.2 の白と黒）
+  assert.equal(Math.round(contrast("#ffffff", "#000000")), 21);
 });
 
 test("web components: animation を書いた c-*.css は reduced-motion で止め、c-sheet.css は下の余白とスマホの幅を持つ", () => {
