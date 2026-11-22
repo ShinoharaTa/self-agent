@@ -74,10 +74,17 @@ const SETTLE_LIMIT_MS = 5000;
 /** page ごとの飛んでいる要求（contextFor で 1 回だけ仕掛ける） */
 const inflight = new WeakMap<Page, Set<PageRequest>>();
 
+/**
+ * main frame の document の移動（goto・reload。hash だけの移動は要求にならない）が始まったら、それより前の要求は前の document の物で、
+ * finished も failed も来ない事が在る（読み込み中に移った /turns・/api/topics など）ので、そこで外す
+ */
 function trackRequests(page: Page): void {
   const pending = new Set<PageRequest>();
   inflight.set(page, pending);
-  page.on("request", (r) => pending.add(r));
+  page.on("request", (r) => {
+    if (r.isNavigationRequest() && r.frame() === page.mainFrame()) pending.clear();
+    pending.add(r);
+  });
   page.on("requestfinished", (r) => pending.delete(r));
   page.on("requestfailed", (r) => pending.delete(r));
 }
@@ -705,8 +712,6 @@ const TALK_DEMOS = ["talk-basic", "talk-steps", "talk-stopped", "talk-stopped-op
 const TALK_MAX: Record<Viewport, { agent: number; owner: number }> = { phone: { agent: 0.86, owner: 0.8 }, tablet: { agent: 0.78, owner: 0.72 }, pc: { agent: 0.78, owner: 0.72 } };
 /** 会話の根の字の大きさ（px。--c-font-body） */
 const TALK_FONT: Record<Viewport, number> = { phone: 16, tablet: 16, pc: 14 };
-/** 結果の文を「広い会話」（省かない・開いて 1 行）として見る .c-talk の幅の下限（px） */
-const TALK_WIDE_MIN = 640;
 
 /**
  * 見本の会話の測り方（ブラウザの中で動く。page.evaluate に渡すので外の変数を使わない）。
@@ -2327,12 +2332,17 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       }, showSel);
       if (!show) lines.push(`本番の見出し: ${showSel} の aria-controls の先が無い`);
       if (vp === "tablet") {
+        const deck = await deckOn(page);
+        const before = await topForm(page);
         await page.click(showSel);
         await page.waitForSelector('#v3[data-hand="open"]', { timeout: 5000 });
         await settled(page);
         const over = await topForm(page);
         if (over.mode !== "over") lines.push(`本番の見出し: タブレットの右腕が重ねる形でない（${String(over.mode)}）`);
-        if (!(over.width >= over.min)) lines.push(`本番の見出し: 前提が崩れた。重ねて開いた間の列 2 の幅 ${over.width} がしきい値 ${over.min} 以上でない`);
+        // 流れの列では席は 440 でいつも compact。重ねて開く前と後で compact が同じ事を見る（列 2 が広いのに compact のまま、の前提は成り立たない）
+        if (deck) {
+          if (over.compact !== before.compact) lines.push(`本番の見出し: 右腕を重ねて開く前と後で compact が違う（前 ${before.compact}・後 ${over.compact}）`);
+        } else if (!(over.width >= over.min)) lines.push(`本番の見出し: 前提が崩れた。重ねて開いた間の列 2 の幅 ${over.width} がしきい値 ${over.min} 以上でない`);
         if (!over.compact) lines.push("本番の見出し: 重ねた右腕の後ろで見出しが compact でなくなった");
         lines.push(...(await checkHandHeading(page, "右腕")), ...(await checkH1(page, "右腕")));
         await page.click(HAND_CLOSE);
@@ -2848,8 +2858,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         talkW: document.querySelector("#ed .c-talk")?.getBoundingClientRect().width ?? null,
       };
     });
-    // 結果の文の分け方は測った .c-talk の幅で: 640 以上は広い会話（省かない・開いて 1 行・足 24）、未満は狭い会話（省く・開くと 2 行以上）
-    const wideTalk = longLook.talkW !== null && longLook.talkW >= TALK_WIDE_MIN;
+    // 結果の文が入るかは席の幅（440〜720）と時刻の字の長さ（日付が付く事が在る。#467）で変わるので、スマホのほかは閉じた形と開いた形のつじつまを見る
+    logLines.push(`[v3-${p}] 段 k: 長い会話の .c-talk の幅 ${String(longLook.talkW)}`);
     if (!longLook.older) say("長い会話に「前の会話を読む」が無い");
     if (longLook.tlCont !== 0) say(`.tl に [続ける] が在る（${String(longLook.tlCont)}）`);
     if (longLook.tlKids !== 0 || longLook.tlH === null || longLook.tlH > 0.5) say(`長い会話の .tl が空でない（子 ${String(longLook.tlKids)}・高さ ${String(longLook.tlH)}）`);
@@ -2859,9 +2869,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     if (longLook.labelText === null || !longLook.labelText.startsWith("手順の上限で止まりました")) say(`最後の返事の結果の文が手順の上限でない（${String(longLook.labelText)}）`);
     else {
       if (longLook.labelH === null || longLook.labelLh === null || longLook.labelH > longLook.labelLh * 1.5) say(`結果の文が 1 行でない（高さ ${String(longLook.labelH)}）`);
-      // 狭い会話は入りきらずに末尾を省く。広い会話は全部が 1 行に入る
-      if (!wideTalk && longLook.cut !== true) say(`結果の文の末尾が省かれていない（狭い会話・.c-talk ${String(longLook.talkW)}）`);
-      if (wideTalk && longLook.cut !== false) say(`結果の文が広い会話で省かれている（.c-talk ${String(longLook.talkW)}）`);
+      // スマホは入りきらずに末尾を省く（席は下の 20 で開いた形とのつじつまを見る）
+      if (vp === "phone" && longLook.cut !== true) say("結果の文の末尾が省かれていない（スマホ）");
     }
     if (longLook.timeCut !== false) say(`最後の返事の時刻が切れている（${String(longLook.timeCut)}）`);
     await shot(page, `${p}-b-talk-long`);
@@ -2917,12 +2926,14 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         if (Math.abs(opened.rowW - closed.rowW) > 0.5) say(`20. 開くと行の幅が変わった（${closed.rowW.toFixed(1)} → ${opened.rowW.toFixed(1)}）`);
         if (opened.timeCut) say("20. 開いた行の時刻が切れている");
         if (!opened.list || !opened.actLast) say(`20. 開いた行の手順の一覧 ${String(opened.list)}・[続ける] が最後の子 ${String(opened.actLast)}`);
-        if (!wideTalk) {
-          if (!(opened.labelH > opened.lh * 1.5)) say(`20. 狭い会話で開いた結果の文が 2 行でない（高さ ${opened.labelH.toFixed(1)}）`);
-          if (!(opened.footH > 25)) say(`20. 狭い会話で開いた足の行の高さ ${opened.footH.toFixed(1)}（25 より高いはず）`);
+        // スマホ・閉じた形で省かれていた席は、開くと 2 行以上。省かれていなかった席は開いても 1 行
+        const where = vp === "phone" ? "スマホ" : "席";
+        if (vp === "phone" || closed.cut) {
+          if (!(opened.labelH > opened.lh * 1.5)) say(`20. ${where}で開いた結果の文が 2 行でない（高さ ${opened.labelH.toFixed(1)}）`);
+          if (!(opened.footH > 25)) say(`20. ${where}で開いた足の行の高さ ${opened.footH.toFixed(1)}（25 より高いはず）`);
         } else {
-          if (opened.labelH > opened.lh * 1.5) say(`20. 広い会話で開いた結果の文が 1 行でない（高さ ${opened.labelH.toFixed(1)}）`);
-          if (Math.abs(opened.footH - 24) > 0.5) say(`20. 広い会話で開いた足の行の高さ ${opened.footH.toFixed(1)}（24 のはず）`);
+          if (opened.labelH > opened.lh * 1.5) say(`20. 席で開いた結果の文が 1 行でない（閉じて省かれていなかった。高さ ${opened.labelH.toFixed(1)}）`);
+          if (Math.abs(opened.footH - 24) > 0.5) say(`20. 席で開いた足の行の高さ ${opened.footH.toFixed(1)}（閉じて省かれていなかった。24 のはず）`);
         }
       }
       lines.push(...(await liveTalkLines(page, vp, "長い会話・手順を開いた所")));
@@ -2936,12 +2947,12 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       await settled(page);
       const again = await footLook();
       if (again === null || Math.abs(again.footH - 24) > 0.5) say(`20. 閉じた後の足の行の高さ ${again === null ? "なし" : again.footH.toFixed(1)}（24 のはず）`);
-      if (!wideTalk && again !== null && !again.cut) say("20. 閉じた後に狭い会話で結果の文が省かれていない");
+      if (again !== null && again.cut !== closed.cut) say(`20. 閉じた後の省く・省かないが開く前と違う（前 ${closed.cut}・後 ${again.cut}）`);
       await edScroll(page, "bottom");
       await settled(page);
     }
-    // 広い会話の側を本物の画面で: PC は幅 1640（席 720）にして、省かない・開いて 1 行・足 24・閉じて 24 を見て、1440 に戻す
-    if (vp === "pc" && !wideTalk) {
+    // 席が広い（幅 1640・席 720）とき: 省かない・開いて 1 行・足 24・閉じて 24 を見て、1440 に戻す
+    if (vp === "pc") {
       try {
         await page.setViewportSize({ width: 1640, height: VIEWPORTS.pc.viewport.height });
         await load(page, `/#/ch/${long}`);
@@ -2956,9 +2967,9 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
             return label === null ? null : label.scrollWidth > label.clientWidth;
           })(),
         }));
-        if (w.talkW === null || w.talkW < TALK_WIDE_MIN) say(`20. 幅 1640 でも .c-talk が ${String(w.talkW)}（${TALK_WIDE_MIN} 以上のはず。広い会話の検査ができない）`);
-        else {
-          if (w.cut !== false) say(`結果の文が広い会話で省かれている（幅 1640・.c-talk ${w.talkW}）`);
+        logLines.push(`[v3-${p}] 段 k: 幅 1640 の .c-talk の幅 ${String(w.talkW)}`);
+        {
+          if (w.cut !== false) say(`結果の文が席が広い（幅 1640）ときに省かれている（.c-talk ${String(w.talkW)}）`);
           await toggleLast();
           await settled(page);
           await edScroll(page, "bottom");
@@ -2966,8 +2977,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           const wideOpen = await footLook();
           if (wideOpen === null) say("20. 幅 1640 で開いた後に結果の文が無い");
           else {
-            if (wideOpen.labelH > wideOpen.lh * 1.5) say(`20. 広い会話で開いた結果の文が 1 行でない（幅 1640・高さ ${wideOpen.labelH.toFixed(1)}）`);
-            if (Math.abs(wideOpen.footH - 24) > 0.5) say(`20. 広い会話で開いた足の行の高さ ${wideOpen.footH.toFixed(1)}（幅 1640。24 のはず）`);
+            if (wideOpen.labelH > wideOpen.lh * 1.5) say(`20. 席が広い（幅 1640）ときに開いた結果の文が 1 行でない（高さ ${wideOpen.labelH.toFixed(1)}）`);
+            if (Math.abs(wideOpen.footH - 24) > 0.5) say(`20. 席が広い（幅 1640）ときに開いた足の行の高さ ${wideOpen.footH.toFixed(1)}（24 のはず）`);
           }
           await toggleLast();
           await settled(page);
