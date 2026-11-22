@@ -1669,7 +1669,7 @@ test("web static: ≤639px のダイアログは下からのシート・トー�
   // 確認の見出しは動詞だけ（対象は target）
   for (const name of ["chat.js", "views.js"]) assert.doesNotMatch(read(name), /title: "「" \+/, name);
   assert.match(read("chat.js"), /title: "閉じますか",\n {6}target: ch\.title,/);
-  assert.match(read("views.js"), /title: "止めますか",\n {10}target: r\.text,/);
+  assert.match(read("views.js"), /title: "止めますか",\n {6}target: r\.text,/);
 });
 
 test("web static: UI-8 のレビュー: キーボードは幅ごとの最大の高さで判定・backdrop は押し始めも外・確認の説明・起動の詳しい設定", () => {
@@ -11510,6 +11510,125 @@ test("web static: 流れの列の操作: views.js の呼び出しが同期で投
   await new Promise((r) => setImmediate(r));
   assert.equal(calls, 2);
   assert.deepEqual([...flows.state().busy], []);
+});
+
+/** 流れの列の操作のリマインドの場: 繰り返し（id 7）と 1 回だけ（id 8）。確認は記録だけ（opts を返す） */
+function remindFlows() {
+  const loaded = loadViews({ v3: true });
+  const { SA } = loaded;
+  const store = SA.store as Record<string, unknown>;
+  const reloads: string[] = [];
+  store.reload = (key: string) => {
+    reloads.push(key);
+    return Promise.resolve();
+  };
+  store.reminders = [
+    { id: 7, kind: "notify", text: "毎朝の\n薬", rule: "daily@09:00", ruleText: "毎日 9:00", nextAt: "2026-01-02T00:00:00Z" },
+    { id: 8, kind: "notify", text: "1 回", rule: null, ruleText: null, nextAt: "2026-01-03T00:00:00Z" },
+  ];
+  SA.topics = { data: () => null };
+  const draws: Array<{ busy: string[]; busyOp: Record<string, string> }> = [];
+  SA.deck = {
+    draw: (st: { busy: string[]; busyOp: Record<string, string> }) => {
+      draws.push({ busy: [...st.busy], busyOp: { ...st.busyOp } });
+      return true;
+    },
+  };
+  const asks: Array<Record<string, unknown>> = [];
+  (SA.ui as { confirm: unknown }).confirm = (opts: Record<string, unknown>) => void asks.push(opts);
+  vm.runInNewContext(read("flows.js"), { window: { SA } });
+  const flows = SA.flows as { state: () => { busy: string[]; busyOp: Record<string, string>; on: { op: (item: unknown, opId: string) => void } } };
+  const tick = async () => {
+    for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+  };
+  // vm の中の配列・物は別の realm なので、比べる前に写す
+  const st = () => JSON.parse(JSON.stringify({ busy: flows.state().busy, busyOp: flows.state().busyOp })) as { busy: string[]; busyOp: Record<string, string> };
+  return { ...loaded, reloads, draws, asks, st, on: flows.state().on, tick };
+}
+
+test("web static: 流れの列の操作: リマインドの［次を飛ばす］は確認なしで POST /skip を 1 回（応答までの二度押しは送らない・busyOp は skip）→ 知らせ「次の回を飛ばしました。次は … です」。1 回だけのリマインドは送らない", async () => {
+  const { SA, posts, toasts, setReply, reloads, draws, asks, st, on, tick } = remindFlows();
+  const views = SA.views as Record<string, unknown>;
+  for (const name of ["skipReminder", "stopReminder", "stopReminderAsk"]) assert.equal(typeof views[name], "function", name);
+  let answer: (v: unknown) => void = () => undefined;
+  setReply(() => new Promise((r) => (answer = r)));
+  on.op({ key: "rem:7" }, "skip");
+  on.op({ key: "rem:7" }, "skip");
+  on.op({ key: "rem:7" }, "cancel");
+  assert.deepEqual(posts, ["/api/reminders/7/skip"]);
+  assert.equal(asks.length, 0);
+  assert.deepEqual([st().busy, st().busyOp], [["rem:7"], { "rem:7": "skip" }]);
+  assert.deepEqual(draws.at(-1), { busy: ["rem:7"], busyOp: { "rem:7": "skip" } });
+  answer({ next: "2026-01-03T00:00:00Z" });
+  await tick();
+  const when = (SA.ui as { dateTime: (at: string) => string }).dateTime("2026-01-03T00:00:00Z");
+  assert.deepEqual(toasts, ["次の回を飛ばしました。次は " + when + " です"]);
+  assert.deepEqual(reloads, ["reminders"]);
+  assert.deepEqual([st().busy, st().busyOp], [[], {}]);
+  // 応答の後はもう一度押せる（もう 1 回飛ばす。確認は足さない）。next が無ければ「-」
+  setReply(() => Promise.resolve({}));
+  on.op({ key: "rem:7" }, "skip");
+  await tick();
+  assert.deepEqual(posts, ["/api/reminders/7/skip", "/api/reminders/7/skip"]);
+  assert.equal(toasts.at(-1), "次の回を飛ばしました。次は - です");
+  // 1 回だけのリマインド・引けないリマインドの skip は送らない
+  on.op({ key: "rem:8" }, "skip");
+  on.op({ key: "rem:99" }, "skip");
+  on.op({ key: "rem:99" }, "cancel");
+  await tick();
+  assert.equal(posts.length, 2);
+  assert.equal(asks.length, 0);
+  assert.deepEqual(st().busy, []);
+});
+
+test("web static: 流れの列の操作: リマインドの［止める］は確認（古い表と同じ字）が開くまで POST も busy も無く、閉じただけなら送らない。OK の後に POST /cancel 1 回と知らせ。失敗で busy が外れる", async () => {
+  const { posts, toasts, setReply, reloads, draws, asks, st, on, tick } = remindFlows();
+  const drawn = draws.length;
+  on.op({ key: "rem:7" }, "cancel");
+  assert.equal(asks.length, 1);
+  const ask = asks[0]!;
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(ask).filter(([k]) => k !== "run")),
+    { title: "止めますか", target: "毎朝の\n薬", body: "止めたリマインドは戻せません。", ok: "止める", danger: true },
+  );
+  assert.equal(typeof ask.run, "function");
+  // 確認の間（閉じただけでも）: 送らず busy も無く、描き直さない
+  await tick();
+  assert.deepEqual([posts, st().busy, draws.length], [[], [], drawn]);
+  // OK: busy は cancel・POST は 1 回
+  let answer: (v: unknown) => void = () => undefined;
+  setReply(() => new Promise((r) => (answer = r)));
+  (ask.run as () => void)();
+  (ask.run as () => void)();
+  on.op({ key: "rem:7" }, "skip");
+  assert.deepEqual(posts, ["/api/reminders/7/cancel"]);
+  assert.deepEqual([st().busy, st().busyOp], [["rem:7"], { "rem:7": "cancel" }]);
+  answer({});
+  await tick();
+  assert.deepEqual(toasts, ["「毎朝の 薬」を止めました"]);
+  assert.deepEqual(reloads, ["reminders"]);
+  assert.deepEqual(st().busy, []);
+  // 1 回だけのリマインドも止められる。失敗したら busy が外れ、もう一度押せる
+  posts.length = 0;
+  setReply(() => Promise.reject({ status: 500 }));
+  on.op({ key: "rem:8" }, "cancel");
+  (asks.at(-1)!.run as () => void)();
+  await tick();
+  assert.deepEqual(posts, ["/api/reminders/8/cancel"]);
+  assert.equal(toasts.at(-1), "操作に失敗しました。もう一度試してください");
+  assert.deepEqual(st().busy, []);
+  on.op({ key: "rem:8" }, "cancel");
+  assert.equal(asks.length, 3);
+});
+
+test("web static: 古い表のリマインド（renderReminders）は流れの列と同じ skipReminder・stopReminder・stopReminderAsk を呼ぶ（文言の元は 1 つ）", () => {
+  const views = read("views.js");
+  const start = views.indexOf("function renderReminders(");
+  const body = views.slice(start, views.indexOf("\n  }\n", start));
+  assert.match(body, /skipReminder\(skip, r\)/);
+  assert.match(body, /confirm\(Object\.assign\(stopReminderAsk\(r\), \{ run: \(\) => stopReminder\(stop, r\) \}\)\)/);
+  assert.doesNotMatch(body, /\/api\/reminders\/|止めますか|次の回を飛ばしました/);
+  for (const text of ["止めますか", "止めたリマインドは戻せません。", "次の回を飛ばしました。次は ", "」を止めました"]) assert.equal(views.split(text).length - 1, 1, text);
 });
 
 /** api.js と flows.js を同じ偽の window で読む（SA.api.get は get。topics・views・ui は作り物） */

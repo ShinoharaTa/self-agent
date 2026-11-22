@@ -449,6 +449,31 @@
     return String(text).replace(/\s*[\r\n]+\s*/g, " ");
   }
 
+  /** リマインドの次の回を飛ばす（確認なし。古い表と流れの列の両方） */
+  function skipReminder(button, r) {
+    return act(button, "/api/reminders/" + r.id + "/skip", "reminders", (data) => {
+      toast("次の回を飛ばしました。次は " + (data && data.next ? dateTime(data.next) : "-") + " です");
+    });
+  }
+
+  /** リマインドを止める（確認は含まない。先に stopReminderAsk の確認を出す） */
+  function stopReminder(button, r) {
+    return act(button, "/api/reminders/" + r.id + "/cancel", "reminders", () => {
+      toast("「" + oneLine(r.text) + "」を止めました");
+    });
+  }
+
+  /** リマインドを止める前の確認の opts（run は呼ぶ側が足す） */
+  function stopReminderAsk(r) {
+    return {
+      title: "止めますか",
+      target: r.text,
+      body: "止めたリマインドは戻せません。",
+      ok: "止める",
+      danger: true,
+    };
+  }
+
   function renderReminders(container) {
     const list = store.reminders;
     if (!list) {
@@ -460,27 +485,11 @@
       const actions = el("div", { class: "td-apart" });
       if (r.rule !== null) {
         const skip = el("button", { class: "btn btn-ghost btn-sm", type: "button", text: "次を飛ばす" });
-        skip.addEventListener("click", () =>
-          act(skip, "/api/reminders/" + r.id + "/skip", "reminders", (data) => {
-            toast("次の回を飛ばしました。次は " + (data && data.next ? dateTime(data.next) : "-") + " です");
-          }),
-        );
+        skip.addEventListener("click", () => skipReminder(skip, r));
         actions.append(skip);
       }
       const stop = el("button", { class: "btn btn-ghost btn-sm", type: "button", text: "止める" });
-      stop.addEventListener("click", () =>
-        confirm({
-          title: "止めますか",
-          target: r.text,
-          body: "止めたリマインドは戻せません。",
-          ok: "止める",
-          danger: true,
-          run: () =>
-            act(stop, "/api/reminders/" + r.id + "/cancel", "reminders", () => {
-              toast("「" + oneLine(r.text) + "」を止めました");
-            }),
-        }),
-      );
+      stop.addEventListener("click", () => confirm(Object.assign(stopReminderAsk(r), { run: () => stopReminder(stop, r) })));
       actions.append(stop);
       return el("tr", {}, [
         td(r.nextAt ? dateTime(r.nextAt) : "-", "td-nowrap td-next"),
@@ -2112,6 +2121,9 @@
     // 流れの列の操作（flows.js。button は null）
     completeTask,
     githubHandoff,
+    skipReminder,
+    stopReminder,
+    stopReminderAsk,
     ccName,
     ago,
     secondsAgo,

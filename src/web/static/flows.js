@@ -18,8 +18,8 @@
   let started = false;
   /** 最後に押した項目の key（shell.js の open が 1 回だけ読む。閉じた後の焦点の戻り先） */
   let pressedKey = null;
-  /** 操作を押してから応答までの項目の key（同じ項目を二度送らない。描き直しで押せなくする） */
-  const busy = new Set();
+  /** 操作を押してから応答までの項目の key → 押した操作の id（同じ項目を二度送らない。描き直しで押せなくし、回る印は押した方だけ） */
+  const busy = new Map();
 
   /** 部品が押されたとき（1 回だけ作る） */
   const FLOW_ON = {
@@ -28,38 +28,54 @@
       pressedKey = typeof key === "string" ? key : null;
       SA.app.open(item.target);
     },
-    // 完了 → views.js の completeTask（知らせと［取り消す］・一覧の読み直しは views.js のまま）、対応 → githubHandoff
+    // 完了 → views.js の completeTask（知らせと［取り消す］・一覧の読み直しは views.js のまま）、対応 → githubHandoff、
+    // 次を飛ばす → skipReminder、止める → 確認（stopReminderAsk）の後に stopReminder。busy は確認の後から
     op: (item, opId) => {
       if (!item || typeof item.key !== "string" || busy.has(item.key)) return;
-      const run = opRun(item.key, opId);
-      if (!run) return;
-      busy.add(item.key);
-      render();
-      const done = () => {
-        busy.delete(item.key);
+      const key = item.key;
+      const plan = opRun(key, opId);
+      if (!plan) return;
+      const start = () => {
+        if (busy.has(key)) return;
+        busy.set(key, opId);
         render();
+        const done = () => {
+          busy.delete(key);
+          render();
+        };
+        // 同期で投げても busy を残さない
+        let answer;
+        try {
+          answer = plan.run();
+        } catch (error) {
+          answer = Promise.reject(error);
+        }
+        Promise.resolve(answer).then(done, done);
       };
-      // 同期で投げても busy を残さない
-      let answer;
-      try {
-        answer = run();
-      } catch (error) {
-        answer = Promise.reject(error);
-      }
-      Promise.resolve(answer).then(done, done);
+      if (plan.ask) SA.ui.confirm(Object.assign({}, plan.ask, { run: start }));
+      else start();
     },
   };
 
-  /** 項目の key と操作から、元の物に対する呼び出しを返す（引けなければ null） */
+  /** 繰り返しのリマインドか（c-deck.js の項目と同じ条件） */
+  const repeats = (r) => typeof r.rule === "string" && r.rule !== "";
+
+  /** 項目の key と操作から、元の物に対する { run, ask }（ask は先に出す確認の opts か null）を返す（引けなければ null） */
   function opRun(key, opId) {
     if (opId === "complete") {
       const task = (store.openTasks || []).find((t) => "task:" + t.id === key);
-      return task ? () => SA.views.completeTask(null, task) : null;
+      return task ? { run: () => SA.views.completeTask(null, task), ask: null } : null;
     }
     if (opId === "act") {
       const list = store.github && Array.isArray(store.github.notifications) ? store.github.notifications : [];
       const n = list.find((x) => "gh:" + x.id === key);
-      return n && n.handoff ? () => SA.views.githubHandoff(null, n, "act") : null;
+      return n && n.handoff ? { run: () => SA.views.githubHandoff(null, n, "act"), ask: null } : null;
+    }
+    if (opId === "skip" || opId === "cancel") {
+      const r = (store.reminders || []).find((x) => "rem:" + x.id === key);
+      if (!r) return null;
+      if (opId === "skip") return repeats(r) ? { run: () => SA.views.skipReminder(null, r), ask: null } : null;
+      return { run: () => SA.views.stopReminder(null, r), ask: SA.views.stopReminderAsk(r) };
     }
     return null;
   }
@@ -85,7 +101,8 @@
       oneLine: SA.views.oneLine,
       parts: SA.views.githubParts,
       ops: true,
-      busy: [...busy],
+      busy: [...busy.keys()],
+      busyOp: Object.fromEntries(busy),
       on: FLOW_ON,
     };
   }
