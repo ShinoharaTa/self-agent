@@ -4485,6 +4485,8 @@ test("web components: BottomBar の deck（role・名前・data-variant、列の
       ["button", "button", "page", "feed", undefined, undefined, "通知"],
     ],
   );
+  // 直下は見える地の .c-bottom-page-in 1 つ（label と Badge はその中）
+  for (const b of pages) assert.deepEqual(b.children.map((c) => (typeof c === "string" ? c : c.props.class)), ["c-bottom-page-in"]);
   assert.deepEqual(pages.map((b) => textOf(find(b, "c-bottom-page-label"))), ["あなたの番", "タスク", "通知"]);
   assert.deepEqual(pages.map((b) => find(b, "c-badge").map(textOf)), [["99+"], [], []]);
   assert.equal(find(bar, "c-bottom-btn").length + find(bar, "c-btn").length, 0);
@@ -4519,11 +4521,20 @@ test("web components: c-shell.css の列のボタン（.c-bottom-page）は当�
   const body = (sel: string): string => rules.filter((r) => r.at.length === 0 && r.selectors.includes(sel)).map((r) => r.body).join(" ");
   const page = body(".c-bottom-page");
   for (const decl of ["min-width: var(--c-tap)", "min-height: var(--c-tap)", "flex: 1 1 auto", "color: var(--text-secondary)"]) assert.ok(page.includes(decl), decl);
+  // 当たりの箱（ボタン）は角丸なし・地なし。見える地と角丸は中の .c-bottom-page-in
+  assert.doesNotMatch(page, /border-radius|background: var/);
+  const inner = body(".c-bottom-page-in");
+  for (const decl of ["min-height: var(--c-tap)", "border-radius: var(--radius-md)", "padding: 0 var(--space-2)", "box-sizing: border-box"]) assert.ok(inner.includes(decl), decl);
   const current = body('.c-bottom-page[aria-current="true"]');
-  for (const decl of ["color: var(--text)", "font-weight: var(--weight-semibold)", "background: var(--muted)"]) assert.ok(current.includes(decl), decl);
+  for (const decl of ["color: var(--text)", "font-weight: var(--weight-semibold)"]) assert.ok(current.includes(decl), decl);
+  assert.ok(body('.c-bottom-page[aria-current="true"] .c-bottom-page-in').includes("background: var(--muted)"));
   assert.ok(body('.c-bottom[data-variant="deck"] .c-bottom-hand').includes("flex: 0 0 auto"));
-  // :hover は細かい指の media の中だけ（cssProblems が見る）、線・影は足さない
-  assert.doesNotMatch(page + current, /border:(?! 0)|box-shadow|transition/);
+  // deck のバーの間だけ狭く、ほかの variant の間は今のまま
+  assert.ok(body('.c-bottom[data-variant="deck"]').includes("gap: var(--space-1)"));
+  assert.ok(body(".c-bottom").includes("gap: var(--space-2)"));
+  // :hover は細かい指の media の中だけ（cssProblems が見る）、線・影・::after は足さない
+  assert.doesNotMatch(page + inner + current, /border:(?! 0)|box-shadow|transition|position/);
+  assert.ok(!rules.some((r) => r.selectors.some((sel) => sel.includes("c-bottom-page") && sel.includes("::after"))));
 });
 
 test("web components: 入口の下のバーの 3 つの口（drawBar・page・focusBar）は #c-foot-root が在るときだけ SA.deck に足し、横送りの読み取りは scroll を capture・passive で 1 つ", () => {

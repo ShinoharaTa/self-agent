@@ -457,14 +457,19 @@ const WIDE_TABS = [
   { id: "reminders", title: "リマインド" },
 ];
 
+/** スマホの幅（外側 390）の入れ物。見本の列より広ければ包みの中で横に送る */
+function PhonePane({ demo, children }) {
+  return html`<div class="c-gallery-slide" data-demo=${demo}><div class="c-gallery-pane c-gallery-phone">${children}</div></div>`;
+}
+
 function Bottoms() {
   return html`<${Section} name="bottom" title="下のバー">
     <${Pane} demo="bottom-phone"><${BottomBar} variant="phone" turns=${2} hand="turn" on=${BOTTOM_ON} /><//>
     <${Pane} demo="bottom-phone-quiet"><${BottomBar} variant="phone" turns=${0} hand=${null} on=${BOTTOM_ON} /><//>
     <${Pane} demo="bottom-phone-unread"><${BottomBar} variant="phone" turns=${120} hand="unread" on=${BOTTOM_ON} /><//>
     <${Pane} demo="bottom-wide"><${BottomBar} variant="wide" tabs=${WIDE_TABS} on=${BOTTOM_ON} /><//>
-    <${Pane} demo="bottom-deck"><${BottomBar} variant="deck" pages=${deckPages(2)} page="turn" hand="turn" on=${BOTTOM_ON} /><//>
-    <${Pane} demo="bottom-deck-quiet"><${BottomBar} variant="deck" pages=${deckPages(0)} page="feed" hand=${null} on=${BOTTOM_ON} /><//>
+    <${PhonePane} demo="bottom-deck"><${BottomBar} variant="deck" pages=${deckPages(12)} page="turn" hand="turn" on=${BOTTOM_ON} /><//>
+    <${PhonePane} demo="bottom-deck-quiet"><${BottomBar} variant="deck" pages=${deckPages(0)} page="feed" hand=${null} on=${BOTTOM_ON} /><//>
   <//>`;
 }
 

@@ -78,8 +78,10 @@ export function BottomBar({ variant, turns, hand, tabs, pages, page, controls, o
       if (item.act === "page") {
         return html`<button class="c-bottom-page" key=${item.id} type="button" data-act="page" data-page=${item.id} aria-current=${item.current ? "true" : undefined}
             aria-label=${item.name} onClick=${() => on.page(item.id)}>
-          <span class="c-bottom-page-label">${item.label}</span>
-          ${item.count > 0 ? html`<${Badge} count=${item.count} tone="warning" />` : null}
+          <span class="c-bottom-page-in">
+            <span class="c-bottom-page-label">${item.label}</span>
+            ${item.count > 0 ? html`<${Badge} count=${item.count} tone="warning" />` : null}
+          </span>
         </button>`;
       }
       if (item.act === "list") {
