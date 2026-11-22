@@ -106,18 +106,22 @@
   background: var(--primary-text);
 }
 
-/* スマホの流れの列（deck。D2）: 列のボタンは残りを分け合い、右腕は中身の幅。今の列は字の太さと地と aria-current（色だけにしない。差し色は D3） */
+/*
+ * スマホの流れの列（deck。D2）: 列のボタンは残りを分け合い、右腕は中身の幅。当たりはボタンの四角い箱（角丸なし・地なし）、
+ * 見える地は中の .c-bottom-page-in（角丸）。今の列は字の太さと地と aria-current（色だけにしない。差し色は D3）
+ */
+.c-bottom[data-variant="deck"] {
+  gap: var(--space-1);
+}
+
 .c-bottom-page {
   display: inline-flex;
   flex: 1 1 auto;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
+  align-items: stretch;
   min-width: var(--c-tap);
   min-height: var(--c-tap);
-  padding: 0 var(--space-2);
+  padding: 0;
   border: 0;
-  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text-secondary);
   font: inherit;
@@ -125,10 +129,26 @@
   cursor: pointer;
 }
 
+.c-bottom-page-in {
+  display: inline-flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: var(--c-tap);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-md);
+}
+
 .c-bottom-page[aria-current="true"] {
-  background: var(--muted);
   color: var(--text);
   font-weight: var(--weight-semibold);
+}
+
+.c-bottom-page[aria-current="true"] .c-bottom-page-in {
+  background: var(--muted);
 }
 
 .c-bottom-page-label {
@@ -143,14 +163,14 @@
 
 /* 押した・乗った（K2 の .c-btn と同じ宣言。動きは付けない） */
 .c-bottom-btn:active,
-.c-bottom-page:active,
+.c-bottom-page:active .c-bottom-page-in,
 .c-bottom-hand:active {
   transform: scale(0.97);
 }
 
 @media (hover: hover) and (pointer: fine) {
   .c-bottom-btn:hover,
-  .c-bottom-page:hover {
+  .c-bottom-page:hover .c-bottom-page-in {
     background: var(--muted);
   }
 

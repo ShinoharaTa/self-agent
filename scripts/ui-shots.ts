@@ -4809,7 +4809,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
   }
 
   /**
-   * スマホの流れの列の見本（D2）: 下のバーの deck の 2 つ（列 3 つと右腕・今の列は 1 つ・数の Badge は番の列だけ・字が省かれない・id なし）、
+   * スマホの流れの列の見本（D2）: 下のバーの deck の 2 つ（外側 390 の枠・列 3 つと右腕・今の列は 1 つ・数の Badge は番の列だけ・4 つの字が省かれない・id なし）、
    * 帯の phone（点・探す・始める・ほかで右腕なし・「self-agent」が省かれない）、deck-paged（列 3 つが枠の幅で、1 列ずつ止まる横送り）と当たり（PC でも 44）。
    * 足りない物は 1 行ずつ console.log に書き、1 つでもあれば投げて段を失敗にする
    */
@@ -4818,7 +4818,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       const out: string[] = [];
       const cut = (el: Element | null): boolean => el !== null && el.scrollWidth > el.clientWidth + 1;
       const bars: ReadonlyArray<[string, string, string]> = [
-        ["bottom-deck", "turn", "2"],
+        ["bottom-deck", "turn", "12"],
         ["bottom-deck-quiet", "feed", ""],
       ];
       for (const [demo, current, badge] of bars) {
@@ -4827,6 +4827,9 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           out.push(`${demo}: 下のバーが無い`);
           continue;
         }
+        // 外側 390 の枠（スマホの幅）の中で、4 つの字がどれも省かれない
+        const frame = bar.closest(".c-gallery-phone")?.getBoundingClientRect().width ?? 0;
+        if (Math.abs(frame - 390) > 0.5) out.push(`${demo}: 枠の幅 ${frame.toFixed(1)}（390 のはず）`);
         if (bar.getAttribute("data-variant") !== "deck") out.push(`${demo}: data-variant が ${bar.getAttribute("data-variant")}（deck のはず）`);
         const texts = [...bar.querySelectorAll(":scope > button")].map((b) => (b.querySelector(".c-bottom-page-label, .c-bottom-hand-label")?.textContent ?? "").trim());
         if (texts.join(",") !== "あなたの番,タスク,通知,右腕") out.push(`${demo}: ボタンの字 ${texts.join(",")}（あなたの番,タスク,通知,右腕 のはず）`);
