@@ -176,7 +176,9 @@ export function createLead(deps: LeadDeps): Lead {
     }
     const text = leadText(events, counts);
     const ownerUserId = deps.ownerUserId;
-    const ring = ownerUserId !== undefined && events.some((event) => ringsFor(event, deps.settings().ring));
+    // 鳴らし方は出す時点の設定を 1 回だけ読む
+    const ringSetting = deps.settings().ring;
+    const ring = ownerUserId !== undefined && events.some((event) => ringsFor(event, ringSetting));
     try {
       await deps.post(inbox, { text, ...(ring ? { mentionUserId: ownerUserId } : {}) });
     } catch (error) {

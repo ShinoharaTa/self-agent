@@ -5,6 +5,7 @@ import {
   inScope,
   isLeadText,
   LEAD_LONG_MS,
+  LEAD_MAX_LINES,
   LEAD_WINDOW_MS,
   type LeadCounts,
   type LeadDeps,
@@ -33,10 +34,12 @@ function event(channelId: string, over: Partial<TurnEndEvent> = {}): TurnEndEven
 /** after だけを手で進める偽のタイマー */
 function fakeTimers() {
   let seq = 0;
+  let calls = 0;
   const pending = new Map<number, { fn: () => void; ms: number }>();
   const timers: ProgressTimers = {
     after(fn, ms) {
       const id = ++seq;
+      calls++;
       pending.set(id, { fn, ms });
       return () => pending.delete(id);
     },
@@ -47,6 +50,8 @@ function fakeTimers() {
   return {
     timers,
     pending,
+    /** after が呼ばれた回数（張り直しを見分ける） */
+    calls: () => calls,
     /** 溜まったタイマーを全部呼ぶ */
     fire() {
       const all = [...pending.values()];
@@ -114,6 +119,8 @@ test("lead: 別々の 3 つの話題の事象は 60 秒後に #inbox へ 1 通�
   lead.onTurnEnd(event("222", { durationMs: 30_000 }));
   lead.onTurnEnd(event("333", { durationMs: 12 * 60_000 }));
   assert.equal(clock.pending.size, 1);
+  // 窓は最初の事象から数える（後の事象で張り直さない）
+  assert.equal(clock.calls(), 1);
   assert.equal([...clock.pending.values()][0]!.ms, LEAD_WINDOW_MS);
   assert.equal(posts.length, 0);
   clock.fire();
@@ -387,4 +394,65 @@ test("leadCounts: origin cc の行を数えない・queued は true だけ・you
     ],
   });
   assert.deepEqual(counts, { running: 2, queued: 1, yourTurn: 4 });
+});
+
+test("lead: 窓・長いターン・行の上限の値（文書の「60 秒」「2 分以上」「10 行」と同じ）", () => {
+  assert.equal(LEAD_WINDOW_MS, 60_000);
+  assert.equal(LEAD_LONG_MS, 120_000);
+  assert.equal(LEAD_MAX_LINES, 10);
+});
+
+test("lead: idle は投稿の途中を待つ。途中で stop しても、その 1 通と history の 1 行は出る", async (t) => {
+  let release: (id: string) => void = () => {};
+  const posted = new Promise<string>((resolve) => {
+    release = resolve;
+  });
+  let started = 0;
+  const { lead, clock, logs, rows } = setup(t, {
+    post: () => {
+      started++;
+      return posted;
+    },
+  });
+  lead.onTurnEnd(event("111"));
+  clock.fire();
+  assert.equal(started, 1);
+  let idled = false;
+  const idle = lead.idle().then(() => {
+    idled = true;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(idled, false);
+  lead.stop();
+  assert.equal(rows().length, 0);
+  release("m1");
+  await idle;
+  assert.equal(idled, true);
+  assert.equal(rows().length, 1);
+  assert.equal(rows()[0]!.kind, "notice");
+  // 途中の 1 通は捨てた数に入らない
+  assert.deepEqual(logs, []);
+});
+
+test("lead: 宛先を引く所が投げても reject せず、log 1 行だけ（ID を出さない）。次の窓は動く", async (t) => {
+  let fail = true;
+  const { lead, clock, posts, logs, rows } = setup(t, {
+    inboxOf: () => {
+      if (fail) throw new Error("引けません");
+      return INBOX;
+    },
+  });
+  lead.onTurnEnd(event("111"));
+  clock.fire();
+  await lead.idle();
+  assert.equal(posts.length, 0);
+  assert.equal(rows().length, 0);
+  assert.deepEqual(logs, ["まとめに失敗しました: 引けません"]);
+  assert.ok(!logs.some((line) => line.includes("111") || line.includes(INBOX)));
+  fail = false;
+  lead.onTurnEnd(event("222"));
+  clock.fire();
+  await lead.idle();
+  assert.equal(posts.length, 1);
+  assert.equal(rows().length, 1);
 });
