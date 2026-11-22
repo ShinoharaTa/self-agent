@@ -57,7 +57,9 @@
  * --text-secondary（二次の文字）は app.css だけの変数。data-theme が無いときも base.css の既定に落ちないよう、同じ値を 4 か所に書く。
  * --bubble-*（会話の吹き出し。#263）は app.css と c-talk.css が使う変数: owner はオーナーの地（ダーク 20%・ライト 15% の --accent を --bg に混ぜた色）、
  * agent は Bot の地（ライトは --bg より一段暗い #e4e8ef、ダークは --surface が --bg と見分けにくいので --muted）、
- * inset は Bot の吹き出しの中のコードの地（ライトは白、ダークは --surface）
+ * inset は Bot の吹き出しの中のコードの地（ライトは白、ダークは --surface）。
+ * --turn-surface（流れの列のあなたの番の項目の地。docs/plan/web-ui-deck.md §4.5）は --warning を 12% だけ --surface に混ぜた実色（半透明にしない）。
+ * この面の上で --warning は線だけに使い、字にしない（字の比は test/web-components.test.ts が計算して見る）
  */
 :root[data-theme="dark"] {
   color-scheme: dark;
@@ -79,6 +81,7 @@
   --bubble-owner: #1e2943;
   --bubble-agent: #1a1e28;
   --bubble-inset: #11141c;
+  --turn-surface: #2c2721;
 }
 
 :root[data-theme="light"] {
@@ -101,6 +104,7 @@
   --bubble-owner: #d7e0f5;
   --bubble-agent: #e4e8ef;
   --bubble-inset: #ffffff;
+  --turn-surface: #f4ebe1;
 }
 
 :root:not([data-theme]) {
@@ -123,6 +127,7 @@
   --bubble-owner: #d7e0f5;
   --bubble-agent: #e4e8ef;
   --bubble-inset: #ffffff;
+  --turn-surface: #f4ebe1;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -146,6 +151,7 @@
     --bubble-owner: #1e2943;
     --bubble-agent: #1a1e28;
     --bubble-inset: #11141c;
+    --turn-surface: #2c2721;
   }
 }
 
@@ -183,6 +189,9 @@
   --c-bubble-pad-x: 14px;
   --c-card-max: 520px;
   --c-check: 24px;
+  --c-deck-band-h: 48px;
+  --c-deck-col-max: 420px;
+  --c-deck-line: 3px;
 }
 
 @media (min-width: 640px) and (hover: hover) and (pointer: fine) {
