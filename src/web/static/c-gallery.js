@@ -449,7 +449,9 @@ function Tops() {
   <//>`;
 }
 
-const BOTTOM_ON = { list: noop, hand: noop, tab: noop, more: noop };
+const BOTTOM_ON = { list: noop, hand: noop, tab: noop, more: noop, page: noop };
+/** スマホの流れの列の下のバーの列（名前は列のモデルの物。数は あなたの番 だけ） */
+const deckPages = (turns) => deckModel({ cols: 1 }).columns.map((c) => ({ id: c.id, label: c.name, count: c.id === "turn" ? turns : null }));
 const WIDE_TABS = [
   { id: "tasks", title: "タスク" },
   { id: "reminders", title: "リマインド" },
@@ -461,6 +463,8 @@ function Bottoms() {
     <${Pane} demo="bottom-phone-quiet"><${BottomBar} variant="phone" turns=${0} hand=${null} on=${BOTTOM_ON} /><//>
     <${Pane} demo="bottom-phone-unread"><${BottomBar} variant="phone" turns=${120} hand="unread" on=${BOTTOM_ON} /><//>
     <${Pane} demo="bottom-wide"><${BottomBar} variant="wide" tabs=${WIDE_TABS} on=${BOTTOM_ON} /><//>
+    <${Pane} demo="bottom-deck"><${BottomBar} variant="deck" pages=${deckPages(2)} page="turn" hand="turn" on=${BOTTOM_ON} /><//>
+    <${Pane} demo="bottom-deck-quiet"><${BottomBar} variant="deck" pages=${deckPages(0)} page="feed" hand=${null} on=${BOTTOM_ON} /><//>
   <//>`;
 }
 
@@ -842,12 +846,17 @@ const DECK_GITHUB_OPS = [
 const DECK_ON = { open: noop, op: noop };
 const BAND_ON = { status: noop, find: noop, hand: noop, start: noop, more: noop };
 
-/** 帯と 3 つの列の見本（列は見本の幅で 3 等分）。押しても何も起きない */
+/** 帯と 3 つの列の見本（列は見本の幅で 3 等分。band-phone・deck-paged はスマホの幅の枠で、列は 1 列ずつ横に送る）。押しても何も起きない */
 function Decks() {
   return html`<${Section} name="deck" title="流れの列と上の帯">
     <div class="c-gallery-slide" data-demo="band">
       <div class="c-gallery-deck c-gallery-band">
         <${DeckBand} conn=${{ tone: "ok", label: "見本の Bot: 接続中" }} hand=${{ mark: "turn", open: false }} controls="v3-hand" on=${BAND_ON} />
+      </div>
+    </div>
+    <div class="c-gallery-slide" data-demo="band-phone">
+      <div class="c-gallery-deck c-gallery-phone">
+        <${DeckBand} variant="phone" conn=${{ tone: "ok", label: "見本の Bot: 接続中" }} hand=${{ mark: "turn", open: false }} controls="v3-hand" on=${BAND_ON} />
       </div>
     </div>
     <div class="c-gallery-deck" data-demo="deck-3"><${Deck} model=${deckModel(deckState())} on=${DECK_ON} /></div>
@@ -861,6 +870,9 @@ function Decks() {
     </div>
     <div class="c-gallery-deck" data-demo="deck-loading">
       <${Deck} model=${deckModel(deckState({ topics: null, tasks: null, reminders: null, github: null, notices: null }))} on=${DECK_ON} />
+    </div>
+    <div class="c-gallery-slide" data-demo="deck-paged">
+      <div class="c-gallery-deck c-gallery-phone"><${Deck} model=${deckModel(deckState({ cols: 1, paged: true }))} on=${DECK_ON} /></div>
     </div>
   <//>`;
 }
