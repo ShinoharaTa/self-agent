@@ -2940,6 +2940,7 @@ type TopState = {
   menu: boolean;
   mode?: { value: string; disabled: boolean; reason: string | null } | null;
   close?: boolean;
+  backLabel?: string;
   controls: string;
   on: TopOn;
 };
