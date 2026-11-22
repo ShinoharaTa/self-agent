@@ -20,11 +20,37 @@ export function listLabel(turns) {
   return text === "" ? "一覧" : "一覧（あなたの番 " + text + " 件）";
 }
 
-/** 下のバーの項目。phone は 一覧・右腕・ほか、wide は tabs の順に文字のボタンと最後に「ほか」 */
-export function bottomModel({ variant, turns, hand, tabs }) {
-  const v = variant === "wide" ? "wide" : "phone";
+/** 列のボタンの名前（数が 1 以上なら「<label>（n 件）」。件数は K2 の Badge と同じく 99 まで） */
+function pageName(label, count) {
+  const text = badgeText(count);
+  return text === "" ? label : label + "（" + text + " 件）";
+}
+
+/**
+ * 下のバーの項目。phone は 一覧・右腕・ほか、wide は tabs の順に文字のボタンと最後に「ほか」。
+ * deck（スマホの流れの列。D2）は pages（[{ id, label, count }]。列の名前は入口が渡す）の順に列のボタンと最後に右腕。今の列は page（合う物が無ければ先頭）
+ */
+export function bottomModel({ variant, turns, hand, tabs, pages, page }) {
+  const v = variant === "wide" ? "wide" : variant === "deck" ? "deck" : "phone";
   const n = typeof turns === "number" && !Number.isNaN(turns) ? turns : 0;
   const more = { act: "more", label: "ほか" };
+  if (v === "deck") {
+    // null・id の無い物は捨てる
+    const list = Array.isArray(pages) ? pages.filter((p) => p !== null && typeof p === "object" && filled(p.id)) : [];
+    const current = list.some((p) => p.id === page) ? page : list.length > 0 ? list[0].id : null;
+    const mark = hand === "turn" || hand === "unread" ? hand : null;
+    return {
+      variant: v,
+      items: [
+        ...list.map((p) => {
+          const label = typeof p.label === "string" ? p.label : "";
+          const count = typeof p.count === "number" && Number.isFinite(p.count) && p.count > 0 ? p.count : 0;
+          return { act: "page", id: p.id, label, name: pageName(label, count), count, current: p.id === current };
+        }),
+        { act: "hand", label: "右腕", name: handLabel(mark), mark },
+      ],
+    };
+  }
   if (v === "wide") {
     // null・id の無い物は捨てる
     const list = Array.isArray(tabs) ? tabs.filter((tab) => tab !== null && typeof tab === "object" && tab.id !== undefined && tab.id !== null && tab.id !== "") : [];
@@ -41,11 +67,21 @@ export function bottomModel({ variant, turns, hand, tabs }) {
   };
 }
 
-/** 下のバー（一覧の列の中。スクロールの入れ物の下の兄弟に置く）。controls は右腕のボタンの aria-controls。on: { list(), hand(opener), tab(id), more(opener) } */
-export function BottomBar({ variant, turns, hand, tabs, controls, on }) {
-  const model = bottomModel({ variant, turns, hand, tabs });
+/**
+ * 下のバー（一覧の列の中。スクロールの入れ物の下の兄弟に置く。deck は流れの列の下）。controls は右腕のボタンの aria-controls。
+ * on: { list(), hand(opener), tab(id), more(opener), page(id) }（page は deck の列のボタン。今の列でも呼ぶ）
+ */
+export function BottomBar({ variant, turns, hand, tabs, pages, page, controls, on }) {
+  const model = bottomModel({ variant, turns, hand, tabs, pages, page });
   return html`<div class="c-bottom" role="group" aria-label="移動" data-variant=${model.variant}>
     ${model.items.map((item) => {
+      if (item.act === "page") {
+        return html`<button class="c-bottom-page" key=${item.id} type="button" data-act="page" data-page=${item.id} aria-current=${item.current ? "true" : undefined}
+            aria-label=${item.name} onClick=${() => on.page(item.id)}>
+          <span class="c-bottom-page-label">${item.label}</span>
+          ${item.count > 0 ? html`<${Badge} count=${item.count} tone="warning" />` : null}
+        </button>`;
+      }
       if (item.act === "list") {
         return html`<button class="c-bottom-btn" key="list" type="button" data-act="list" aria-current="page" aria-label=${item.name} onClick=${() => on.list()}>
           <span class="c-bottom-btn-label">${item.label}</span>
@@ -132,15 +168,18 @@ export function topModel({ variant, view, title, status, note, place, views, han
   };
 }
 
-/** 会話の見出し（列 2 の上）。on: { back(), place(opener), mode(opener), view(value), menu(opener), hand(opener), close() }。直下の子は決まった key（増減しても残る子を作り直さない） */
-export function TopBar({ variant, view, title, status, note, place, views, hand, menu, compact, mode, close, controls, on }) {
+/**
+ * 会話の見出し（列 2 の上）。on: { back(), place(opener), mode(opener), view(value), menu(opener), hand(opener), close() }。直下の子は決まった key（増減しても残る子を作り直さない）。
+ * backLabel は［‹］の名前（空でない文字列のときだけ。既定は「一覧へ」）
+ */
+export function TopBar({ variant, view, title, status, note, place, views, hand, menu, compact, mode, close, backLabel, controls, on }) {
   const m = topModel({ variant, view, title, status, note, place, views, hand, menu, compact, mode, close });
   if (m === null) return null;
   const wide = m.variant === "wide";
   const statusEl = m.status ? html`<span class="c-top-status" key="status" data-tone=${m.status.tone}>${m.status.text}</span>` : null;
   const restEl = m.rest !== "" ? html`<span class="c-top-rest" key="rest">${m.rest}</span>` : null;
   return html`<header class="c-top" data-variant=${m.variant} data-view=${m.view} data-compact=${m.compact ? "true" : undefined}>
-    ${m.back ? html`<span class="c-top-act" key="back" data-act="back"><${IconButton} icon="chevron-left" label="一覧へ" onPress=${() => on.back()} /></span>` : null}
+    ${m.back ? html`<span class="c-top-act" key="back" data-act="back"><${IconButton} icon="chevron-left" label=${filled(backLabel) ? backLabel : "一覧へ"} onPress=${() => on.back()} /></span>` : null}
     <div class="c-top-text" key="text">
       <h1 class="c-top-title">${m.title}</h1>
       ${!wide && (statusEl || restEl) ? html`<p class="c-top-sub">${statusEl}${statusEl && restEl ? " ・ " : null}${restEl}</p>` : null}
