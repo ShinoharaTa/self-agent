@@ -4372,7 +4372,7 @@ test("web components: TopBar の close（true で帯の右端に data-act=close 
   assert.equal(shell.topModel({ ...topProps({ view: "other" }), close: true })?.close, true);
 });
 
-// ===== スマホの 3 列の横送り（D2 の PR-1。docs/plan/web-ui-deck.md §4.4）: 部品だけ =====
+// ===== スマホの 3 列の横送り（D2 の PR-1。docs/plan/web-ui-deck.md §4.1 のスマホ 390 と §6.1 の D2）: 部品だけ =====
 
 test("web components: deckModel の paged は true のときだけ true。Deck は paged のときだけ data-paged=true で、列は 3 つのまま", () => {
   assert.equal(deck.deckModel(flowOf({ cols: 1, paged: true })).paged, true);
@@ -4535,6 +4535,17 @@ test("web components: c-shell.css の列のボタン（.c-bottom-page）は当�
   // :hover は細かい指の media の中だけ（cssProblems が見る）、線・影・::after は足さない
   assert.doesNotMatch(page + inner + current, /border:(?! 0)|box-shadow|transition|position/);
   assert.ok(!rules.some((r) => r.selectors.some((sel) => sel.includes("c-bottom-page") && sel.includes("::after"))));
+});
+
+test("web components: deck の列のボタンの焦点の輪は、四角い当たりの箱でなく中の .c-bottom-page-in に内側で出る（base.css の輪と同じ線）", () => {
+  const rules = parseCss(read("c-shell.css"));
+  const body = (sel: string): string => rules.filter((r) => r.at.length === 0 && r.selectors.includes(sel)).map((r) => r.body).join(" ");
+  assert.equal(body(".c-bottom-page:focus-visible"), "outline: none;");
+  const ring = body(".c-bottom-page:focus-visible .c-bottom-page-in");
+  assert.ok(ring.includes("outline: var(--ring-width) solid var(--accent)"), ring);
+  assert.ok(ring.includes("outline-offset: calc(-1 * var(--ring-width))"), ring);
+  // 線は base.css の :focus-visible と同じ
+  assert.match(readFileSync(join(ROOT, "templates/web/site/base.css"), "utf8"), /:focus-visible \{\s*outline: var\(--ring-width\) solid var\(--accent\);/);
 });
 
 test("web components: 入口の下のバーの 3 つの口（drawBar・page・focusBar）は #c-foot-root が在るときだけ SA.deck に足し、横送りの読み取りは scroll を capture・passive で 1 つ", () => {
