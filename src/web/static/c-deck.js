@@ -64,7 +64,7 @@ export function itemWord(kind, src, state) {
   }
 }
 
-/** 項目の形を揃える（ops は PR-1 では常に空） */
+/** 項目の形を揃える（ops は state.ops が true のときだけ。タスクと GitHub の通知） */
 function flowItem(state, o) {
   const target = filled(o.target) ? o.target : null;
   return {
@@ -80,7 +80,7 @@ function flowItem(state, o) {
     turn: o.turn === true,
     target,
     href: target === null && filled(o.href) ? o.href : null,
-    ops: [],
+    ops: state.ops === true && Array.isArray(o.ops) ? o.ops : [],
     current: target !== null && state.current === target,
   };
 }
@@ -137,6 +137,15 @@ function byNewest(a, b) {
   return y - x;
 }
 
+/** 押してから応答までの項目か（state.busy は key の配列。flows.js の busy） */
+const isBusy = (state, key) => Array.isArray(state.busy) && state.busy.includes(key);
+
+/** [対応] を押せない理由（views.js の githubActButton の 2 文。連携の有無で選ぶ） */
+export const ACT_REASON = Object.freeze({
+  item: "この通知は対応できません。この機械に無いリポジトリか、[対応] を足す前の通知です",
+  off: "Claude Code の連携が無効です（設定で有効にできます）",
+});
+
 /** 動いている話題（あなたの番の無い物）。activityAt の新しい順 */
 export function runningItems(state) {
   return topicsOf(state)
@@ -180,6 +189,7 @@ export function taskItems(state) {
         at: t.due,
         title: t.title,
         mark: "none",
+        ops: [{ id: "complete", label: "完了", name: "「" + t.title + "」を完了にする", disabled: isBusy(state, "task:" + t.id), busy: isBusy(state, "task:" + t.id), reason: null }],
       }),
     );
 }
@@ -225,6 +235,7 @@ export function feedItems(state) {
     for (const n of state.github) {
       const parts = state.parts(n.url);
       const kind = githubKind(n.url);
+      const busy = isBusy(state, "gh:" + n.id);
       all.push({
         src: 0,
         item: flowItem(state, {
@@ -237,6 +248,7 @@ export function feedItems(state) {
           title: (filled(n.label) ? n.label + ": " : "") + (filled(n.title) ? n.title : "（題名なし）") + (parts && parts.number ? " #" + parts.number : ""),
           mark: "none",
           href: typeof n.url === "string" && n.url.startsWith("https://") ? n.url : null,
+          ops: [{ id: "act", label: "対応", name: null, disabled: !n.handoff || busy, busy, reason: n.handoff ? null : state.handoff ? ACT_REASON.item : ACT_REASON.off }],
         }),
       });
     }
@@ -330,7 +342,7 @@ export function deckModel(state) {
 
 // ===== 部品 =====
 
-/** 3 つの列（見えない列も描き、横に送る）。on: { open(item, key) } */
+/** 3 つの列（見えない列も描き、横に送る）。on: { open(item, key), op(item, opId) } */
 export function Deck({ model, on }) {
   return html`<div class="c-deck" data-cols=${String(model.cols)}>
     ${model.columns.map((col) => html`<${Column} key=${col.id} col=${col} on=${on} />`)}
@@ -358,12 +370,19 @@ export function Column({ col, on }) {
   </section>`;
 }
 
-/** 1 つの項目。席に開ける物（target）はボタン、外へのリンクだけの物は項目ごとリンク（新しいタブ）、どちらでもなければ押せない */
+/**
+ * 1 つの項目。席に開ける物（target）はボタン、外へのリンクだけの物は項目ごとリンク（新しいタブ）、どちらでもなければ押せない。
+ * 操作（ops）は開くボタン・リンクの中に入れない: 完了は押せない項目（div）の頭の印の場所、ほかは項目の中の兄弟の .c-item-ops
+ */
 export function Item({ item, on }) {
   const head = [item.word, item.place].filter(filled).join("・");
+  const done = item.target === null && !item.href ? item.ops.find((op) => op.id === "complete") : undefined;
+  const rest = item.ops.filter((op) => op !== done);
   const inner = [
     html`<span class="c-item-meta" key="meta">
-      <${Mark} state=${item.mark} label=${MARK_LABEL[item.mark]} />
+      ${done
+        ? html`<${IconButton} icon="circle" size="sm" label=${done.name} disabled=${done.disabled} reason=${done.reason || undefined} onPress=${() => on.op(item, done.id)} />`
+        : html`<${Mark} state=${item.mark} label=${MARK_LABEL[item.mark]} />`}
       <span class="c-item-word">${head}</span>
       ${item.time ? html`<span class="c-item-time">${item.time}</span>` : null}
     </span>`,
@@ -377,6 +396,15 @@ export function Item({ item, on }) {
       : item.href
         ? html`<a class="c-item-link" href=${item.href} target="_blank" rel="noreferrer noopener">${inner}</a>`
         : html`<div class="c-item-main">${inner}</div>`}
+    ${rest.length > 0
+      ? html`<div class="c-item-ops">
+          ${rest.map(
+            (op) =>
+              html`<${Button} key=${op.id} size="sm" label=${op.label} name=${op.name || undefined} disabled=${op.disabled} busy=${op.busy}
+                reason=${op.reason || undefined} onPress=${() => on.op(item, op.id)} />`,
+          )}
+        </div>`
+      : null}
   </div>`;
 }
 

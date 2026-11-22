@@ -833,7 +833,13 @@ const deckState = (o = {}) => ({
   },
   ...o,
 });
-const DECK_ON = { open: noop };
+/** 操作の見本の通知（押せる［対応］と押せない［対応］・応答待ち） */
+const DECK_GITHUB_OPS = [
+  { ...DECK_GITHUB[0], handoff: true },
+  DECK_GITHUB[1],
+  { id: 3, url: "https://github.com/example/sample/pull/15", title: "見本の応答待ちの PR", label: "", level: "yellow", updatedAt: "2026-01-01T00:00:00Z", actorLogin: "sample", handoff: true },
+];
+const DECK_ON = { open: noop, op: noop };
 const BAND_ON = { status: noop, find: noop, hand: noop, start: noop, more: noop };
 
 /** 帯と 3 つの列の見本（列は見本の幅で 3 等分）。押しても何も起きない */
@@ -845,6 +851,9 @@ function Decks() {
       </div>
     </div>
     <div class="c-gallery-deck" data-demo="deck-3"><${Deck} model=${deckModel(deckState())} on=${DECK_ON} /></div>
+    <div class="c-gallery-deck" data-demo="deck-ops">
+      <${Deck} model=${deckModel(deckState({ ops: true, busy: ["task:3", "gh:3"], github: DECK_GITHUB_OPS, handoff: true }))} on=${DECK_ON} />
+    </div>
     <div class="c-gallery-deck" data-demo="deck-empty">
       <${Deck} model=${deckModel(deckState({ topics: QUIET_DATA, tasks: [], reminders: [], github: [], notices: [], isUnread: () => false }))} on=${DECK_ON} />
     </div>

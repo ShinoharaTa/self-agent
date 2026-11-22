@@ -565,6 +565,7 @@ function loadViews(opts: { v3?: boolean } = {}) {
   const bodies: unknown[] = [];
   const toasts: string[] = [];
   const toastOpts: unknown[] = [];
+  const toastActions: unknown[] = [];
   let reply: (path: string) => Promise<unknown> = () => Promise.resolve({});
   const context = {
     window: {} as Record<string, unknown>,
@@ -588,9 +589,10 @@ function loadViews(opts: { v3?: boolean } = {}) {
     },
   };
   // トーストは記録だけ（views.js は読み込みのときに SA.ui.toast を受け取る）
-  (SA.ui as { toast: unknown }).toast = (text: string, _action: unknown, opts: unknown) => {
+  (SA.ui as { toast: unknown }).toast = (text: string, action: unknown, opts: unknown) => {
     toasts.push(text);
     toastOpts.push(opts ?? null);
+    toastActions.push(action ?? null);
   };
   vm.runInNewContext(read("views.js"), context);
   const views = SA.views as {
@@ -599,7 +601,7 @@ function loadViews(opts: { v3?: boolean } = {}) {
     ccQuestionForget: (id: number) => void;
     placeChildren: (container: FakeNode, nodes: Array<FakeNode | null>) => void;
   };
-  return { SA, views, posts, bodies, toasts, toastOpts, setReply: (fn: (path: string) => Promise<unknown>) => (reply = fn) };
+  return { SA, views, posts, bodies, toasts, toastOpts, toastActions, setReply: (fn: (path: string) => Promise<unknown>) => (reply = fn) };
 }
 
 test("web static: 許可のカードは [許可][拒否] の 2 つ（許可 secondary・拒否 ghost）と常に許可のチェックで、チェックで [許可] の送り先が always に変わる", async () => {
@@ -11344,6 +11346,93 @@ test("web static: shell.css の流れの列の規則は .v3[data-deck] 始まり
   assert.ok(end < css.indexOf("@media (max-width: 639px)"));
 });
 
+test("web static: 流れの列の操作: ［完了］は POST /complete → 知らせ「…を完了にしました」→［取り消す］で /reopen、［対応］は POST /api/github/<id>/act。応答までの二度押しは送らず、失敗したら busy が外れてもう一度押せる", async () => {
+  const { SA, posts, toasts, toastActions, setReply } = loadViews({ v3: true });
+  const tick = async () => {
+    for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+  };
+  const store = SA.store as Record<string, unknown>;
+  const reloads: string[] = [];
+  store.reload = (key: string) => {
+    reloads.push(key);
+    return Promise.resolve();
+  };
+  store.openTasks = [{ id: 5, title: "買い物", due: null, status: "open" }];
+  store.github = {
+    notifications: [
+      { id: 9, url: "https://github.com/o/r/pull/2", title: "押せる", handoff: true },
+      { id: 10, url: "https://github.com/o/r/pull/3", title: "押せない", handoff: false },
+    ],
+    handoff: true,
+  };
+  SA.topics = { data: () => null };
+  const draws: unknown[] = [];
+  SA.deck = {
+    draw: (st: { busy: unknown }) => {
+      draws.push(st.busy);
+      return true;
+    },
+  };
+  vm.runInNewContext(read("flows.js"), { window: { SA } });
+  const views = SA.views as Record<string, unknown>;
+  assert.equal(typeof views.completeTask, "function");
+  assert.equal(typeof views.githubHandoff, "function");
+  const flows = SA.flows as { state: () => { busy: string[]; ops: boolean; on: { op: (item: unknown, opId: string) => void } } };
+  const on = flows.state().on;
+  // 応答が返る前の 2 回目は送らない（描き直しで busy）
+  let answer: (v: unknown) => void = () => undefined;
+  setReply(() => new Promise((r) => (answer = r)));
+  on.op({ key: "task:5" }, "complete");
+  on.op({ key: "task:5" }, "complete");
+  assert.deepEqual(posts, ["/api/tasks/5/complete"]);
+  assert.deepEqual([...flows.state().busy], ["task:5"]);
+  assert.deepEqual([...(draws.at(-1) as string[])], ["task:5"]);
+  answer({});
+  await tick();
+  assert.deepEqual(toasts, ["「買い物」を完了にしました"]);
+  assert.deepEqual(reloads, ["tasks"]);
+  assert.deepEqual([...flows.state().busy], []);
+  assert.deepEqual([...(draws.at(-1) as string[])], []);
+  // ［取り消す］で /reopen（一覧を読み直す）
+  setReply(() => Promise.resolve({}));
+  const undo = toastActions[0] as { label: string; run: () => void };
+  assert.equal(undo.label, "取り消す");
+  undo.run();
+  await tick();
+  assert.deepEqual(posts.slice(1), ["/api/tasks/5/reopen"]);
+  assert.deepEqual(reloads, ["tasks", "tasks"]);
+  // 失敗したら busy が外れて、もう一度押せる
+  posts.length = 0;
+  setReply(() => Promise.reject({ status: 500 }));
+  on.op({ key: "task:5" }, "complete");
+  await tick();
+  assert.equal(toasts.at(-1), "操作に失敗しました。もう一度試してください");
+  assert.deepEqual([...flows.state().busy], []);
+  setReply(() => Promise.resolve({}));
+  on.op({ key: "task:5" }, "complete");
+  await tick();
+  assert.deepEqual(posts, ["/api/tasks/5/complete", "/api/tasks/5/complete"]);
+  // ［対応］も応答までは 1 回だけ
+  posts.length = 0;
+  setReply(() => new Promise((r) => (answer = r)));
+  on.op({ key: "gh:9" }, "act");
+  on.op({ key: "gh:9" }, "act");
+  assert.deepEqual(posts, ["/api/github/9/act"]);
+  assert.deepEqual([...flows.state().busy], ["gh:9"]);
+  answer({ text: "話題を作りました" });
+  await tick();
+  assert.equal(toasts.at(-1), "話題を作りました");
+  assert.deepEqual([...flows.state().busy], []);
+  // 押せない通知・引けない項目・知らない操作は送らない
+  on.op({ key: "gh:10" }, "act");
+  on.op({ key: "task:99" }, "complete");
+  on.op({ key: "rem:1" }, "skip");
+  on.op(null, "complete");
+  await tick();
+  assert.deepEqual(posts, ["/api/github/9/act"]);
+  assert.deepEqual([...flows.state().busy], []);
+});
+
 /** api.js と flows.js を同じ偽の window で読む（SA.api.get は get。topics・views・ui は作り物） */
 function loadFlows(get: (path: string) => Promise<unknown>) {
   const SA: Record<string, unknown> = {
@@ -11414,7 +11503,7 @@ test("web static: 流れの列の読み込み: init でタスク（open）とリ
   assert.deepEqual(paths, ["/api/memories"]);
   // 押した項目の key は 1 回だけ
   const st = other.flows.state() as { on: { open: (item: unknown, key: string) => void }; ops: boolean; cols: number };
-  assert.equal(st.ops, false);
+  assert.equal(st.ops, true);
   assert.equal(st.cols, 3);
   st.on.open({ target: "ch:1" }, "turn:ch:1");
   assert.equal(other.flows.lastKey(), "turn:ch:1");
