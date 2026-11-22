@@ -627,7 +627,7 @@
   }
 
   /** chat.js に渡す枠の指定（毎回同じ物）。札は古い描き方では replyExtras（DOM）、部品の道では replyRefs（データ）と onRef */
-  const HAND_FRAME = { title: "右腕", placeholder: "右腕に頼む・訊く", ops: handOps, outgoing: withViewing, replyText: namedText, replyExtras: handCards, replyRefs: handRefs, onRef: (id) => SA.app.open(id) };
+  const HAND_FRAME = { title: "右腕", placeholder: "右腕に頼む・訊く", ops: handOps, outgoing: withViewing, replyText: namedText, noticeText: namedText, replyExtras: handCards, replyRefs: handRefs, onRef: (id) => SA.app.open(id) };
   /** 見出しを入口 c-app.js の部品（SA.hand）が描くときの枠（chat.js は見出しを作らない） */
   const HAND_FRAME_BARE = Object.assign({}, HAND_FRAME, { head: false });
 

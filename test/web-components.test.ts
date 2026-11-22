@@ -2032,6 +2032,43 @@ test("web components: Inline（リンクの href・target・rel、太字の中�
   assert.equal(textOf(tree), "見て https://a.example/x と 太 https://b.example/y と c");
 });
 
+test("web components: talkModel: fmt.notice は知らせ（notice）の行の本文だけを差し替える。関数でない・文字列でない物を返せば元の本文（#457 の L2）", () => {
+  const parse = (text: string): unknown => [{ type: "paragraph", text: "P:" + text }];
+  const base = talkFmt().fmt;
+  const asked: unknown[] = [];
+  const turns = [
+    { id: 1, kind: "notice", text: "終わりました: <#1>" },
+    { id: 2, kind: "agent", text: "返事" },
+    { id: 3, kind: "divider", text: "区切り" },
+  ];
+  const notice = (text: unknown) => {
+    asked.push(text);
+    return "N:" + String(text);
+  };
+  const items = talk.talkModel(talkState({ turns, fmt: { ...base, notice } }), parse).items as Obj[];
+  assert.deepEqual(asked, ["終わりました: <#1>"]);
+  assert.equal(items[0]!.text, "N:終わりました: <#1>");
+  assert.deepEqual(items[1]!.blocks, [{ type: "paragraph", text: "P:返事" }]);
+  assert.equal(items[2]!.text, "区切り");
+  for (const odd of [null, "x", () => 7]) {
+    const kept = talk.talkModel(talkState({ turns: [turns[0]], fmt: { ...base, notice: odd } }), parse).items as Obj[];
+    assert.equal(kept[0]!.text, "終わりました: <#1>");
+  }
+});
+
+test("web components: 右腕の枠（shell.js の HAND_FRAME）だけが noticeText に namedText を持ち、chat.js の部品の道が fmt.notice に渡す。.c-notice は改行をそのまま出す（#457 の L2）", () => {
+  const shell = stripJsComments(read("shell.js"));
+  const hand = /const HAND_FRAME = \{[^\n]*\};/.exec(shell)?.[0];
+  assert.ok(hand, "shell.js から HAND_FRAME の 1 行を抜き出せない（書き方が変わった）");
+  assert.ok(hand.includes("noticeText: namedText"));
+  // 話題の会話の枠には足さない（noticeText は HAND_FRAME の 1 か所だけ）
+  assert.equal((shell.match(/noticeText/g) ?? []).length, 1);
+  assert.match(read("chat.js"), /notice: frame && frame\.noticeText \? frame\.noticeText : null,/);
+  const rule = parseCss(read("c-talk.css")).find((r) => r.at.length === 0 && r.selectors.length === 1 && r.selectors[0] === ".c-notice");
+  assert.ok(rule);
+  assert.match(rule.body, /(?:^|;)\s*white-space\s*:\s*pre-line/);
+});
+
 test("web components: talkModel: fmt.reply は Bot の返事の本文だけを差し替え、fmt.refs の札は返事のすぐ後ろの行（kind refs）。関数でない・空・id か題の無い物では行を足さない。reply が文字列でない物を返せば元の本文、同じ id の札は 1 つ", () => {
   const parse = (text: string): unknown => [{ type: "paragraph", text: "P:" + text }];
   const base = talkFmt().fmt;
