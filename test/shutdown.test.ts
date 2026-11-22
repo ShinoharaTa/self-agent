@@ -480,6 +480,28 @@ test("停止を始めたら GitHub の通知のポーリングも止め、実行
   assert.deepEqual(events, ["github stop", "github idle", "stop", "closeDb"]);
 });
 
+test("停止を始めたら統括のまとめも止め（窓の中の分は出さない）、投稿の途中のものが終わってから gateway を止める", async () => {
+  const events: string[] = [];
+  const gate = deferred();
+  const lead = {
+    stop: () => {
+      events.push("lead stop");
+    },
+    idle: async () => {
+      await gate.promise;
+      events.push("lead idle");
+    },
+  };
+  const { shutdown } = createShutdown(deps(events, { lead }), noopInner);
+  const done = shutdown();
+  await flush();
+  assert.deepEqual(events, ["lead stop"]);
+
+  gate.resolve();
+  await done;
+  assert.deepEqual(events, ["lead stop", "lead idle", "stop", "closeDb"]);
+});
+
 test("停止を始めたら作業ジョブも止め（実行中の run を中断）、その後始末が終わってから gateway を止める", async () => {
   const events: string[] = [];
   const gate = deferred();

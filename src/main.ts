@@ -33,6 +33,7 @@ import { prepareImages, pruneAttachments } from "./app/attachments.ts";
 import { ChannelOpsQueue } from "./app/channel-ops.ts";
 import { createHandler } from "./app/handler.ts";
 import { InboxRotator } from "./app/inbox-rotate.ts";
+import { createLead, leadCounts } from "./app/lead.ts";
 import type { CcPermissionButtons } from "./app/commands/cc.ts";
 import { createConfirmKbDelete } from "./app/commands/kb-delete.ts";
 import { CcConfirmExpirer, type CcConfirmRuntime } from "./app/commands/cc-confirm.ts";
@@ -56,6 +57,7 @@ import { createShutdown } from "./app/shutdown.ts";
 import { ShellState, shellRefresher } from "./app/shell-state.ts";
 import { createSystemNotifier } from "./app/system-notice.ts";
 import { formatDate, startOfLocalDay } from "./app/time.ts";
+import { buildTopics } from "./app/topics.ts";
 import { type MoveDeps, recoverMoves } from "./app/topic-move.ts";
 import { MODE_PLAN_APPROVED_TEXT, type SessionModeDeps, setSessionMode } from "./app/session-mode.ts";
 import type { TurnDeps } from "./app/turn.ts";
@@ -443,6 +445,19 @@ const channelOps = new ChannelOpsQueue({
 // 発言はチャンネルの持ち主の Bot が受け取った分だけを受け付け、返信・途中経過・入力中表示もその Bot で行う。
 // 発言の画像はキューの中で取り、そのターンに渡して原本を <dataDir>/attachments/ に置く。
 // Web からの発言は持ち主の Bot が接続しているときだけ受け付け、その Bot で「（Web から）」を投稿してから同じ経路で 1 ターン入れる
+// 統括のまとめ（SELF_AGENT_LEAD_NOTIFY=0 なら作らない）: 話題のターンの終わりを 60 秒の窓で束ね、既定の人格の #inbox に 1 通出す
+const lead = config.leadNotify
+  ? createLead({
+      settings: () => ({ ring: config.leadRing, scope: config.leadScope }),
+      ownerUserId: config.ownerUserId,
+      inboxOf: (guildId) => guildSettings.get(guildId)?.inboxChannelId ?? null,
+      post: (channelId, message) => ownerPosts.sendMessage(channelId, message),
+      // 残りの数は Web の一覧と同じ集め方（topicCollect は下で作る。Web が無効なら無い）
+      counts: () => (topicCollect === undefined ? null : leadCounts(buildTopics(topicCollect(now().getTime(), null)))),
+      ...history,
+      log,
+    })
+  : undefined;
 const handler = createHandler({
   cfg: config,
   resolveChannel,
@@ -456,6 +471,7 @@ const handler = createHandler({
   ownerConnected: (channelId) => personas.ownerConnected(channelId),
   // lifecycle は下で作る（Web からの発言のときに読む）
   stopping: () => lifecycle.stopping(),
+  onTurnEnd: (event) => lead?.onTurnEnd(event),
 });
 // #inbox・#tasks の切り替え: 要約のターンは発言と同じキュー（turnQueue、key はそのチャンネルの channelId）で行う。
 // 定期処理と、#inbox・#tasks での /renew で使う
@@ -1557,6 +1573,8 @@ const lifecycle = createShutdown(
     ...(ccTakeover === undefined ? {} : { ccTakeover }),
     topicProposalExpirer,
     ...(ccReplier === undefined ? {} : { ccReplier }),
+    // 統括のまとめ。窓の中の分は出さずに捨てる（再起動の後は一覧に状態が残る）
+    ...(lead === undefined ? {} : { lead }),
     closeDb: () => db.close(),
     log,
   },

@@ -23,6 +23,7 @@ import type {
 import type { StaticServer } from "../serve/static-server.ts";
 import type { WebServer } from "../web/server.ts";
 import type { ChannelOpsQueue } from "./channel-ops.ts";
+import type { Lead } from "./lead.ts";
 import type { KeyedSerialQueue } from "./queue.ts";
 import type { ReminderScheduler } from "./reminders.ts";
 import type { Scheduler } from "./scheduler.ts";
@@ -84,6 +85,8 @@ export type ShutdownDeps = {
   topicProposalExpirer?: Pick<TopicProposalExpirer, "stop" | "idle">;
   /** Claude Code の返事を Discord に戻す（SELF_AGENT_CC=1 のときだけ）。scheduler と同じ時点で止め（新しい Stop を扱わない）、投稿の途中のものを待つ */
   ccReplier?: Pick<CcReplier, "stop" | "idle">;
+  /** 統括のまとめ（SELF_AGENT_LEAD_NOTIFY が有効のときだけ）。scheduler と同じ時点で止め（窓の中の分は出さない）、投稿の途中のものを待つ */
+  lead?: Pick<Lead, "stop" | "idle">;
   /** Claude Code の hook の受け口（SELF_AGENT_CC=1 のときだけ）。Web UI の次（DB を閉じる前）に閉じる */
   ccHookServer?: Pick<CcHookServer, "close">;
   closeDb: () => void;
@@ -147,6 +150,7 @@ export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdo
     ccTakeover,
     topicProposalExpirer,
     ccReplier,
+    lead,
     ccHookServer,
     closeDb,
     log,
@@ -182,6 +186,7 @@ export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdo
       ccTakeover?.idle(),
       topicProposalExpirer?.idle(),
       ccReplier?.idle(),
+      lead?.idle(),
     ]);
     // ターンと定期処理が入れた移動のうち、その時点で実行中のものだけ待つ
     await channelOps.idle();
@@ -223,6 +228,7 @@ export function createShutdown(deps: ShutdownDeps, inner: InnerHandlers): Shutdo
     ccTakeoverExpirer?.stop();
     topicProposalExpirer?.stop();
     ccReplier?.stop();
+    lead?.stop();
     log(`停止します（進行中の処理を最大 ${cfg.shutdownGraceSec} 秒待ちます）`);
     if (!(await settlesWithin(drained(), cfg.shutdownGraceSec * 1000))) {
       log(`進行中の処理が ${cfg.shutdownGraceSec} 秒で終わらなかったため、待たずに終了します`);

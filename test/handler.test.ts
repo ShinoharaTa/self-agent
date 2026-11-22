@@ -22,6 +22,7 @@ import {
   WEB_ECHO_PREFIX,
   WEB_STOPPING_NOTICE,
 } from "../src/app/handler.ts";
+import type { TurnEndEvent } from "../src/app/lead.ts";
 import { ALLOWED_MENTIONS, toPayload } from "../src/discord/convert.ts";
 import { rotatedSeed } from "../src/app/summary.ts";
 import { buildTurnPrompt } from "../src/app/prompt.ts";
@@ -124,6 +125,7 @@ function setup(
     ownerConnected?: (channelId: string) => boolean;
     stopping?: () => boolean;
     takeover?: HandlerDeps["takeover"];
+    onTurnEnd?: HandlerDeps["onTurnEnd"];
   } = {},
 ) {
   const db = tempDb(t);
@@ -165,6 +167,7 @@ function setup(
     ...(options.ownerConnected === undefined ? {} : { ownerConnected: options.ownerConnected }),
     ...(options.stopping === undefined ? {} : { stopping: options.stopping }),
     ...(options.takeover === undefined ? {} : { takeover: options.takeover }),
+    ...(options.onTurnEnd === undefined ? {} : { onTurnEnd: options.onTurnEnd }),
     log: (line) => (line.startsWith("トークン（") ? tokenLogs : logs).push(line),
   });
   const handle = handler.handleMessage;
@@ -2011,4 +2014,141 @@ test("runningTurns: 許可を待っている間（onPermissionWaiting）は wait
   assert.equal("waitingPermission" in handler.runningTurns()[0]!, false);
   release();
   await until(() => handler.runningTurns().length === 0);
+});
+
+// 統括のまとめ（lead.ts）に渡すターンの終わりの事象（docs/plan/lead.md の L2）
+
+/** onTurnEnd を受けて溜める setup */
+function setupTurnEnds(t: TestContext, results: Array<RunResult | Error>, options: { history?: boolean } = {}) {
+  const events: TurnEndEvent[] = [];
+  const env = setup(t, results, { ...options, onTurnEnd: (event) => events.push(event) });
+  return { ...env, events };
+}
+
+test("ターンの終わりの事象: セッションのターンが ok なら 1 回（done・history と同じ時間・Discord の発言への返信は pinged）", async (t) => {
+  const { topicSessions, history, handle, events } = setupTurnEnds(t, [okResult("session-1", "できました")], { history: true });
+  topicSessions.create(TOPIC);
+
+  await handle(message({ channelId: "topic-1" }));
+
+  const agent = historyRows(history, "topic-1").find((row) => row.kind === "agent");
+  assert.equal(agent?.durationMs, 4200);
+  assert.deepEqual(events, [
+    { guildId: "guild-1", channelId: "topic-1", durationMs: 4200, outcome: "done", byRightHand: false, pinged: true },
+  ]);
+});
+
+test("ターンの終わりの事象: history が無くても出す", async (t) => {
+  const { topicSessions, handle, events } = setupTurnEnds(t, [okResult("session-1", "できました")]);
+  topicSessions.create(TOPIC);
+
+  await handle(message({ channelId: "topic-1" }));
+
+  assert.deepEqual(events.map((event) => event.outcome), ["done"]);
+});
+
+test("ターンの終わりの事象: #inbox・#tasks のターンと、ターンを行わない発言（本文も画像も無い）では出さない", async (t) => {
+  const { db, topicSessions, handle, events, runner } = setupTurnEnds(t, [okResult("session-1", "a"), okResult("session-2", "b")]);
+  setUpGuild(db);
+  topicSessions.create(TOPIC);
+
+  await handle(message({ id: "message-1", channelId: "inbox-1" }));
+  await handle(message({ id: "message-2", channelId: "tasks-1" }));
+  await handle(message({ id: "message-3", channelId: "topic-1", content: "", images: [], skippedAttachments: { unsupported: 1, overLimit: 0 } }));
+
+  assert.equal(runner.inputs.length, 2);
+  assert.deepEqual(events, []);
+});
+
+test("ターンの終わりの事象: 失敗・中断・手順の上限は 1 回ずつその終わり方で、時間は history と同じ。上限は返信にしないので pinged は偽", async (t) => {
+  const cases: Array<{ label: string; result: RunResult | Error; outcome: TurnEndEvent["outcome"]; pinged: boolean }> = [
+    { label: "失敗", result: CRASH, outcome: "failed", pinged: true },
+    { label: "中断", result: { ok: false, errorMessage: "aborted", sessionRecorded: false, toolCalls: 0 }, outcome: "aborted", pinged: true },
+    {
+      label: "手順の上限",
+      result: { ok: false, errorMessage: "error_max_turns", sessionId: "session-x", sessionRecorded: true, toolCalls: 0 },
+      outcome: "max_turns",
+      pinged: false,
+    },
+  ];
+  for (const c of cases) {
+    const { runner, topicSessions, history, timers, handle, events } = setupTurnEnds(t, [c.result], { history: true });
+    topicSessions.create(TOPIC);
+    const release = deferred();
+    runner.beforeResult = () => release.promise;
+
+    const turn = handle(message({ channelId: "topic-1" }));
+    await timers.advance(7_000);
+    release.resolve();
+    await turn;
+
+    const agent = historyRows(history, "topic-1").find((row) => row.kind === "agent");
+    assert.equal(agent?.durationMs, 7_000, c.label);
+    assert.deepEqual(
+      events,
+      [{ guildId: "guild-1", channelId: "topic-1", durationMs: 7_000, outcome: c.outcome, byRightHand: false, pinged: c.pinged }],
+      c.label,
+    );
+  }
+});
+
+test("ターンの終わりの事象: [続ける] のターンは返信にしないので pinged は偽", async (t) => {
+  const { topicSessions, handler, events } = setupTurnEnds(t, [okResult("session-1", "続けました")]);
+  topicSessions.create(TOPIC);
+
+  await handler.continueTurn("guild-1", "topic-1", NOW);
+
+  assert.deepEqual(events.map((event) => [event.outcome, event.pinged]), [["done", false]]);
+});
+
+test("ターンの終わりの事象: 右腕が始めた話題（origin inbox）は byRightHand", async (t) => {
+  const { topicSessions, handle, events } = setupTurnEnds(t, [okResult("session-1", "できました")]);
+  topicSessions.create({ ...TOPIC, origin: "inbox" });
+
+  await handle(message({ channelId: "topic-1" }));
+
+  assert.deepEqual(events.map((event) => event.byRightHand), [true]);
+});
+
+test("ターンの終わりの事象: submitText の via は事象の via に出て pinged は偽。Web の発言は via なし", async (t) => {
+  const cases: Array<{ label: string; via?: "right_hand" | "github" }> = [
+    { label: "右腕", via: "right_hand" },
+    { label: "GitHub", via: "github" },
+    { label: "Web" },
+  ];
+  for (const c of cases) {
+    const { topicSessions, gateway, handler, events } = setupTurnEnds(t, [okResult("session-1", "見ます")]);
+    topicSessions.create(TOPIC);
+
+    const result = await handler.submitText({ ...webInput("topic-1", "見て"), ...(c.via === undefined ? {} : { via: c.via }) });
+    assert.equal(result.result, "accepted", c.label);
+    await until(() => gateway.sent.length === 1);
+    await until(() => events.length === 1);
+
+    assert.equal(events[0]!.via, c.via, c.label);
+    assert.equal("via" in events[0]!, c.via !== undefined, c.label);
+    assert.equal(events[0]!.pinged, false, c.label);
+  }
+});
+
+test("ターンの終わりの事象: onTurnEnd が投げても返信と history の agent の行はそのままで、log は 1 行", async (t) => {
+  const { topicSessions, gateway, history, logs, handle } = setup(t, [okResult("session-1", "できました")], {
+    history: true,
+    onTurnEnd: () => {
+      throw new Error("boom");
+    },
+  });
+  topicSessions.create(TOPIC);
+
+  await handle(message({ channelId: "topic-1" }));
+
+  assert.deepEqual(gateway.sent, [{ channelId: "topic-1", text: "できました", replyToId: "message-1" }]);
+  assert.deepEqual(
+    historyRows(history, "topic-1").map((row) => [row.kind, row.text]),
+    [
+      ["owner", "明日買い物に行く"],
+      ["agent", "できました"],
+    ],
+  );
+  assert.deepEqual(logs, ["まとめの受け付けに失敗しました"]);
 });
