@@ -8,6 +8,7 @@
 // 右腕の見出し（K6）は shell.js が SA.hand.draw(state) で押し込み、[畳む]・「…」への焦点は SA.hand.focus(what)（右腕の中の会話・入力欄・カードは上の口を使い回す）
 // 端末のセッションの札（H3）は SA.term.draw(root, raw) で描き（raw は c-term.js の termView に渡す生の状態と on）、SA.term.drop(root) で外す
 // 流れの列と上の帯（D1）は flows.js が SA.deck.draw(state)・shell.js が SA.deck.drawBand(state) で押し込む。幅の計算（SA.deck.fit）は c-deck.js の deckFit
+// スマホの流れの列の下のバー（D2）は #c-foot-root が在るときだけ SA.deck.drawBar(bar)・SA.deck.page(id)・SA.deck.focusBar(act)（指で送った列は bar.on.paged(id) で知らせる）
 import { html, render } from "./c-lib.js";
 import { TopicList, listKey, listModel } from "./c-list.js";
 import { BottomBar, TopBar } from "./c-shell.js";
@@ -159,7 +160,7 @@ if (listRoot) {
     return node.matches("button") ? node : node.querySelector("button");
   }
 
-  /** 見出しを描く。state は { view, title, status, note, place, views, hand, compact, menu, mode, controls, on }。形（スマホか広い幅か）はここで、compact は state のまま */
+  /** 見出しを描く。state は { view, title, status, note, place, views, hand, compact, menu, mode, close, backLabel, controls, on }。形（スマホか広い幅か）はここで、compact は state のまま */
   function drawTop(state) {
     lastTop = state;
     if (!topRoot) return true;
@@ -180,6 +181,7 @@ if (listRoot) {
           compact=${state.compact === true}
           mode=${state.mode}
           close=${state.close === true}
+          backLabel=${state.backLabel}
           controls=${state.controls}
           on=${state.on}
         />`,
@@ -384,8 +386,17 @@ if (listRoot) {
 /** 流れの列と上の帯の入れ物。両方が無ければ口を置かない（shell.js は今の広い幅の形のまま） */
 const deckRoot = document.getElementById("c-deck-root");
 const bandRoot = document.getElementById("c-band-root");
+/** スマホの流れの列の下のバーの入れ物（D2）。無ければ null（下のバーの口を置かない。shell.js はスマホを今の殻のままにする） */
+const footRoot = document.getElementById("c-foot-root");
 
 if (deckRoot && bandRoot) {
+  /** 最後に描けた列のモデル（下のバーの列の名前と番の数に使う） */
+  let lastModel = null;
+  /** 最後に渡された下のバー（null は描いていない） */
+  let lastBar = null;
+  /** 横送りで今いる列の id（指で送ったときだけ知らせる。SA.deck.page は先にここを書く） */
+  let pagedAt = null;
+
   /** その要素が button ならそれ、違えば中の最初の button（無ければ null） */
   const buttonOf = (node) => (!node ? null : node.matches("button") ? node : node.querySelector("button"));
 
@@ -441,13 +452,18 @@ if (deckRoot && bandRoot) {
     const colBox = holder ? holder.closest("[data-col]") : null;
     const col = colBox ? colBox.dataset.col : null;
     const keysBefore = colKeys(col);
+    const turnsBefore = turnCount();
     try {
-      render(html`<${Deck} model=${deckModel(state)} on=${state.on} />`, deckRoot);
+      const model = deckModel(state);
+      render(html`<${Deck} model=${model} on=${state.on} />`, deckRoot);
+      lastModel = model;
     } catch (error) {
       // 名前だけ（message・stack は本文を含むことがあるので出さない）
       console.error("[web] deck draw failed", error instanceof Error ? error.name : "");
       return false;
     }
+    // 下のバーの番の数は列の見出しと同じ数
+    if (lastBar !== null && turnCount() !== turnsBefore) drawBar(lastBar);
     if (inside && !document.contains(before)) {
       const keysAfter = colKeys(col);
       const next = key === null || keysAfter.includes(key) ? null : focusAfter(keysBefore, keysAfter, key);
@@ -457,13 +473,13 @@ if (deckRoot && bandRoot) {
     return true;
   };
 
-  /** 上の帯を描く。state は { conn, hand, controls, on }。描けなければ false */
+  /** 上の帯を描く。state は { variant, conn, hand, controls, on }（variant は phone か、ほかは今の形）。描けなければ false */
   const drawBand = (state) => {
     const before = document.activeElement;
     const inside = !!before && bandRoot.contains(before);
     const act = inside && before.closest("[data-act]") ? before.closest("[data-act]").getAttribute("data-act") : null;
     try {
-      render(html`<${DeckBand} conn=${state.conn} hand=${state.hand} controls=${state.controls} on=${state.on} />`, bandRoot);
+      render(html`<${DeckBand} variant=${state.variant} conn=${state.conn} hand=${state.hand} controls=${state.controls} on=${state.on} />`, bandRoot);
     } catch (error) {
       console.error("[web] band draw failed", error instanceof Error ? error.name : "");
       return false;
@@ -472,8 +488,85 @@ if (deckRoot && bandRoot) {
     return true;
   };
 
+  /** 最後に描けた列の番の数（まだ描いていなければ null） */
+  function turnCount() {
+    const col = lastModel ? lastModel.columns.find((c) => c.id === "turn") : null;
+    return col ? col.count : null;
+  }
+
+  /** 下のバーに渡す列（最後に描けたモデルの列。まだ無ければ空の state の列）。数は あなたの番 だけ */
+  const barPages = () => (lastModel || deckModel({ cols: 1 })).columns.map((c) => ({ id: c.id, label: c.name, count: c.id === "turn" ? c.count : null }));
+
+  /** 列の入れ物（.c-deck）と、id の列（セレクタに id を埋めない）。無ければ null */
+  const deckBox = () => deckRoot.firstElementChild;
+  const colOf = (id) => Array.from(deckRoot.querySelectorAll("[data-col]")).find((n) => n.dataset.col === id) || null;
+  /** 列の左端の横の位置（入れ物の送りの中の位置） */
+  const colLeft = (box, col) => box.scrollLeft + col.getBoundingClientRect().left - box.getBoundingClientRect().left;
+
+  /**
+   * 下のバーを描く（D2。スマホの流れの列の下）。bar は { page, hand, controls, on: { page(id), paged(id), hand(opener) } } か null（空にする）。
+   * 描けなければ false。フォーカスには触らない
+   */
+  function drawBar(bar) {
+    lastBar = bar;
+    try {
+      if (bar === null) {
+        render(null, footRoot);
+        return true;
+      }
+      render(html`<${BottomBar} variant="deck" pages=${barPages()} page=${bar.page} hand=${bar.hand} controls=${bar.controls} on=${bar.on} />`, footRoot);
+    } catch (error) {
+      console.error("[web] deck bar draw failed", error instanceof Error ? error.name : "");
+      return false;
+    }
+    return true;
+  }
+
+  /** その列の左端へすぐ送る（動かさない）。列が無ければ false。全部見えている幅では何も起きない */
+  const page = (id) => {
+    const box = deckBox();
+    const col = colOf(id);
+    if (!box || !col) return false;
+    pagedAt = id;
+    box.scrollLeft = colLeft(box, col);
+    return true;
+  };
+
+  /** 下のバーのボタン（"hand" か列の id）にフォーカス。無ければ false */
+  const focusBar = (act) => {
+    const b =
+      act === "hand"
+        ? footRoot.querySelector('button[data-act="hand"]')
+        : Array.from(footRoot.querySelectorAll('button[data-act="page"]')).find((n) => n.dataset.page === act) || null;
+    if (!b) return false;
+    b.focus({ preventScroll: true });
+    return true;
+  };
+
+  /** 横送り（data-paged の列）で一番近い列が替わったら、下のバーに知らせる（指で送った分。タイマーは使わない） */
+  const onScroll = (event) => {
+    const box = event.target;
+    if (!box || box.parentElement !== deckRoot || !box.hasAttribute("data-paged")) return;
+    let near = null;
+    let gap = Infinity;
+    for (const col of box.querySelectorAll(":scope > [data-col]")) {
+      const d = Math.abs(colLeft(box, col) - box.scrollLeft);
+      if (d < gap) {
+        gap = d;
+        near = col.dataset.col;
+      }
+    }
+    if (near === null || near === pagedAt) return;
+    pagedAt = near;
+    if (lastBar && lastBar.on && typeof lastBar.on.paged === "function") lastBar.on.paged(near);
+  };
+
   window.SA = window.SA || {};
   window.SA.deck = { draw: drawDeck, drawBand, fit: deckFit, focusItem, focusBand };
+  if (footRoot) {
+    deckRoot.addEventListener("scroll", onScroll, { capture: true, passive: true });
+    Object.assign(window.SA.deck, { drawBar, page, focusBar });
+  }
 }
 
 /** 知らせの入れ物。無ければ null（口を置かない。ui.js は古い #toast に出す） */

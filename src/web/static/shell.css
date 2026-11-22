@@ -296,10 +296,11 @@
  * ===== 流れの列（D1。docs/plan/web-ui-deck.md §4）: 640px 以上で入口が在る間だけ shell.js が data-deck（見える列の数）・data-seat・data-find を書く =====
  * 上の帯 + 3 つの列 + 席（列 2 を開いたときだけ）。一覧は「探す」の板として重ねる。幅の段は足さない（数は shell.js が c-deck.js の deckFit で測る）
  */
-/* 落ち先（入口が無いとき）とスマホでは出さない */
+/* 落ち先（入口が無いとき）とスマホでは出さない。下のバーの入れ物（.v3-foot。D2 のスマホの流れの列の物）は、まだどの幅でも出さない */
 .v3-band,
 .v3-deck,
-.v3-find-backdrop {
+.v3-find-backdrop,
+.v3-foot {
   display: none;
 }
 
