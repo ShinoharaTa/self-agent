@@ -27,6 +27,7 @@
   <link rel="stylesheet" href="/static/c-cards.css">
   <link rel="stylesheet" href="/static/c-hand.css">
   <link rel="stylesheet" href="/static/c-term.css">
+  <link rel="stylesheet" href="/static/c-deck.css">
   <script src="/static/ui.js" defer></script>
   <script src="/static/api.js" defer></script>
   <script src="/static/sound.js" defer></script>
@@ -34,12 +35,14 @@
   <script src="/static/views.js" defer></script>
   <script src="/static/topics.js" defer></script>
   <script src="/static/takeover.js" defer></script>
+  <script src="/static/flows.js" defer></script>
   <script type="module" src="/static/c-app.js"></script>
   <script src="/static/shell.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#ed">本文へ</a>
   <div class="v3" id="v3" data-view="list" data-hand="closed" data-hand-mode="over">
+    <div class="v3-band" id="v3-band"><div class="v3-slot" id="c-band-root"></div></div>
     <nav class="v3-list" id="v3-list" aria-label="話題">
       <header class="v3-list-head">
         <span class="v3-brand">self-agent</span>
@@ -49,6 +52,7 @@
       <div class="v3-slot" id="c-list-root"></div>
       <div class="v3-slot" id="c-bottom-root"></div>
     </nav>
+    <div class="v3-deck" id="v3-deck"><div class="v3-slot" id="c-deck-root"></div></div>
     <main class="v3-main" id="v3-main">
       <div class="v3-slot" id="c-top-root"></div>
       <div class="ed" id="ed"></div>
@@ -59,6 +63,7 @@
       <div class="ed v3-hand-ed" id="v3-hand-ed"></div>
     </aside>
     <div class="v3-hand-backdrop" id="v3-hand-backdrop" hidden></div>
+    <div class="v3-find-backdrop" id="v3-find-backdrop" hidden></div>
   </div>
   <dialog id="v3-sheet" class="v3-sheet"></dialog>
   <dialog id="v3-start" class="v3-start" aria-labelledby="v3-start-title">

@@ -914,12 +914,18 @@
   /** 操作の後: 読んでいる途中のもの（操作の前の中身かもしれない）が終わるのを待ってから、もう一度読む */
   store.reload = (key) => Promise.resolve(loading[key]).then(() => store.load[key]());
 
+  /** まだ読んでいなくても polling で読み直す一覧（流れの列が出す物。flows.js が store.want で足す） */
+  const wanted = new Set();
+  store.want = (keys) => {
+    for (const key of keys) wanted.add(key);
+  };
+
   /**
-   * 一度読んだ一覧（タスク・リマインド・記憶・GitHub・プロジェクト・ナレッジ）だけを読み直す（polling）。ナレッジは今出している語で読み直す。
+   * 一度読んだ一覧（タスク・リマインド・記憶・GitHub・プロジェクト・ナレッジ）と store.want で足した一覧だけを読み直す（polling）。ナレッジは今出している語で読み直す。
    * 失敗があれば最初の error で resolve する
    */
   store.load.lists = (opts) => {
-    const keys = ["tasks", "reminders", "memories", "github", "projects"].filter((key) => store[key] !== null);
+    const keys = ["tasks", "reminders", "memories", "github", "projects"].filter((key) => store[key] !== null || wanted.has(key));
     const runs = keys.map((key) => store.load[key](opts));
     if (store.knowledge !== null) runs.push(store.load.knowledge(undefined, opts));
     return Promise.all(runs).then((errors) => errors.find((err) => err) || null);
