@@ -3887,8 +3887,8 @@ test("web components: termMouth の draw は根に札を 1 つ描き、同じ根
 });
 
 // ===== 流れの列（c-deck.js。docs/plan/web-ui-deck.md の D1） =====
-type FlowItem = { key: string; kind: string; word: string; place: string; time: string; at: string | null; title: string; summary: string; mark: string; turn: boolean; target: string | null; href: string | null; ops: FlowOp[]; current: boolean };
-type FlowOp = { id: string; label: string; name: string | null; disabled: boolean; busy: boolean; reason: string | null };
+type FlowItem = { key: string; kind: string; word: string; place: string; time: string; at: string | null; title: string; summary: string; mark: string; turn: boolean; target: string | null; href: string | null; ops: FlowOp[]; opsRow: boolean; current: boolean };
+type FlowOp = { id: string; label: string; name: string | null; kind?: string; disabled: boolean; busy: boolean; reason: string | null };
 type FlowColumn = { id: string; name: string; count: number | null; tone: string; phase: string; empty: string; sections: Array<{ label: string | null; items: FlowItem[] }> };
 const deckUrl = new URL("../src/web/static/c-deck.js", import.meta.url).href;
 const deck = (await import(deckUrl)) as Record<string, Fn> & {
@@ -3896,7 +3896,7 @@ const deck = (await import(deckUrl)) as Record<string, Fn> & {
   FEED_MAX: number;
   ACT_REASON: Readonly<Record<string, string>>;
   focusAfter: (before: string[], after: string[], key: string) => string | null;
-  pressableKeys: (entries: Array<{ key: string; pressable: boolean }>) => string[];
+  pressableKeys: (entries: Array<{ key: string; pressable: boolean; kind?: string }>, kind?: string) => string[];
   deckFit: (width: unknown, seatOpen: boolean) => { cols: number; side: boolean; seat: number; colW: number };
   itemWord: (kind: unknown, src: unknown, state: Obj) => string;
   turnItems: (state: Obj) => FlowItem[];
@@ -4154,7 +4154,7 @@ test("web components: Deck は 3 つの section.c-col を常に出し、項目�
   assert.deepEqual(find(one(html`<${deck.Deck} model=${running} on=${on} />`), "c-col-label").map(textOf), ["動いている"]);
 });
 
-test("web components: ops が true のときだけ、タスクは［完了］（頭の印の場所の IconButton）・GitHub の通知は［対応］（.c-item-ops の Button sm。押せない理由は views.js の 2 文）。リマインド・知らせ・話題には付けない。busy の項目は押せない", () => {
+test("web components: ops が true のときだけ、タスクは［完了］（頭の印の場所の IconButton）・GitHub の通知は［対応］（.c-item-ops の Button sm。押せない理由は views.js の 2 文）・リマインドは［止める］など（別の検査）。知らせ・話題には付けない。busy の項目は押せない", () => {
   const calls: unknown[][] = [];
   const on = { open: (...a: unknown[]) => void calls.push(["open", ...a]), op: (...a: unknown[]) => void calls.push(["op", ...a]) };
   const topics = {
@@ -4180,7 +4180,9 @@ test("web components: ops が true のときだけ、タスクは［完了］（
   assert.deepEqual(opsOf("task:5"), [{ id: "complete", label: "完了", name: "「買い物」を完了にする", disabled: false, busy: false, reason: null }]);
   assert.deepEqual(opsOf("gh:1"), [{ id: "act", label: "対応", name: null, disabled: false, busy: false, reason: null }]);
   assert.deepEqual(opsOf("gh:2"), [{ id: "act", label: "対応", name: null, disabled: true, busy: false, reason: "この通知は対応できません。この機械に無いリポジトリか、[対応] を足す前の通知です" }]);
-  for (const key of ["turn:ch:1", "rem:1", "notice:2026-01-01T01:00:00Z:0", "topic:ch:2"]) assert.deepEqual(opsOf(key), [], key);
+  for (const key of ["turn:ch:1", "notice:2026-01-01T01:00:00Z:0", "topic:ch:2"]) assert.deepEqual(opsOf(key), [], key);
+  // 1 回だけのリマインドは［止める］だけ（繰り返しの形は別の検査）
+  assert.deepEqual(opsOf("rem:1").map((o) => o.id), ["cancel"]);
   // 連携が無効なら理由は連携の文。2 つの文は views.js の githubActButton と同じ字
   const off = all(deck.deckModel(flowOf({ ...base, ops: true, handoff: false })));
   assert.equal(off.find((i) => i.key === "gh:1")!.ops[0]?.reason, null);
@@ -4223,7 +4225,7 @@ test("web components: ops が true のときだけ、タスクは［完了］（
   (offAct.props.onClick as (e: unknown) => void)(fakeEvent());
   assert.equal(calls.length, 2);
   // 操作の無い項目は .c-item-ops を出さず、印のまま
-  for (const key of ["turn:ch:1", "rem:1", "topic:ch:2"]) {
+  for (const key of ["turn:ch:1", "topic:ch:2"]) {
     assert.equal(find(byKey(key), "c-item-ops").length + find(byKey(key), "c-iconbtn").length + find(byKey(key), "c-btn").length, 0, key);
     assert.equal(find(byKey(key), "c-mark").length, 1, key);
   }
@@ -4254,14 +4256,107 @@ test("web components: focusAfter は完了で消えた項目の焦点の行き�
   assert.equal(deck.focusAfter([], ["task:2"], "task:9"), "task:2");
 });
 
-test("web components: 焦点の行き先は押せる項目（ボタン・リンクを持つ）だけで数える。リマインドが在る列で最後のタスクを完了 → 1 つ前のタスク", () => {
-  const entries = (keys: string[]) => keys.map((key) => ({ key, pressable: key.startsWith("task:") }));
-  const before = deck.pressableKeys(entries(["task:1", "task:2", "rem:1"]));
-  const after = deck.pressableKeys(entries(["task:1", "rem:1"]));
+test("web components: 焦点の行き先は押せる項目（ボタン・リンクを持つ）だけで数え、種類を渡せばその種類だけ。リマインドが押せても、最後のタスクを完了 → 1 つ前のタスク", () => {
+  // リマインドも押せる（［止める］）。種類は key の頭から
+  const entries = (keys: string[], pressable = (key: string) => key.startsWith("task:") || key.startsWith("rem:")) =>
+    keys.map((key) => ({ key, pressable: pressable(key), kind: key.startsWith("task:") ? "task" : "reminder" }));
+  const before = deck.pressableKeys(entries(["task:1", "task:2", "rem:1"]), "task");
+  const after = deck.pressableKeys(entries(["task:1", "rem:1"]), "task");
   assert.deepEqual([before, after], [["task:1", "task:2"], ["task:1"]]);
   assert.equal(deck.focusAfter(before, after, "task:2"), "task:1");
-  // タスクが無くなりリマインドだけ → 押せる項目が無い（入口が帯の［探す］へ）
-  assert.equal(deck.focusAfter(["task:1"], deck.pressableKeys(entries(["rem:1"])), "task:1"), null);
+  // タスクが無くなりリマインドだけ → 同じ種類の押せる項目が無い（入口が帯の［探す］へ）。［止める］に乗せない
+  assert.equal(deck.focusAfter(["task:1"], deck.pressableKeys(entries(["rem:1"]), "task"), "task:1"), null);
+  // リマインドを止めた → 次のリマインド（タスクは数えない）
+  const remBefore = deck.pressableKeys(entries(["task:1", "rem:1", "rem:2"]), "reminder");
+  const remAfter = deck.pressableKeys(entries(["task:1", "rem:2"]), "reminder");
+  assert.deepEqual([remBefore, remAfter], [["rem:1", "rem:2"], ["rem:2"]]);
+  assert.equal(deck.focusAfter(remBefore, remAfter, "rem:1"), "rem:2");
+  // 第 2 引数なしは今のまま（種類を見ず、押せる物だけ）
+  assert.deepEqual(deck.pressableKeys(entries(["task:1", "rem:1", "gh:1"])), ["task:1", "rem:1"]);
+  assert.deepEqual(deck.pressableKeys(entries(["task:1", "rem:1"], (key) => key.startsWith("task:"))), ["task:1"]);
+  // 種類の無い項目は種類を渡すと数えない
+  assert.deepEqual(deck.pressableKeys([{ key: "x", pressable: true }], "task"), []);
+});
+
+test("web components: リマインドの項目は、語（依頼か）・場所の所の繰り返しの文（無ければ「1 回だけ」・ruleText が無ければ rule）・opsRow、ops は繰り返しだけ［次を飛ばす］と常に［止める］（ghost）", () => {
+  const reminders = [
+    { id: 1, text: "毎朝の\n薬", nextAt: "2026-01-02T00:00:00Z", kind: "notify", rule: "daily@09:00", ruleText: "毎日 9:00" },
+    { id: 2, text: "1 回", nextAt: "2026-01-03T00:00:00Z", kind: "notify", rule: null, ruleText: null },
+    { id: 3, text: "依頼", nextAt: "2026-01-04T00:00:00Z", kind: "prompt", rule: "weekdays@12:00", ruleText: null },
+    { id: 4, text: "空の rule", nextAt: "2026-01-05T00:00:00Z", kind: "notify", rule: "", ruleText: "" },
+  ];
+  const items = deck.reminderItems(flowOf({ reminders, ops: true }));
+  assert.deepEqual(items.map((i) => [i.key, i.word, i.place, i.opsRow]), [
+    ["rem:1", "リマインド", "毎日 9:00", true],
+    ["rem:2", "リマインド", "1 回だけ", true],
+    ["rem:3", "依頼", "weekdays@12:00", true],
+    ["rem:4", "リマインド", "1 回だけ", true],
+  ]);
+  assert.deepEqual(items[0]!.ops, [
+    { id: "skip", label: "次を飛ばす", name: "「毎朝の 薬」の次を飛ばす", kind: "ghost", disabled: false, busy: false, reason: null },
+    { id: "cancel", label: "止める", name: "「毎朝の 薬」を止める", kind: "ghost", disabled: false, busy: false, reason: null },
+  ]);
+  assert.deepEqual(items.map((i) => i.ops.map((o) => o.id)), [["skip", "cancel"], ["cancel"], ["skip", "cancel"], ["cancel"]]);
+  // ops が true でなければ付けない（opsRow は残る）
+  for (const ops of [false, undefined, "true"]) assert.ok(deck.reminderItems(flowOf({ reminders, ops })).every((i) => i.ops.length === 0 && i.opsRow), String(ops));
+  // opsRow はリマインドだけ
+  const github = [{ id: 1, url: "https://github.com/o/r/pull/2", title: "p", label: "", updatedAt: "2026-01-01T00:00:00Z", handoff: true }];
+  const all = deck.deckModel(flowOf({ reminders, tasks: [{ id: 5, title: "t", due: null }], github, ops: true, handoff: true })).columns.flatMap((c) => c.sections.flatMap((s) => s.items));
+  assert.deepEqual(all.filter((i) => i.opsRow).map((i) => i.kind), ["reminder", "reminder", "reminder", "reminder"]);
+  assert.ok(all.filter((i) => !i.opsRow).every((i) => i.ops.every((o) => o.kind === undefined)));
+  // 応答待ち: 2 つとも押せず、回る印は押した方だけ。busyOp が無ければ回らない
+  const busy = deck.reminderItems(flowOf({ reminders, ops: true, busy: ["rem:1"], busyOp: { "rem:1": "cancel" } }));
+  assert.deepEqual(busy[0]!.ops.map((o) => [o.id, o.disabled, o.busy]), [["skip", true, false], ["cancel", true, true]]);
+  assert.deepEqual(busy[1]!.ops.map((o) => [o.id, o.disabled, o.busy]), [["cancel", false, false]]);
+  const noOp = deck.reminderItems(flowOf({ reminders, ops: true, busy: ["rem:1"] }));
+  assert.deepEqual(noOp[0]!.ops.map((o) => [o.disabled, o.busy]), [[true, false], [true, false]]);
+  // busyOp だけ（busy に無い）なら押せる
+  const stale = deck.reminderItems(flowOf({ reminders, ops: true, busyOp: { "rem:1": "skip" } }));
+  assert.deepEqual(stale[0]!.ops.map((o) => [o.disabled, o.busy]), [[false, false], [false, false]]);
+});
+
+test("web components: リマインドの項目は data-ops=\"row\" で、.c-item-ops は題の下に［次を飛ばす］［止める］の順の ghost の Button sm（aria-label・aria-disabled。disabled 属性は無い）。押すと on.op", () => {
+  const calls: unknown[][] = [];
+  const on = { open: () => undefined, op: (...a: unknown[]) => void calls.push(a) };
+  const reminders = [
+    { id: 1, text: "毎朝", nextAt: "2026-01-02T00:00:00Z", kind: "notify", rule: "daily@09:00", ruleText: "毎日 9:00" },
+    { id: 2, text: "1 回", nextAt: "2026-01-03T00:00:00Z", kind: "notify", rule: null, ruleText: null },
+  ];
+  const github = [{ id: 1, url: "https://github.com/o/r/pull/2", title: "p", label: "", updatedAt: "2026-01-01T00:00:00Z", handoff: true }];
+  const state = { reminders, tasks: [{ id: 5, title: "t", due: null }], github, ops: true, handoff: true };
+  const model = deck.deckModel(flowOf(state));
+  const root = one(html`<${deck.Deck} model=${model} on=${on} />`);
+  const items = find(root, "c-item");
+  assert.deepEqual(items.filter((i) => i.props["data-ops"] !== undefined).map((i) => [i.props["data-key"], i.props["data-ops"]]), [["rem:1", "row"], ["rem:2", "row"]]);
+  const byKey = (r: El, key: string) => find(r, "c-item").find((i) => i.props["data-key"] === key)!;
+  const rem = byKey(root, "rem:1");
+  // 題の下: 中身（印・語・時刻・題）の後に操作の行
+  const kids = rem.children.filter((c): c is El => typeof c !== "string");
+  assert.deepEqual(kids.map((c) => c.props.class), ["c-item-main", "c-item-ops"]);
+  assert.equal(textOf(find(kids[0]!, "c-item-word")), "リマインド・毎日 9:00");
+  assert.equal(find(kids[0]!, "c-mark").length, 1);
+  const btns = find(kids[1]!, "c-btn");
+  assert.deepEqual(btns.map((b) => [textOf(find(b, "c-btn-label")), b.props["aria-label"], b.props["data-kind"], b.props["data-size"], b.props["aria-disabled"], b.props.disabled]), [
+    ["次を飛ばす", "「毎朝」の次を飛ばす", "ghost", "sm", undefined, undefined],
+    ["止める", "「毎朝」を止める", "ghost", "sm", undefined, undefined],
+  ]);
+  assert.equal(typeof rem.props.onKeyDown, "function");
+  (btns[1]!.props.onClick as (e: unknown) => void)(fakeEvent());
+  (btns[0]!.props.onClick as (e: unknown) => void)(fakeEvent());
+  const remModel = model.columns[1]!.sections[1]!.items[0];
+  assert.deepEqual(calls, [[remModel, "cancel"], [remModel, "skip"]]);
+  assert.deepEqual(find(byKey(root, "rem:2"), "c-btn").map((b) => textOf(find(b, "c-btn-label"))), ["止める"]);
+  // ［対応］は今の secondary のまま
+  assert.equal(find(byKey(root, "gh:1"), "c-btn")[0]?.props["data-kind"], "secondary");
+  // 応答待ち: 2 つとも aria-disabled（disabled 属性は無い・焦点は残る）、回るのは押した方だけ。押しても on.op を呼ばない
+  const busyRoot = one(html`<${deck.Deck} model=${deck.deckModel(flowOf({ ...state, busy: ["rem:1"], busyOp: { "rem:1": "skip" } }))} on=${on} />`);
+  const bBtns = find(byKey(busyRoot, "rem:1"), "c-btn");
+  assert.deepEqual(bBtns.map((b) => [b.props["aria-disabled"], b.props["aria-busy"], b.props.disabled]), [["true", "true", undefined], ["true", undefined, undefined]]);
+  for (const b of bBtns) (b.props.onClick as (e: unknown) => void)(fakeEvent());
+  assert.equal(calls.length, 2);
+  // ops が無ければ操作の行は出ない（data-ops は付く）
+  const plain = one(html`<${deck.Deck} model=${deck.deckModel(flowOf({ reminders }))} on=${on} />`);
+  assert.equal(find(byKey(plain, "rem:1"), "c-item-ops").length, 0);
 });
 
 test("web components: 項目の入れ物は、操作のボタン（［完了］・［対応］）から来た繰り返しの Enter・Space だけを押さない（開くボタン・リンク・繰り返しでない keydown はそのまま）", () => {
