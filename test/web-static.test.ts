@@ -11257,7 +11257,7 @@ test("web static: 流れの列: 帯の［＋ 始める］は General の始め�
   assert.equal(lastBand(quiet).conn, null);
 });
 
-test("web static: 流れの列: 起動で flows.init を polling の前に 1 回、状態・一覧・知らせ・タブの描き直しで flows.render、状態では flows.status も", async () => {
+test("web static: 流れの列: 初めて流れの列になったときに flows.init を 1 回（起動が広い幅なら polling の前）、状態・一覧・知らせ・タブの描き直しで flows.render、状態では flows.status も", async () => {
   const h = await loadDeck({ width: 1440 });
   assert.equal(h.flows.inits, 1);
   const before = { renders: h.flows.renders, statuses: h.flows.statuses };
@@ -11274,7 +11274,46 @@ test("web static: 流れの列: 起動で flows.init を polling の前に 1 回
   assert.equal(h.flows.renders, phoneRenders);
   const sh = read("shell.js");
   const init = fnSource(sh, "init");
-  assert.ok(init.indexOf("SA.flows.init()") < init.indexOf("SA.poll.start()"));
+  assert.doesNotMatch(init, /SA\.flows\.init\(\)/);
+  assert.ok(init.indexOf("fitDeck();") >= 0 && init.indexOf("fitDeck();") < init.indexOf("SA.poll.start()"));
+  assert.match(fnSource(sh, "fitDeck"), /if \(first && SA\.flows\) SA\.flows\.init\(\);/);
+});
+
+test("web static: 流れの列: スマホで起動しても flows.init を呼ばず（列のタスク・リマインドを読まない）、幅を広げて初めて流れの列になったときに 1 回だけ呼ぶ", async () => {
+  const h = await loadDeck({ phone: true, width: 390 });
+  assert.equal(h.flows.inits, 0);
+  h.setPhone(false, 1000);
+  assert.equal(h.flows.inits, 1);
+  // スマホを挟んで戻るとまた呼ぶ（読むのは 1 回だけ。flows.js の init は 2 回目から何もしない。下の読み込みの検査）
+  h.setPhone(true, 390);
+  h.setPhone(false, 1000);
+  assert.equal(h.flows.inits, 2);
+});
+
+test("web static: 流れの列: 「探す」の板の中から右腕を開くと板を閉じ（4 つとも inert）、畳むと 4 つとも inert でなく焦点は帯の［探す］。右腕を重ねている間は Ctrl+K で板を開かない", async () => {
+  const h = await loadDeck({ width: 1440 });
+  const inert = () => [h.nodes.list, h.nodes.band, h.nodes.deckBox, h.nodes.main].map((n) => (n as unknown as { inert?: boolean }).inert === true);
+  const findBtn = h.nodes.bandButtons.find!;
+  findBtn.focus();
+  lastBand(h).on.find!(findBtn);
+  assert.equal(h.nodes.v3.getAttribute("data-find"), "open");
+  assert.deepEqual(inert(), [false, true, true, true]);
+  // 板の中（絞り込み欄）に焦点があるまま、右腕のチャンネルを開く
+  h.app.open("ch:900");
+  assert.equal(h.nodes.v3.getAttribute("data-find"), "closed");
+  assert.equal(h.nodes.v3.getAttribute("data-hand"), "open");
+  assert.deepEqual(inert(), [true, true, true, true]);
+  h.nodes.backdrop.dispatch("click");
+  assert.equal(h.nodes.v3.getAttribute("data-hand"), "closed");
+  assert.deepEqual(inert(), [false, false, false, false]);
+  assert.equal(h.document.activeElement, findBtn);
+  // 右腕を重ねている間は Ctrl+K・SA.app.palette で板を開かない
+  lastBand(h).on.hand!(h.nodes.bandButtons.hand);
+  assert.equal(h.nodes.v3.getAttribute("data-hand"), "open");
+  h.fireDoc("keydown", keyEvent("k", h.nodes.bandButtons.hand, { ctrlKey: true }));
+  h.app.palette();
+  assert.equal(h.nodes.v3.getAttribute("data-find"), "closed");
+  assert.deepEqual(inert(), [true, true, true, true]);
 });
 
 test("web static: 流れの列: 入口（SA.deck）が無ければ属性を書かず、右腕は列の形・下のバーは広い幅のまま（今の落ち先）。SA.app のキーは古い殻と同じ", async () => {
@@ -11336,9 +11375,12 @@ test("web static: 流れの列の読み込み: init でタスク（open）とリ
     paths.push(path);
     return Promise.resolve({});
   });
-  // 何も足していなければ lists はタスク・リマインドを読まない
+  // 何も足していなければ lists はタスク・リマインドを読まない。init の前の status は GitHub を読まない
   await SA.store.load.lists();
+  SA.store.status = { github: { enabled: true } };
+  SA.flows.status();
   assert.equal(paths.length, 0);
+  SA.store.status = null;
   SA.flows.init();
   SA.flows.init();
   assert.deepEqual(paths, ["/api/tasks?status=open", "/api/reminders"]);

@@ -2878,7 +2878,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     await edScroll(page, "bottom");
     await settled(page);
     // 20. 最後の返事の手順を開くと結果の文を省かずに折り返す（スマホは 2 行以上・広い幅は 1 行）。行の幅は変わらず、閉じると元に戻る
-    const footLook = (): Promise<{ rowW: number; footH: number; labelH: number; lh: number; cut: boolean; tail: boolean; timeCut: boolean; list: boolean; actLast: boolean } | null> =>
+    const footLook = (): Promise<{ rowW: number; limit: number; footH: number; labelH: number; lh: number; cut: boolean; tail: boolean; timeCut: boolean; list: boolean; actLast: boolean } | null> =>
       page.evaluate(() => {
         const last = [...document.querySelectorAll('#ed .c-talk > .c-msg[data-who="agent"]')].at(-1);
         const foot = last?.querySelector(":scope > .c-msg-foot") ?? null;
@@ -2898,8 +2898,13 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           tail = r !== undefined && r.right <= lb.right + 0.5 && r.bottom <= lb.bottom + 0.5;
         }
         const act = last.querySelector(":scope > .c-msg-act");
+        // 行の幅の上限: .c-talk の中身の幅 × .c-msg の max-width（c-talk.css。640px 以上は 78%、未満は 86%）
+        const talk = last.parentElement;
+        const tcs = talk === null ? null : getComputedStyle(talk);
+        const inner = talk === null || tcs === null ? 0 : talk.clientWidth - parseFloat(tcs.paddingLeft) - parseFloat(tcs.paddingRight);
         return {
           rowW: last.getBoundingClientRect().width,
+          limit: inner * (window.innerWidth >= 640 ? 0.78 : 0.86),
           footH: foot.getBoundingClientRect().height,
           labelH: lb.height,
           lh: parseFloat(getComputedStyle(label).lineHeight),
@@ -2911,9 +2916,14 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         };
       });
     const toggleLast = (): Promise<void> => page.locator('#ed .c-talk > .c-msg[data-who="agent"]:last-of-type > .c-msg-foot .c-steps-toggle').click();
+    /** 閉じた形で省かれているなら、その行の幅が上限に達している（行の箱が狭すぎて省く退行を見る） */
+    const fullWhenCut = (look: { cut: boolean; rowW: number; limit: number }, at: string): void => {
+      if (look.cut && look.rowW < look.limit - 1) say(`結果の文が、行の幅に余りが在るのに省かれている（${at}。行 ${look.rowW.toFixed(1)}・上限 ${look.limit.toFixed(1)}）`);
+    };
     const closed = await footLook();
     if (closed === null) say("20. 最後の返事に結果の文のボタンが無い");
     else {
+      fullWhenCut(closed, vp === "phone" ? "スマホ" : "席");
       await toggleLast();
       await settled(page);
       await edScroll(page, "bottom");
@@ -2948,6 +2958,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       const again = await footLook();
       if (again === null || Math.abs(again.footH - 24) > 0.5) say(`20. 閉じた後の足の行の高さ ${again === null ? "なし" : again.footH.toFixed(1)}（24 のはず）`);
       if (again !== null && again.cut !== closed.cut) say(`20. 閉じた後の省く・省かないが開く前と違う（前 ${closed.cut}・後 ${again.cut}）`);
+      if (again !== null) fullWhenCut(again, "閉じ直した所");
       await edScroll(page, "bottom");
       await settled(page);
     }
@@ -2968,6 +2979,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           })(),
         }));
         logLines.push(`[v3-${p}] 段 k: 幅 1640 の .c-talk の幅 ${String(w.talkW)}`);
+        const wideClosed = await footLook();
+        if (wideClosed !== null) fullWhenCut(wideClosed, "幅 1640");
         {
           if (w.cut !== false) say(`結果の文が席が広い（幅 1640）ときに省かれている（.c-talk ${String(w.talkW)}）`);
           await toggleLast();

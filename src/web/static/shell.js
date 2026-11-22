@@ -610,6 +610,21 @@
     }
   }
 
+  /**
+   * 押せない（inert）所を 1 か所で決める: 重ねた右腕の間は一覧・列 2・上の帯・列、「探す」の板の間は上の帯・列・列 2（一覧は板として前に出る）。
+   * 呼ぶのは applyHand・openFind・closeFind・fitDeck（流れの列でなくなったとき）
+   */
+  function applyInert() {
+    const over = S.handMode === "over" && S.handOver;
+    const find = deckOn() && findOpen();
+    const set = (id, on) => {
+      const n = $(id);
+      if (n) n.inert = on;
+    };
+    set("v3-list", over);
+    for (const id of ["v3-band", "v3-deck", "v3-main"]) set(id, over || find);
+  }
+
   /** 開閉と形を属性に書き、見えていれば描く（見えていない間は高さが測れないので、属性を書いた後で描く） */
   function applyHand() {
     const v3 = refs.v3;
@@ -621,10 +636,7 @@
     const backdrop = $("v3-hand-backdrop");
     if (backdrop) backdrop.hidden = !over;
     // 重ねている間は後ろ（一覧・列 2。流れの列では上の帯と列も）を押せず、Tab でも入らない
-    for (const id of ["v3-list", "v3-main", "v3-band", "v3-deck"]) {
-      const n = $(id);
-      if (n) n.inert = over;
-    }
+    applyInert();
     const hand = $("v3-hand");
     if (hand) {
       if (over) hand.setAttribute("role", "dialog");
@@ -748,6 +760,13 @@
 
   /** 右腕を開く。focusInput なら入力欄に（部品なら口に頼む）、でなければ [畳む] に焦点 */
   function openHand(opener, focusInput) {
+    // 流れの列で「探す」の板の中から開いたら、先に板を閉じる（右腕は modal。畳んだ後の焦点は板を開いたボタンへ。板の中の要素は閉じると隠れる）
+    if (deckOn() && findOpen()) {
+      const from = findOpener;
+      const list = $("v3-list");
+      closeFind(false);
+      if (!opener || (list && list.contains(opener))) opener = from;
+    }
     handOpener = opener || null;
     handClosing = false;
     const wasVisible = handVisible();
@@ -1656,6 +1675,7 @@
       if (S.deckCols === null) return;
       closeFind(false);
       for (const name of ["data-deck", "data-seat", "data-find"]) v3.removeAttribute(name);
+      applyInert();
       S.deckCols = null;
       S.deckCurrent = null;
       renderBottom(handMark());
@@ -1669,6 +1689,8 @@
     v3.setAttribute("data-deck", String(fit.cols));
     v3.setAttribute("data-seat", seat);
     if (first) v3.setAttribute("data-find", "closed");
+    // 初めて流れの列になったときに、列のタスク・リマインドを polling に足して読む（スマホでは D2 まで読まない。中は 1 回だけ）
+    if (first && SA.flows) SA.flows.init();
     if (!changed) return;
     S.deckCols = fit.cols;
     S.deckCurrent = current;
@@ -1746,10 +1768,7 @@
         list.setAttribute("aria-modal", "true");
         list.setAttribute("aria-label", "話題を探す");
       }
-      for (const id of ["v3-band", "v3-deck", "v3-main"]) {
-        const n = $(id);
-        if (n) n.inert = true;
-      }
+      applyInert();
     }
     refs.searchBox.hidden = false;
     if (refs.searchToggle) refs.searchToggle.setAttribute("aria-expanded", "true");
@@ -1768,10 +1787,7 @@
       list.removeAttribute("aria-modal");
       list.setAttribute("aria-label", "話題");
     }
-    for (const id of ["v3-band", "v3-deck", "v3-main"]) {
-      const n = $(id);
-      if (n) n.inert = false;
-    }
+    applyInert();
     const input = $("v3-search");
     if (input && input.value !== "") {
       input.value = "";
@@ -1996,8 +2012,6 @@
     // 設定・使用量の画面が使う（古い殻と同じ）
     SA.store.load.usageDays();
     SA.store.load.usage(null);
-    // 流れの列のタスク・リマインドを polling に足して読む（GitHub は /api/status で有効と分かってから）
-    if (SA.flows) SA.flows.init();
     // api.js の polling は今のまま全部動かす（chat.js が store.channels・store.running・store.cc を使う）
     SA.poll.start();
     SA.topics.load().then(() => {
