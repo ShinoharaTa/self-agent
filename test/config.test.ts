@@ -36,6 +36,9 @@ test("未設定ならデフォルト値を使う", () => {
     shell: false,
     personas: [],
     codexHome: undefined,
+    leadNotify: true,
+    leadRing: "long",
+    leadScope: "all",
     github: false,
     githubPollSec: 300,
     githubOwners: [],
@@ -469,6 +472,44 @@ test("許可サーバーの ID に数字以外が混ざっていたらエラー"
     () => loadConfig({ HOME: "/home/tester", SELF_AGENT_ALLOWED_GUILD_IDS: "200,abc" }),
     /SELF_AGENT_ALLOWED_GUILD_IDS/,
   );
+});
+
+test("統括のまとめ: SELF_AGENT_LEAD_NOTIFY は既定 1・0 で止める。RING・SCOPE は一覧の値だけ（空は既定）。一覧に無い値は NOTIFY=0 でも変数名を出して設定エラー", () => {
+  const env = { HOME: "/home/tester" };
+  assert.equal(loadConfig({ ...env, SELF_AGENT_LEAD_NOTIFY: "0" }).leadNotify, false);
+  assert.equal(loadConfig({ ...env, SELF_AGENT_LEAD_NOTIFY: "1" }).leadNotify, true);
+  assert.equal(loadConfig({ ...env, SELF_AGENT_LEAD_NOTIFY: "" }).leadNotify, true);
+  for (const ring of ["off", "all", "stopped", "long"]) {
+    assert.equal(loadConfig({ ...env, SELF_AGENT_LEAD_RING: ring }).leadRing, ring);
+  }
+  for (const scope of ["all", "long", "right_hand"]) {
+    assert.equal(loadConfig({ ...env, SELF_AGENT_LEAD_SCOPE: scope }).leadScope, scope);
+  }
+  assert.equal(loadConfig({ ...env, SELF_AGENT_LEAD_RING: "" }).leadRing, "long");
+  assert.equal(loadConfig({ ...env, SELF_AGENT_LEAD_SCOPE: "" }).leadScope, "all");
+  const cases: Array<[string, string]> = [
+    ["SELF_AGENT_LEAD_NOTIFY", "yes"],
+    ["SELF_AGENT_LEAD_RING", "stop"],
+    ["SELF_AGENT_LEAD_RING", "LONG"],
+    ["SELF_AGENT_LEAD_SCOPE", "right-hand"],
+    ["SELF_AGENT_LEAD_SCOPE", "off"],
+  ];
+  for (const [name, value] of cases) {
+    for (const notify of ["1", "0"]) {
+      if (name === "SELF_AGENT_LEAD_NOTIFY" && notify === "0") continue;
+      assert.throws(
+        () => loadConfig({ ...env, SELF_AGENT_LEAD_NOTIFY: notify, [name]: value }),
+        (error: Error) => error.message.includes(name),
+        `${name}=${value} NOTIFY=${notify}`,
+      );
+    }
+  }
+  assert.throws(() => loadConfig({ ...env, SELF_AGENT_LEAD_RING: "x" }), {
+    message: "SELF_AGENT_LEAD_RING は off / all / stopped / long のいずれかで指定してください",
+  });
+  assert.throws(() => loadConfig({ ...env, SELF_AGENT_LEAD_SCOPE: "x" }), {
+    message: "SELF_AGENT_LEAD_SCOPE は all / long / right_hand のいずれかで指定してください",
+  });
 });
 
 test("SELF_AGENT_EFFORT は決められた値だけを受け付ける", () => {

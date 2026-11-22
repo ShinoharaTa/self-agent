@@ -13,6 +13,13 @@ export const DEFAULT_PERSONA_ID = "default";
 export const ENGINES = ["claude", "codex"] as const;
 export type Engine = (typeof ENGINES)[number];
 
+/** 統括のまとめ（app/lead.ts。docs/plan/lead.md の L2）で鳴らす物（SELF_AGENT_LEAD_RING）。off = 鳴らさない・all = 全部・stopped = 止まった物・long = 止まった物と 2 分以上で終わった物 */
+export const LEAD_RINGS = ["off", "all", "stopped", "long"] as const;
+export type LeadRing = (typeof LEAD_RINGS)[number];
+/** 統括のまとめに入れるターン（SELF_AGENT_LEAD_SCOPE）。all = 話題の全部・long = 右腕・GitHub 経由か 2 分以上か done 以外・right_hand = 右腕が始めた話題 */
+export const LEAD_SCOPES = ["all", "long", "right_hand"] as const;
+export type LeadScope = (typeof LEAD_SCOPES)[number];
+
 /** SELF_AGENT_PERSONAS で足した人格（docs/plan/personas.md §1）。既定の人格は含まない。トークンは変数名だけを持ち、値は持たない */
 export type PersonaConfig = {
   /** `[a-z0-9]{1,12}`。DB のキーになるので後から変えない */
@@ -86,6 +93,12 @@ export type Config = {
   personas: PersonaConfig[];
   /** codex の認証と会話の記録の場所。未設定で codex の人格も無ければ undefined */
   codexHome: string | undefined;
+  /** SELF_AGENT_LEAD_NOTIFY（既定 true）。false なら話題のターンの終わりのまとめを #inbox に出さない */
+  leadNotify: boolean;
+  /** SELF_AGENT_LEAD_RING（既定 long）。まとめでオーナーを鳴らす物 */
+  leadRing: LeadRing;
+  /** SELF_AGENT_LEAD_SCOPE（既定 all）。まとめに入れるターン */
+  leadScope: LeadScope;
 } & GithubConfig &
   JobsConfig &
   GuestConfig &
@@ -276,6 +289,16 @@ function effortLevel(value: string | undefined, name = "SELF_AGENT_EFFORT"): Eff
     throw new Error(`${name} は ${EFFORT_LEVELS.join(" / ")} のいずれかで指定してください`);
   }
   return level;
+}
+
+/** 一覧の中の値（未設定なら fallback）。一覧に無ければ変数名と一覧を出してエラー */
+function oneOf<T extends string>(name: string, value: string | undefined, values: readonly T[], fallback: T): T {
+  if (value === undefined) return fallback;
+  const found = values.find((candidate) => candidate === value);
+  if (found === undefined) {
+    throw new Error(`${name} は ${values.join(" / ")} のいずれかで指定してください`);
+  }
+  return found;
 }
 
 function positiveInteger(name: string, value: string | undefined, fallback: number): number {
@@ -766,6 +789,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     codexHome:
       nonEmpty(env.SELF_AGENT_CODEX_HOME) ??
       (personas.some((persona) => persona.engine === "codex") ? join(home(), ".local/share/self-agent/codex") : undefined),
+    // 既定はまとめを出す（0 で止める）。RING・SCOPE は止めていても形を確かめる
+    leadNotify: nonEmpty(env.SELF_AGENT_LEAD_NOTIFY) === undefined ? true : flag("SELF_AGENT_LEAD_NOTIFY", env.SELF_AGENT_LEAD_NOTIFY),
+    leadRing: oneOf("SELF_AGENT_LEAD_RING", nonEmpty(env.SELF_AGENT_LEAD_RING), LEAD_RINGS, "long"),
+    leadScope: oneOf("SELF_AGENT_LEAD_SCOPE", nonEmpty(env.SELF_AGENT_LEAD_SCOPE), LEAD_SCOPES, "all"),
     ...loadGithubConfig(env),
     ...loadJobsConfig(env, shell),
     ...loadGuestConfig(env, personas),
