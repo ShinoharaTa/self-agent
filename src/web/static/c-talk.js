@@ -149,7 +149,8 @@ export function refsOf(list) {
  * 会話の行のモデル。{ older, items, running }。openSteps は key（行の id を文字列にした物）の Set。state.on は読まない（TalkTimeline の prop で渡す）。
  * continueKey の返事の行にだけ act: { busy }（busy は continueBusy が true のとき）。ほかの行には act の欄を置かない。
  * Bot の返事の行だけ: fmt.reply が関数なら解析する本文をその結果にし（文字列でない物が返れば元の本文のまま）、fmt.refs が関数なら（差し替える前の本文から）札を取り、
- * 1 つ以上在るときだけ返事のすぐ後ろに { kind: "refs", key: key + ":refs", refs } の行を足す
+ * 1 つ以上在るときだけ返事のすぐ後ろに { kind: "refs", key: key + ":refs", refs } の行を足す。
+ * 知らせ（notice）の行だけ: fmt.notice が関数なら本文をその結果にする（文字列でない物が返れば元の本文のまま）
  */
 export function talkModel(state, parse) {
   const fmt = state.fmt;
@@ -157,12 +158,16 @@ export function talkModel(state, parse) {
   const openSteps = state.openSteps;
   const reply = typeof fmt.reply === "function" ? fmt.reply : null;
   const refsFn = typeof fmt.refs === "function" ? fmt.refs : null;
+  const noticeFn = typeof fmt.notice === "function" ? fmt.notice : null;
   const items = turns.flatMap((turn, i) => {
     const prev = i > 0 ? turns[i - 1] : null;
     const key = String(turn.id);
     const text = textOr(turn.text);
     if (turn.kind === "divider") return [{ kind: "divider", key, text }];
-    if (turn.kind === "notice") return [{ kind: "notice", key, text, time: fmt.time(turn) }];
+    if (turn.kind === "notice") {
+      const said = noticeFn ? noticeFn(text) : text;
+      return [{ kind: "notice", key, text: typeof said === "string" ? said : text, time: fmt.time(turn) }];
+    }
     const time = fmt.time(turn);
     const label = fmt.label(turn);
     if (turn.kind === "owner") {

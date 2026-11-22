@@ -868,6 +868,7 @@
    *   ops: () => Node[]             見出しの右端に足すボタン（省略可）
    *   outgoing: (text) => string    送る直前の本文の差し替え（省略可）
    *   replyText: (text) => string   Bot の返事の本文を描く前の差し替え（省略可）
+   *   noticeText: (text) => string  知らせ（notice）の行の本文を描く前の差し替え（省略可。部品の道だけ）
    *   replyExtras: (text) => Node[] Bot の返事の吹き出しの下に足す要素（省略可。古い描き方のときだけ）
    *   head: false                   見出しを作らない（呼ぶ側が別に描く。省略可）
    *   replyRefs: (text) => [{ id, title, meta }]  部品の道の札（Bot の返事のすぐ下。省略可）
@@ -1118,6 +1119,7 @@
         runName: (prev) => (showsAgentName(ch) && !followsSameAgent(prev, ch, ch ? ch.persona : "default") ? persona(ch ? ch.persona : "default").name : null),
         // 枠（右腕）の Bot の返事の本文の差し替えと札
         reply: frame && frame.replyText ? frame.replyText : null,
+        notice: frame && frame.noticeText ? frame.noticeText : null,
         refs: frame && frame.replyRefs ? frame.replyRefs : null,
       },
       on: {

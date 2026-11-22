@@ -26,7 +26,7 @@ CC9 は済（Web の会話のサイドバーの群「Claude Code」。アクテ�
 - 端末の Claude Code のセッションの管理（リモコン。CC1〜CC14・Q1〜Q5）をやめ、取り込み（#341）とプロジェクトのセッションを本線にする移行の設計: `docs/plan/terminal-handover.md`（#428。段 H0〜H5 と使う期間、消す段 X1〜X5。今は H3 まで（Discord の `/cc take` と、新しい殻の端末の行の札の［取り込む］で取り込める）と H4a（プロジェクトのセッションの質問）と H4b のモード（取り込みでの許可のモードの引き継ぎも）。H5 も済（GitHub の［対応］の宛先を話題に。DB の github_topics（v46））。リモコンには手をかけない（［端末］のタブは部品にしない）。消すのは使う期間の後）
 - 取り込み（端末の Claude Code の会話を、プロジェクトのセッションが新しいチャンネルで引き継ぐ）の設計: `docs/plan/takeover.md`（#341。v3。段 H1a〜H1c・H2・H3。今は H3 まで（Discord の `/cc take` と、新しい殻の端末の行の札の［取り込む］で取り込める）: DB の cc_takeovers（v45）・ストア・判定の純関数・記録の写し・本体（cc/takeover.ts）・送信の守り）
 - 話題を始めるときにモデルを選ぶ設計: `docs/plan/models.md`（#451。段 PR-0〜PR-5。今は PR-2 まで: 一覧 `src/agent/models.ts`・DB v47（sessions.model・place_settings・usage_log.model）・配線と入口（`/new` の `model`・右腕 `session_open` の `model`・`POST /api/topics` の `model`。［対応］・取り込み・ホームパネルは場所の既定だけ）。場所の既定を書く口は PR-4 まで無い）
-- 右腕が統括として働く設計: `docs/plan/lead.md`（#457。段 L0〜L7。今は L2 まで（右腕の会話でまとめの `<#ID>` を名前で出すのは次の PR）: 話題の一覧のデータに順番待ち・止まった・終わり方・かかった時間、新しい殻の一覧の行の語、話題のターンの終わりの #inbox のまとめ（`app/lead.ts`・`SELF_AGENT_LEAD_*`）と Web の右腕の未読（`last.lead`））
+- 右腕が統括として働く設計: `docs/plan/lead.md`（#457。段 L0〜L7。今は L2 まで: 話題の一覧のデータに順番待ち・止まった・終わり方・かかった時間、新しい殻の一覧の行の語、話題のターンの終わりの #inbox のまとめ（`app/lead.ts`・`SELF_AGENT_LEAD_*`）と Web の右腕の未読（`last.lead`）・右腕の会話でまとめの `<#ID>` を話題の名前で出す）
 - 旧 Rust 版の資料は `docs/archive/`（参照のみ）
 
 ## コマンド
