@@ -1,6 +1,7 @@
 // 新しい殻（index.html。docs/plan/web-ui-v3.md §2・§11 の M2）: 話題の一覧（列 1。topics.js）と開いた話題（列 2）、
 // SA.app（古い殻 workbench.js と同じ名前の契約。chat.js・views.js・api.js・ui.js・sound.js が呼ぶ）・hash・スマホの一覧 ⇄ 会話・テーマ・書きかけ・シート・キーボードの高さ、
-// 下のバー（描くのは入口 c-app.js）と「ほか」の板・接続の点と鈴・絞り込み・一覧のキー、列 2 の見出し（描くのは入口 c-app.js の SA.top。[会話][端末]・場所・「…」の板。K4）、右腕の枠（列 3。§4 の M3。畳んだ帯・スマホの口（見出しの [右腕] と下のバー）・重ねる形・「いま見ている話題」の 1 行・札）、話題を始めるダイアログ（#v3-start。§2・§5 の M4）、場所を変える（シートと確認。§6.3 の M5）
+// 下のバー（描くのは入口 c-app.js）と「ほか」の板・接続の点と鈴・絞り込み・一覧のキー、列 2 の見出し（描くのは入口 c-app.js の SA.top。[会話][端末]・場所・「…」の板。K4）、右腕の枠（列 3。§4 の M3。畳んだ帯・スマホの口（見出しの [右腕] と下のバー）・重ねる形・「いま見ている話題」の 1 行・札）、話題を始めるダイアログ（#v3-start。§2・§5 の M4）、場所を変える（シートと確認。§6.3 の M5）、
+// 640px 以上の流れの列（docs/plan/web-ui-deck.md の D1。入口 c-app.js の SA.deck が在るときだけ）: 上の帯・3 つの列（状態は flows.js）・席（列 2 を開いたときだけ）・「探す」の板（一覧を重ねる）
 "use strict";
 
 (function () {
@@ -40,6 +41,8 @@
   // スマホ（639px 以下）は 1 列（一覧 ⇄ 会話）、640px 以上は 2 列
   const mqPhone = window.matchMedia ? window.matchMedia("(max-width: 639px)") : { matches: false, addEventListener() {} };
   const phone = () => mqPhone.matches;
+  // 640px 以上で流れの列の入口（c-app.js の SA.deck）が在れば、上の帯 + 3 列 + 席。無ければ今の広い幅の形（一覧 + 列 2 + 右腕の列）に落ちる（D6 で落ち先ごと消す）
+  const deckOn = () => !phone() && !!SA.deck;
 
   // ===== 状態 =====
   const THEMES = ["dark", "light", "system"];
@@ -62,6 +65,10 @@
     handMode: "over",
     // 見出しを compact（場所・[会話][端末] を「…」の板へ）にするか。列 2 の幅を測れるまでは compact（fitTop が入口に測らせて決める）
     topCompact: true,
+    // 流れの列: 最後に書いた見える列の数と席に開いている物（null は流れの列でない）・席を開いた元（{ key } か { find: true }。閉じた後の焦点）
+    deckCols: null,
+    deckCurrent: null,
+    seatFrom: null,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -139,9 +146,9 @@
     return scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 48;
   }
 
-  /** スマホで一覧を出している間は列 2 が display: none で、スクロールの読み書きが効かない */
+  /** スマホで一覧を出している間（流れの列では席を閉じている間）は列 2 が display: none で、スクロールの読み書きが効かない */
   function mainHidden() {
-    return phone() && S.view === "list";
+    return S.view === "list" && (phone() || deckOn());
   }
 
   // 列 2 が隠れる直前のスクロール（{ top, bottom }）と、隠れている間に描き直して「表示されたら下端に寄せる」印
@@ -262,6 +269,8 @@
     view: (value) => setView2(value),
     menu: (opener) => openTopMenu(opener),
     hand: (opener) => openHand(opener, false),
+    // 流れの列の席を閉じる（スマホの一覧へと同じ履歴）
+    close: () => showList(),
   };
 
   /** 列 2 に出している会話のチャンネルの見出しの中身（chat.js の head）。会話でなければ null */
@@ -272,7 +281,7 @@
   /** 見出しに渡す state（入口 c-app.js の TopBar の props）。何も開いていなければ view: none */
   function topState() {
     const info = S.active ? SA.views.info(S.active) : null;
-    if (!info) return { view: "none", title: "", status: null, note: null, place: null, views: null, hand: null, compact: S.topCompact, menu: false, mode: null, controls: "v3-hand", on: TOP_ON };
+    if (!info) return { view: "none", title: "", status: null, note: null, place: null, views: null, hand: null, compact: S.topCompact, menu: false, mode: null, close: false, controls: "v3-hand", on: TOP_ON };
     const t = SA.topics.find(S.active) || null;
     const head = topHead();
     let status = null;
@@ -298,6 +307,7 @@
       compact: S.topCompact,
       menu: t !== null && (topNarrow() || takeSession() !== null || (head !== null && head.menu.length > 0)),
       mode: head && head.mode ? { value: head.mode, disabled: modeBusy(t), reason: modeBusy(t) ? MODE_BUSY : null } : null,
+      close: deckOn(),
       controls: "v3-hand",
       on: TOP_ON,
     };
@@ -310,7 +320,7 @@
     if (!SA.top) return;
     const st = topState();
     if (SA.top.draw(st)) return;
-    SA.top.draw({ view: st.view, title: st.title, status: null, note: null, place: null, views: null, hand: null, compact: S.topCompact, menu: false, mode: null, controls: "v3-hand", on: TOP_ON });
+    SA.top.draw({ view: st.view, title: st.title, status: null, note: null, place: null, views: null, hand: null, compact: S.topCompact, menu: false, mode: null, close: st.close, controls: "v3-hand", on: TOP_ON });
   }
 
   /** 見出しの帯に場所・[会話][端末] が出ていないか（スマホか、広い幅の compact）。出ていなければ「…」の板に入れる */
@@ -385,6 +395,7 @@
       renderEd(ed, shown, true);
     } else if (ed && shown && shown.startsWith("term:")) renderEd(ed, shown);
     syncHand();
+    renderFlows();
   }
 
   /** api.js の polling・SA.app.refresh が当たるのは列 2 に出している物（[端末] の間は cc:<sessionId>） */
@@ -419,6 +430,8 @@
 
   /** 話題か画面を列 2 に開く（知らない・無効な機能のタブは開かない） */
   function open(tabId) {
+    // 流れの列の項目から開いたときの key（押した直後の 1 回だけ。ほかの開き方では null）
+    const fromKey = SA.flows ? SA.flows.lastKey() : null;
     if (!tabId) return;
     const info = SA.views.info(tabId);
     if (!info) {
@@ -451,11 +464,22 @@
     // スマホは先に会話の列を出してから描く（隠れたままではスクロールを書けない）。重ねた右腕は畳む（履歴の entry は showBody が話題に置き換える）
     const handWasOver = S.handMode === "over" && S.handOver;
     const focusInHand = handWasOver && handHasFocus();
+    // 流れの列: 「探す」の板から開いたか（板は閉じ、焦点は席の［閉じる］へ）
+    const fromFind = deckOn() && findOpen();
     if (phone()) {
       if (S.handOver) {
         S.handOver = false;
         applyHand();
       }
+      showBody();
+    } else if (deckOn()) {
+      // 席はスマホの会話と同じ履歴（v3Body の entry）。重ねた右腕・板は畳む
+      if (fromFind) closeFind(false);
+      if (S.handOver) {
+        S.handOver = false;
+        applyHand();
+      }
+      S.seatFrom = fromFind ? { find: true } : { key: fromKey };
       showBody();
     } else if (handWasOver) {
       // 640px 以上の重ねる形は entry を積んでいないので、その場で畳む
@@ -477,6 +501,9 @@
         const back = $("ed").querySelector(".ed-back");
         if (back) back.focus({ preventScroll: true });
       }
+    } else if (deckOn() && (fromFind || S.deckCols === 0)) {
+      // 板から開いた・席だけの幅（列が隠れて押した項目が見えない）: 席の［閉じる］へ。項目から開いたなら焦点は項目のまま
+      if (SA.top) SA.top.focus("close");
     } else if (focusInHand) {
       // 畳んだ右腕の中にあった焦点は列 2 の側へ（入力欄が無ければ一覧の開いた行）。入力欄が部品なら口に頼む
       const root = [...$("ed").children].find((child) => child.getAttribute("data-composer") !== null);
@@ -553,7 +580,8 @@
   function fitHand() {
     if (!refs.v3) return;
     const list = $("v3-list");
-    const mode = handModeOf(phone(), refs.v3.clientWidth, list ? list.offsetWidth : 0, handWidth());
+    // 流れの列では右腕は常に重ねる形（列の形は D6 で枠ごと消す）
+    const mode = deckOn() ? "over" : handModeOf(phone(), refs.v3.clientWidth, list ? list.offsetWidth : 0, handWidth());
     if (mode === S.handMode) return;
     const focusInHand = handHasFocus();
     S.handMode = mode;
@@ -592,8 +620,8 @@
     v3.setAttribute("data-hand", visible ? "open" : "closed");
     const backdrop = $("v3-hand-backdrop");
     if (backdrop) backdrop.hidden = !over;
-    // 重ねている間は後ろ（一覧・列 2）を押せず、Tab でも入らない
-    for (const id of ["v3-list", "v3-main"]) {
+    // 重ねている間は後ろ（一覧・列 2。流れの列では上の帯と列も）を押せず、Tab でも入らない
+    for (const id of ["v3-list", "v3-main", "v3-band", "v3-deck"]) {
       const n = $(id);
       if (n) n.inert = over;
     }
@@ -797,9 +825,13 @@
       if (SA.list) SA.list.focusHand();
       return;
     }
-    // スマホは見出しの [右腕]、広い幅は畳んだ帯
+    // スマホは見出しの [右腕]、流れの列は上の帯の［右腕］、広い幅は畳んだ帯
     if (phone()) {
       if (SA.top) SA.top.focus("hand");
+      return;
+    }
+    if (deckOn()) {
+      SA.deck.focusBand("hand");
       return;
     }
     target = $("v3-hand-show");
@@ -846,8 +878,9 @@
     });
     // 下のバーは毎回（件数は印と別に変わる）
     renderBottom(mark);
-    // 見出しの [右腕] の印（スマホ）
+    // 見出しの [右腕] の印（スマホ）と、上の帯の［右腕］の印と開閉（流れの列）
     renderBar();
+    renderBand();
   }
 
   /** 話題の一覧を読むたびに: 列 2 に右腕のチャンネルが出ていたら右腕へ移し、右腕が変わっていたら描き直し、口を描く */
@@ -859,7 +892,7 @@
       S.active = null;
       S.view2 = "talk";
       SA.topics.setCurrent(null);
-      if (phone()) {
+      if (phone() || deckOn()) {
         setView("list");
         try {
           if (history.state && history.state.v3Body) history.replaceState({}, "", location.pathname + location.search);
@@ -955,7 +988,7 @@
 
   /** 列 2 に話題が出ていれば、その題名（空白を詰めて前後を落とし、80 字まで）。スマホは会話の上に右腕を出したときだけ */
   function viewingTitle() {
-    if (phone() && S.view !== "body") return null;
+    if ((phone() || deckOn()) && S.view !== "body") return null;
     const t = S.active ? SA.topics.find(S.active) : null;
     if (!t) return null;
     const title = String(t.title).replace(/\s+/g, " ").trim();
@@ -1011,7 +1044,7 @@
     }
   }
 
-  // ===== スマホの一覧 ⇄ 会話（履歴: 会話は v3Body の entry。戻ると一覧） =====
+  // ===== スマホの一覧 ⇄ 会話・流れの列の席の開閉（履歴: 会話は v3Body の entry。戻ると一覧・席を閉じる） =====
   function setView(view) {
     const wasHidden = mainHidden();
     const scroll = $("ed").querySelector(".ed-scroll");
@@ -1019,6 +1052,8 @@
     const before = !wasHidden && scroll ? { top: scroll.scrollTop, bottom: atBottom(scroll) } : null;
     S.view = view;
     refs.v3.setAttribute("data-view", view);
+    // 流れの列は席の開閉で見える列の数が変わる（隠れ方は S.view と幅で決まるので、ここで書いても下の判定は変わらない）
+    fitDeck();
     const hidden = mainHidden();
     if (wasHidden === hidden) return;
     if (hidden) {
@@ -1073,7 +1108,8 @@
       }
     }
     setView("list");
-    focusCurrentRow();
+    if (deckOn()) focusSeatFrom();
+    else focusCurrentRow();
   }
 
   function openDrawer() {
@@ -1481,6 +1517,11 @@
   /** 下のバー（描くのは入口 c-app.js。形は入口が幅で決める）。mark は handMark() の値。描けなければ件数・印・タブの無い形で 1 回だけ描き直す */
   function renderBottom(mark) {
     if (!SA.list) return;
+    // 流れの列の間は下のバーを描かない（行き先は上の帯）
+    if (deckOn()) {
+      SA.list.drawBar(null);
+      return;
+    }
     // controls は右腕のボタンの aria-controls（見出しの [右腕] と同じ先）
     const ok = SA.list.drawBar({ turns: SA.topics.counts().turns, hand: mark, tabs: barTabs(), controls: "v3-hand", on: BAR_ON });
     if (!ok) SA.list.drawBar({ turns: 0, hand: null, tabs: [], controls: "v3-hand", on: BAR_ON });
@@ -1489,13 +1530,22 @@
   // ===== 接続の点と鈴（古い殻の renderTitleStatus と同じ中身。幅によらず画面を開く） =====
   let connSig = null;
 
+  /** 接続の点の中身（/api/status の最初の Bot）。読めていない・Bot が無ければ null */
+  function connBot() {
+    const status = SA.store.status;
+    const bot = status && status.bots ? status.bots[0] : null;
+    return bot ? { connected: !!bot.connected, label: bot.name + " の Bot: " + (bot.connected ? "接続中" : "接続できません") } : null;
+  }
+
   function renderConn() {
+    // 流れの列は上の帯に点を出す（鈴は出さない。知らせは通知の列）
+    renderBand();
     const box = refs.conn;
     if (!box) return;
     const status = SA.store.status;
     const bot = status && status.bots ? status.bots[0] : null;
     const notices = SA.store.notices;
-    const botLabel = bot ? bot.name + " の Bot: " + (bot.connected ? "接続中" : "接続できません") : null;
+    const botLabel = bot ? connBot().label : null;
     const bellCount = notices ? notices.recent24h : null;
     // 変わらなければ作り直さない（焦点を外さない）
     const sig = JSON.stringify([botLabel, bot ? !!bot.connected : null, bellCount]);
@@ -1594,6 +1644,158 @@
     refs.conn = conn;
   }
 
+  // ===== 流れの列（640px 以上で入口 SA.deck が在るとき。docs/plan/web-ui-deck.md の D1）: 上の帯・3 つの列・席・「探す」の板 =====
+  /**
+   * 幅と席の開閉から見える列の数と席の形を決めて #v3 に書く（data-deck・data-seat・data-find）。変わったら列・帯・下のバー・見出しを描き直す。
+   * 流れの列でなくなったら（スマホ・入口が無い）属性を消し、板を閉じ、下のバーを戻す。呼ぶのは起動・resize・スマホの境・setView
+   */
+  function fitDeck() {
+    const v3 = refs.v3;
+    if (!v3) return;
+    if (!deckOn()) {
+      if (S.deckCols === null) return;
+      closeFind(false);
+      for (const name of ["data-deck", "data-seat", "data-find"]) v3.removeAttribute(name);
+      S.deckCols = null;
+      S.deckCurrent = null;
+      renderBottom(handMark());
+      return;
+    }
+    const fit = SA.deck.fit(v3.clientWidth, S.view === "body");
+    const seat = fit.side ? "side" : "fold";
+    const current = S.view === "body" ? S.active : null;
+    const first = S.deckCols === null;
+    const changed = first || S.deckCols !== fit.cols || S.deckCurrent !== current || v3.getAttribute("data-seat") !== seat;
+    v3.setAttribute("data-deck", String(fit.cols));
+    v3.setAttribute("data-seat", seat);
+    if (first) v3.setAttribute("data-find", "closed");
+    if (!changed) return;
+    S.deckCols = fit.cols;
+    S.deckCurrent = current;
+    if (SA.flows) {
+      SA.flows.setView({ cols: fit.cols, current });
+      SA.flows.render();
+    }
+    renderBand();
+    if (first) renderBottom(handMark());
+    fitTop();
+  }
+
+  /** 列を今の値で描き直す（流れの列の間だけ） */
+  function renderFlows() {
+    if (SA.flows && deckOn()) SA.flows.render();
+  }
+
+  /** 上の帯の押した先（1 回だけ作り、毎回同じ物を渡す） */
+  const BAND_ON = {
+    status: () => open("status"),
+    find: (opener) => openFind(opener),
+    // 開いて入力欄に焦点（下のバーの右腕と同じ）
+    hand: (opener) => openHand(opener, true),
+    start: (opener) => openStart("general", opener),
+    more: (opener) => openDeckMore(opener),
+  };
+
+  /** 上の帯（描くのは入口 c-app.js。流れの列の間だけ）。点は接続の Bot、右腕は印と開閉 */
+  function renderBand() {
+    if (!deckOn()) return;
+    const bot = connBot();
+    SA.deck.drawBand({
+      conn: bot ? { tone: bot.connected ? "ok" : "bad", label: bot.label } : null,
+      hand: { mark: handMark(), open: S.handMode === "over" && S.handOver },
+      controls: "v3-hand",
+      on: BAND_ON,
+    });
+  }
+
+  /** 上の帯の歯車の「ほか」の板（引けるものだけ。会話ログは dev のとき。タスク・リマインド・GitHub・知らせは列にあるので出さない） */
+  const DECK_MORE_TABS = ["knowledge", "memories", "usage", "devlog", "settings"];
+
+  function openDeckMore(opener) {
+    const items = [];
+    for (const id of DECK_MORE_TABS) {
+      const info = SA.views.info(id);
+      if (info) items.push({ label: info.title, icon: info.icon, run: () => open(id) });
+    }
+    openSheet("ほか", items, opener);
+  }
+
+  // 「探す」の板を開いたボタン（閉じた後に焦点を戻す）
+  let findOpener = null;
+
+  function findOpen() {
+    return !!refs.v3 && refs.v3.getAttribute("data-find") === "open";
+  }
+
+  /**
+   * 「探す」の板: 一覧（話題の一覧と絞り込み）を列の上に重ね、後ろを押せなくして、絞り込み欄に焦点。履歴は積まない。
+   * ダイアログ・重ねた右腕の間は開かない（Ctrl+K と同じ）。開いていれば絞り込み欄に焦点を戻すだけ
+   */
+  function openFind(opener) {
+    if (!deckOn() || !refs.searchBox) return;
+    if (document.querySelector("dialog[open]")) return;
+    if (S.handMode === "over" && S.handOver) return;
+    if (!findOpen()) {
+      findOpener = opener || null;
+      refs.v3.setAttribute("data-find", "open");
+      const backdrop = $("v3-find-backdrop");
+      if (backdrop) backdrop.hidden = false;
+      const list = $("v3-list");
+      if (list) {
+        list.setAttribute("role", "dialog");
+        list.setAttribute("aria-modal", "true");
+        list.setAttribute("aria-label", "話題を探す");
+      }
+      for (const id of ["v3-band", "v3-deck", "v3-main"]) {
+        const n = $(id);
+        if (n) n.inert = true;
+      }
+    }
+    refs.searchBox.hidden = false;
+    if (refs.searchToggle) refs.searchToggle.setAttribute("aria-expanded", "true");
+    searchInput().focus();
+  }
+
+  /** 板を閉じる（属性を戻し、絞り込みの字を空にする）。restore なら開いたボタンへ焦点 */
+  function closeFind(restore) {
+    if (!findOpen()) return;
+    refs.v3.setAttribute("data-find", "closed");
+    const backdrop = $("v3-find-backdrop");
+    if (backdrop) backdrop.hidden = true;
+    const list = $("v3-list");
+    if (list) {
+      list.removeAttribute("role");
+      list.removeAttribute("aria-modal");
+      list.setAttribute("aria-label", "話題");
+    }
+    for (const id of ["v3-band", "v3-deck", "v3-main"]) {
+      const n = $(id);
+      if (n) n.inert = false;
+    }
+    const input = $("v3-search");
+    if (input && input.value !== "") {
+      input.value = "";
+      applyFilter("");
+    }
+    if (refs.searchBox) refs.searchBox.hidden = true;
+    if (refs.searchToggle) refs.searchToggle.setAttribute("aria-expanded", "false");
+    const opener = findOpener;
+    findOpener = null;
+    if (restore && shownNode(opener)) opener.focus();
+  }
+
+  /** 席を閉じた後の焦点: 開いた項目 → 席に開いていた話題の項目 → 帯の［探す］ */
+  function focusSeatFrom() {
+    const from = S.seatFrom;
+    S.seatFrom = null;
+    if (!SA.deck) return;
+    if (from && typeof from.key === "string" && SA.deck.focusItem(from.key)) return;
+    if (S.active) {
+      for (const prefix of ["turn:", "run:", "topic:"]) if (SA.deck.focusItem(prefix + S.active)) return;
+    }
+    SA.deck.focusBand("find");
+  }
+
   // ===== スマホのキーボード（visualViewport。古い殻と同じ） =====
   // iOS はキーボードで layout viewport を縮めないので、見えている高さを --vvh に書いて .v3 をそれに合わせ、ずらされたページを戻す。
   // キーボードが出ている間は .is-keyboard。--kb はキーボードの高さ（シートのダイアログを上に出す）。PC では書かない
@@ -1652,13 +1854,20 @@
       // 重ねた右腕が開いている間は絞り込み欄が inert の中なので取らない
       if (S.handMode === "over" && S.handOver) return;
       e.preventDefault();
-      openSearch();
+      // 流れの列は「探す」の板
+      if (deckOn()) openFind(document.activeElement);
+      else openSearch();
       return;
     }
     if (e.key !== "Escape") return;
     // IME の変換中の Escape は変換を取り消すだけ（殻は取らない）
     if (e.isComposing || e.keyCode === 229) return;
     if (document.querySelector("dialog[open]")) return;
+    // 「探す」の板は入力欄に焦点があっても閉じ、開いたボタンへ戻す
+    if (findOpen()) {
+      closeFind(true);
+      return;
+    }
     // 重ねた右腕は入力欄に焦点があっても畳む（列の右腕は畳まない）
     if (S.handMode === "over" && S.handOver) {
       closeHand();
@@ -1670,7 +1879,7 @@
       return;
     }
     if (typing(document.activeElement)) return;
-    if (phone() && S.view === "body") showList();
+    if ((phone() || deckOn()) && S.view === "body") showList();
   }
 
   // ===== 起動 =====
@@ -1702,7 +1911,9 @@
 
     bindViewport();
     mqPhone.addEventListener("change", () => {
-      setView(S.active ? "body" : "list");
+      // 流れの列とスマホの間は、席（会話）を出しているかをそのまま保つ。入口が無ければ今までどおり話題があれば会話
+      if (SA.deck) setView(S.view);
+      else setView(S.active ? "body" : "list");
       fitViewport();
       // 見出しを先に（右腕が閉じて焦点を戻す先の [右腕] が見出しの中にある）
       renderBar();
@@ -1726,14 +1937,19 @@
       if (st.v3Body && S.active) setView("body");
       else {
         setView("list");
-        // 一覧の行への焦点は右腕が関わらなかったときだけ（閉じたなら開いた口へ戻す）
-        if (phone() && !handChanged && !S.handOver) focusCurrentRow();
+        // 一覧の行（流れの列では席を開いた元）への焦点は右腕が関わらなかったときだけ（閉じたなら開いた口へ戻す）
+        if (!handChanged && !S.handOver) {
+          if (phone()) focusCurrentRow();
+          else if (deckOn()) focusSeatFrom();
+        }
       }
       if (handChanged) applyHand();
       if (handClosed) restoreHandFocus();
       // 進むで開いたら [畳む] に焦点
       else if (handChanged) focusHandClose();
     });
+    // 流れの列の数と席の形を先に（右腕の形・見出しの compact はその後に測る）
+    window.addEventListener("resize", fitDeck);
     window.addEventListener("resize", fitHand);
     // 右腕の形が決まった後に測る（登録の順に呼ばれる）
     window.addEventListener("resize", fitTop);
@@ -1748,6 +1964,8 @@
     if (show) show.addEventListener("click", () => openHand(show, false));
     const backdrop = $("v3-hand-backdrop");
     if (backdrop) backdrop.addEventListener("click", () => closeHand());
+    const findBackdrop = $("v3-find-backdrop");
+    if (findBackdrop) findBackdrop.addEventListener("click", () => closeFind(true));
     renderHeadOps();
     renderConn();
     renderBottom(handMark());
@@ -1762,7 +1980,8 @@
       fitTop();
     });
 
-    // 最初の 1 枚の前に右腕の形を決める（index.html の初期値は畳んだ重ねる形）。再読み込みで残った右腕の印は外す
+    // 最初の 1 枚の前に流れの列の形と右腕の形を決める（index.html の初期値は畳んだ重ねる形）。再読み込みで残った右腕の印は外す
+    fitDeck();
     dropHandMark();
     fitHand();
     applyHand();
@@ -1777,6 +1996,8 @@
     // 設定・使用量の画面が使う（古い殻と同じ）
     SA.store.load.usageDays();
     SA.store.load.usage(null);
+    // 流れの列のタスク・リマインドを polling に足して読む（GitHub は /api/status で有効と分かってから）
+    if (SA.flows) SA.flows.init();
     // api.js の polling は今のまま全部動かす（chat.js が store.channels・store.running・store.cc を使う）
     SA.poll.start();
     SA.topics.load().then(() => {
@@ -1793,6 +2014,7 @@
       SA.topics.render();
       SA.topics.schedule();
       renderHandEntries();
+      renderFlows();
     },
     refreshActivity: () => SA.topics.render(),
     refreshTabs,
@@ -1801,8 +2023,13 @@
     refreshStatus: () => {
       renderConn();
       reopenDeferred();
+      if (SA.flows) SA.flows.status();
+      renderFlows();
     },
-    refreshNotices: renderConn,
+    refreshNotices: () => {
+      renderConn();
+      renderFlows();
+    },
     // 出力のパネルは持たない
     addOutput: () => undefined,
     activeTabId,
@@ -1816,8 +2043,8 @@
     // サイドバー・パネルは無い
     toggleSidebar: () => undefined,
     togglePanel: () => undefined,
-    // パレットは無い。絞り込み欄を出して焦点（prefix は捨てる）
-    palette: () => openSearch(),
+    // パレットは無い。絞り込み欄（流れの列では「探す」の板）を出して焦点（prefix は捨てる）
+    palette: () => (deckOn() ? openFind(document.activeElement) : openSearch()),
     // 話題を始める（群の見出しの [+]）。tmux の Claude Code を起動する口は新しい殻に無い
     newSession: (place, opener) => openStart(place || "general", opener || null),
     ccStart: () => undefined,

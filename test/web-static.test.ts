@@ -2652,8 +2652,18 @@ test("web static: 新しい殻の SA.app は古い殻と同じ名前を全部持
   assert.deepEqual(appKeys(read("shell.js")), now);
 });
 
-test("web static: 新しい殻の幅の段は 639 だけ", () => {
+test("web static: 新しい殻の CSS の幅の段は 639 だけ。流れの列の 1340 は JS（c-deck.js の deckFit）が測る", () => {
   const css = read("shell.css");
+  // 流れの列（D1）: CSS に 1340 と min-width の幅の段を書かず、席の幅の式の数は c-deck.js の DECK と同じ
+  const deckCss = read("c-deck.css");
+  for (const text of [css, deckCss]) {
+    assert.doesNotMatch(text, /1340/);
+    assert.doesNotMatch(text, /@media[^{]*min-width/);
+  }
+  assert.match(read("c-deck.js"), /SIDE_MIN: 1340,/);
+  assert.equal(DECK.SIDE_MIN, 1340);
+  assert.ok(css.includes(`grid-template-columns: minmax(0, 1fr) min(${DECK.SIDE_MAX}px, calc(100% - ${DECK.SIDE_REST}px));`));
+  assert.ok(css.includes(`grid-template-columns: minmax(0, 1fr) clamp(${DECK.FOLD_MIN}px, ${DECK.FOLD_RATE! * 100}%, ${DECK.FOLD_MAX}px);`));
   const medias = [...css.matchAll(/@media ([^{]+)\{/g)].map((m) => m[1]!.trim());
   assert.ok(medias.includes("(max-width: 639px)"));
   // 幅の段のほかは、指・hover・動きを減らすの条件だけ
@@ -2915,7 +2925,7 @@ type BottomItem = { act: string; id?: string; label: string; name?: string; coun
 type BottomModel = { variant: string; items: BottomItem[] };
 type BarOn = { list: () => unknown; hand: (opener: unknown) => unknown; tab: (id: string) => unknown; more: (opener: unknown) => unknown };
 type BarState = { turns: number; hand: string | null; tabs: Array<{ id: string; title: string }>; controls?: string; on: BarOn };
-type TopOn = { back: () => unknown; place: (opener: unknown) => unknown; view: (value: string) => unknown; menu: (opener: unknown) => unknown; hand: (opener: unknown) => unknown; mode: (opener: unknown) => unknown };
+type TopOn = { back: () => unknown; place: (opener: unknown) => unknown; view: (value: string) => unknown; menu: (opener: unknown) => unknown; hand: (opener: unknown) => unknown; mode: (opener: unknown) => unknown; close?: () => unknown };
 type TopState = {
   view: string;
   title: string;
@@ -2927,9 +2937,13 @@ type TopState = {
   compact?: boolean;
   menu: boolean;
   mode?: { value: string; disabled: boolean; reason: string | null } | null;
+  close?: boolean;
   controls: string;
   on: TopOn;
 };
+const deckUrl = new URL("../src/web/static/c-deck.js", import.meta.url).href;
+const { deckFit, DECK } = (await import(deckUrl)) as { deckFit: (width: number, seatOpen: boolean) => { cols: number; side: boolean; seat: number; colW: number }; DECK: Record<string, number> };
+type BandState = { conn: { tone: string; label: string } | null; hand: { mark: string | null; open: boolean }; controls: string; on: Record<string, (opener?: unknown) => unknown> };
 const shellUrl = new URL("../src/web/static/c-shell.js", import.meta.url).href;
 const { bottomModel } = (await import(shellUrl)) as { bottomModel: (o: { variant: string; turns: unknown; hand: unknown; tabs: unknown }) => BottomModel };
 /** モデルの中の群（「ほかのプロジェクト」の中も） */
@@ -2971,6 +2985,11 @@ function loadShell(
      * noEntry なら SA.takeover を、noMouth なら SA.term を置かない。既定（渡さない）はどちらも無い
      */
     takeover?: { draw?: () => boolean; noEntry?: boolean; noMouth?: boolean };
+    /**
+     * 流れの列（D1）の作り物の入口 SA.deck・SA.flows と、#v3-band・#v3-deck・#v3-find-backdrop・見出しの［閉じる］を置く。
+     * fit は本物の deckFit。focusItem は items に在る key だけ true。既定（渡さない）は今までどおり何も置かない
+     */
+    deck?: boolean;
   } = {},
 ) {
   // width は .v3 の幅（右腕の形を決める。既定 1,400 = 列。一覧は 280px）
@@ -3005,7 +3024,7 @@ function loadShell(
   // 見出しの入れ物（中は部品が描く。fake DOM では data-act の付いた代わりのボタンだけ。SA.top.focus(act) がそこに焦点を置く）
   const topRoot = node("div", "c-top-root", "v3-slot");
   const topButtons: Record<string, DomNode> = {};
-  for (const act of ["back", "place", "menu", "hand"]) {
+  for (const act of opts.deck ? ["back", "place", "menu", "hand", "close"] : ["back", "place", "menu", "hand"]) {
     const b = node("button");
     b.setAttribute("data-act", act);
     topButtons[act] = b;
@@ -3029,7 +3048,26 @@ function loadShell(
   else hand.append(handShow, handEd);
   const backdrop = node("div", "v3-hand-backdrop", "v3-hand-backdrop");
   backdrop.hidden = true;
-  v3.append(list, main, hand, backdrop);
+  // 流れの列（opts.deck のときだけ）: 帯の入れ物（中は代わりのボタン）・列の入れ物（中は代わりの項目のボタン 1 つ）・探すの板の幕
+  const band = node("div", "v3-band", "v3-band");
+  const bandRoot = node("div", "c-band-root", "v3-slot");
+  const bandButtons: Record<string, DomNode> = {};
+  for (const act of ["status", "find", "hand", "start", "more"]) {
+    const b = node("button");
+    b.setAttribute("data-act", act);
+    bandButtons[act] = b;
+    bandRoot.append(b);
+  }
+  band.append(bandRoot);
+  const deckBox = node("div", "v3-deck", "v3-deck");
+  const deckRoot = node("div", "c-deck-root", "v3-slot");
+  const itemButton = node("button");
+  deckRoot.append(itemButton);
+  deckBox.append(deckRoot);
+  const findBackdrop = node("div", "v3-find-backdrop", "v3-find-backdrop");
+  findBackdrop.hidden = true;
+  if (opts.deck) v3.append(band, list, deckBox, main, hand, backdrop, findBackdrop);
+  else v3.append(list, main, hand, backdrop);
   const body = node("body");
   body.append(v3, node("dialog", "v3-sheet"));
   // 始めるダイアログ（M4b）: showModal・close は open の属性を書き、close は "close" を出す（ブラウザの <dialog> と同じく、開いていなければ出さない）
@@ -3078,7 +3116,11 @@ function loadShell(
   for (const n of descendants(body)) if (n instanceof DomNode && n.getAttribute("id")) ids.set(n.getAttribute("id")!, n);
   // ≤639px の一覧の間は .v3-main が display: none（shell.css）。hidden の要素も出ない
   // 畳んだ右腕の中身も display: none
-  DomNode.hides = (n) => n.hidden || (n === main && state.phone && v3.getAttribute("data-view") === "list") || (n === handEd && v3.getAttribute("data-hand") === "closed");
+  // 流れの列で席を閉じている間も .v3-main は display: none
+  DomNode.hides = (n) =>
+    n.hidden ||
+    (n === main && (state.phone || v3.getAttribute("data-deck") !== null) && v3.getAttribute("data-view") === "list") ||
+    (n === handEd && v3.getAttribute("data-hand") === "closed");
   DomNode.focused = null;
 
   const docListeners = new Map<string, Array<(e: unknown) => void>>();
@@ -3445,6 +3487,47 @@ function loadShell(
     assert.ok(st, "SA.top.draw が呼ばれていない");
     return st;
   };
+  // 流れの列の入口の代わり: draw・drawBand は state を覚え、focusItem は items に在る key のとき代わりの項目のボタンに焦点、focusBand は帯の代わりのボタンに焦点
+  const deckSeen = { draws: [] as unknown[], bands: [] as BandState[], focusItems: [] as string[], focusBands: [] as string[], items: new Set<string>() };
+  const flowSeen = { inits: 0, statuses: 0, views: [] as Array<{ cols: number; current: string | null }>, renders: 0, key: null as string | null };
+  if (opts.deck) {
+    SA.deck = {
+      draw(st: unknown) {
+        deckSeen.draws.push(st);
+        return true;
+      },
+      drawBand(st: BandState) {
+        deckSeen.bands.push(st);
+        return true;
+      },
+      fit: deckFit,
+      focusItem(key: string) {
+        deckSeen.focusItems.push(key);
+        if (!deckSeen.items.has(key)) return false;
+        itemButton.focus();
+        return true;
+      },
+      focusBand(act: string) {
+        deckSeen.focusBands.push(act);
+        const b = bandButtons[act];
+        if (!b) return false;
+        b.focus();
+        return true;
+      },
+    };
+    // flows.js の代わり: 呼ばれた事を覚える。lastKey は key を 1 回だけ返す（項目を押した代わりに key を置いてから open）
+    SA.flows = {
+      init: () => void flowSeen.inits++,
+      status: () => void flowSeen.statuses++,
+      setView: (v: { cols: number; current: string | null }) => void flowSeen.views.push({ ...v }),
+      render: () => void flowSeen.renders++,
+      lastKey: () => {
+        const k = flowSeen.key;
+        flowSeen.key = null;
+        return k;
+      },
+    };
+  }
   vm.runInNewContext(read("topics.js"), context);
   vm.runInNewContext(read("shell.js"), context);
   const advance = (ms: number) => {
@@ -3525,7 +3608,9 @@ function loadShell(
     press,
     app: SA.app as ShellApp,
     topics: SA.topics as Topics,
-    nodes: { v3, ed, listRoot, headOps, searchBox, sheet: ids.get("v3-sheet")!, list, main, topRoot, topButtons, hand, handEd, handShow, backdrop, bottomRoot, bottomHand, bottomMore },
+    nodes: { v3, ed, listRoot, headOps, searchBox, sheet: ids.get("v3-sheet")!, list, main, topRoot, topButtons, hand, handEd, handShow, backdrop, bottomRoot, bottomHand, bottomMore, band, bandButtons, deckBox, itemButton, findBackdrop },
+    deck: deckSeen,
+    flows: flowSeen,
     top,
     lastTop,
     handRenders,
@@ -3669,9 +3754,9 @@ test("web static: 見出しの state（topState）: 何も開いていなけれ�
   h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:a", { title: "話題 A", group: "general", place: { dir: null } }), v3Topic("ch:b", { title: "" })]));
   await h.flush();
   await h.topics.load();
-  assert.deepEqual(topPlain(h.lastTop()), { view: "none", title: "", status: null, note: null, place: null, views: null, hand: null, compact: false, menu: false, mode: null, controls: "v3-hand" });
+  assert.deepEqual(topPlain(h.lastTop()), { view: "none", title: "", status: null, note: null, place: null, views: null, hand: null, compact: false, menu: false, mode: null, close: false, controls: "v3-hand" });
   h.app.open("settings");
-  assert.deepEqual(topPlain(h.lastTop()), { view: "other", title: "題:settings", status: null, note: null, place: null, views: null, hand: null, compact: false, menu: false, mode: null, controls: "v3-hand" });
+  assert.deepEqual(topPlain(h.lastTop()), { view: "other", title: "題:settings", status: null, note: null, place: null, views: null, hand: null, compact: false, menu: false, mode: null, close: false, controls: "v3-hand" });
   h.app.open("ch:a");
   assert.deepEqual(topPlain(h.lastTop()), {
     view: "talk",
@@ -3684,6 +3769,7 @@ test("web static: 見出しの state（topState）: 何も開いていなけれ�
     compact: false,
     menu: false,
     mode: null,
+    close: false,
     controls: "v3-hand",
   });
   h.app.open("ch:b");
@@ -3740,7 +3826,7 @@ test("web static: 見出しを描けなければ、題だけの state で 1 回�
   h.app.open("ch:a");
   const [full, quiet] = h.top.draws.slice(n);
   assert.equal(full!.status!.text, "あなたの番");
-  assert.deepEqual(topPlain(quiet!), { view: "talk", title: "A", status: null, note: null, place: null, views: null, hand: null, compact: false, menu: false, mode: null, controls: "v3-hand" });
+  assert.deepEqual(topPlain(quiet!), { view: "talk", title: "A", status: null, note: null, place: null, views: null, hand: null, compact: false, menu: false, mode: null, close: false, controls: "v3-hand" });
   // 最小の state にも今の compact が入る
   h.top.narrow = true;
   h.fire("resize");
@@ -10954,4 +11040,341 @@ test("web static: 新しい殻は札の入口が無ければ『取り込む』�
   h.app.open("cc:s2");
   h.app.open("ch:3");
   assert.equal(h.lastTop().menu, false);
+});
+
+// ===== 流れの列（D1。docs/plan/web-ui-deck.md）: 上の帯・3 つの列・席・「探す」の板（shell.js。入口は作り物） =====
+const deckAttrs = (h: ReturnType<typeof loadShell>) => ["data-deck", "data-seat", "data-find"].map((n) => h.nodes.v3.getAttribute(n));
+const lastBand = (h: ReturnType<typeof loadShell>): BandState => {
+  const b = h.deck.bands.at(-1);
+  assert.ok(b, "SA.deck.drawBand が呼ばれていない");
+  return b;
+};
+
+/** 流れの列の殻（話題 ch:1・ch:2 と右腕を読ませた後） */
+async function loadDeck(opts: Parameters<typeof loadShell>[0] = {}) {
+  const h = loadShell({ deck: true, ...opts });
+  await h.flush();
+  h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:1"), v3Topic("ch:2")], { rightHands: [v3Hand()] }));
+  await h.topics.load();
+  return h;
+}
+
+test("web static: 流れの列: 幅 1440・1180・820 で data-deck は 3・3・2、data-seat は side・fold・fold。スマホでは 3 つの属性を消し、戻すと付く", async () => {
+  const h = await loadDeck({ width: 1440 });
+  assert.deepEqual(deckAttrs(h), ["3", "side", "closed"]);
+  h.setPhone(false, 1180);
+  assert.deepEqual(deckAttrs(h), ["3", "fold", "closed"]);
+  h.setPhone(false, 820);
+  assert.deepEqual(deckAttrs(h), ["2", "fold", "closed"]);
+  assert.deepEqual(h.flows.views.at(-1), { cols: 2, current: null });
+  h.setPhone(true, 390);
+  assert.deepEqual(deckAttrs(h), [null, null, null]);
+  h.setPhone(false, 1440);
+  assert.deepEqual(deckAttrs(h), ["3", "side", "closed"]);
+});
+
+test("web static: 流れの列: 項目から開くと席（data-view body・hash・v3Body の entry 1 つ）。flows に開いた ID を渡し、820 では列は 1 本。2 つ目を開いても履歴は増えない", async () => {
+  const h = await loadDeck({ width: 820 });
+  h.flows.key = "turn:ch:1";
+  h.app.open("ch:1");
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
+  assert.equal(h.location.hash, "#/ch/1");
+  assert.equal(h.calls.push, 1);
+  assert.equal((h.history.state as { v3Body?: boolean }).v3Body, true);
+  assert.deepEqual(h.flows.views.at(-1), { cols: 1, current: "ch:1" });
+  assert.deepEqual(deckAttrs(h), ["1", "fold", "closed"]);
+  // 項目から開いたら焦点は項目のまま（席の［閉じる］へ移さない）
+  assert.ok(!h.top.focuses.includes("close"));
+  assert.equal(h.lastTop().close, true);
+  h.app.open("ch:2");
+  assert.equal(h.calls.push, 1);
+  assert.equal(h.location.hash, "#/ch/2");
+  assert.deepEqual(h.flows.views.at(-1), { cols: 1, current: "ch:2" });
+  // 列の場所が足りない幅（640）では列を隠し、焦点は席の［閉じる］
+  const narrow = await loadDeck({ width: 640 });
+  narrow.app.open("ch:1");
+  assert.deepEqual(deckAttrs(narrow), ["0", "fold", "closed"]);
+  assert.equal(narrow.top.focuses.at(-1), "close");
+});
+
+test("web static: 流れの列: 席は［閉じる］・Esc・戻るの 3 通りで閉じ、開いた項目に焦点を返す。入力中の Esc では閉じない", async () => {
+  const h = await loadDeck({ width: 1440 });
+  h.deck.items.add("turn:ch:1");
+  const openItem = () => {
+    h.flows.key = "turn:ch:1";
+    h.app.open("ch:1");
+    assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
+  };
+  const closed = (how: string) => {
+    assert.equal(h.nodes.v3.getAttribute("data-view"), "list", how);
+    assert.equal(h.deck.focusItems.at(-1), "turn:ch:1", how);
+    assert.equal(h.document.activeElement, h.nodes.itemButton, how);
+    assert.deepEqual(h.flows.views.at(-1), { cols: 3, current: null }, how);
+  };
+  openItem();
+  h.lastTop().on.close!();
+  closed("閉じる");
+  openItem();
+  h.nodes.itemButton.focus();
+  h.fireDoc("keydown", keyEvent("Escape", h.nodes.itemButton));
+  closed("Esc");
+  openItem();
+  h.history.back();
+  closed("戻る");
+  // 入力中（input の中）の Esc は閉じない
+  openItem();
+  const input = new DomNode("input");
+  Object.assign(input, { closest: () => input });
+  h.nodes.ed.append(input);
+  input.focus();
+  h.fireDoc("keydown", keyEvent("Escape", input));
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
+  // 開いた元の項目が無ければ、席の話題の項目 → 帯の［探す］
+  h.deck.items.clear();
+  h.lastTop().on.close!();
+  assert.deepEqual(h.deck.focusItems.slice(-4), ["turn:ch:1", "turn:ch:1", "run:ch:1", "topic:ch:1"]);
+  assert.equal(h.deck.focusBands.at(-1), "find");
+  assert.equal(h.document.activeElement, h.nodes.bandButtons.find);
+});
+
+test("web static: 流れの列: 席を閉じている間は会話を読んでいる扱いにせず（readingChannelIds）、開くと読む。shownChannelIds は変わらない", async () => {
+  const h = (await loadDeck({ width: 1440 })) as HandShell;
+  h.app.open("ch:1");
+  assert.deepEqual(readingIds(h), ["1"]);
+  assert.deepEqual(shownIds(h), ["1"]);
+  h.lastTop().on.close!();
+  assert.deepEqual(readingIds(h), []);
+  assert.deepEqual(shownIds(h), ["1"]);
+  h.history.forward();
+  assert.deepEqual(readingIds(h), ["1"]);
+});
+
+test("web static: 流れの列: ［探す］と Ctrl+K で一覧を板にして重ね（後ろは inert・絞り込み欄に焦点・履歴は積まない）、Esc・幕で閉じて開いたボタンへ。行を開くと閉じて席の［閉じる］へ", async () => {
+  const h = await loadDeck({ width: 1440 });
+  const pushes = h.calls.push;
+  const findBtn = h.nodes.bandButtons.find!;
+  const opened = () => {
+    assert.deepEqual(deckAttrs(h)[2], "open");
+    assert.equal(h.nodes.list.getAttribute("role"), "dialog");
+    assert.equal(h.nodes.list.getAttribute("aria-modal"), "true");
+    assert.equal(h.nodes.list.getAttribute("aria-label"), "話題を探す");
+    for (const n of [h.nodes.band, h.nodes.deckBox, h.nodes.main]) assert.equal((n as unknown as { inert: boolean }).inert, true);
+    assert.equal(h.nodes.findBackdrop.hidden, false);
+    assert.equal(h.nodes.searchBox.hidden, false);
+    assert.equal(h.document.activeElement, h.document.getElementById("v3-search"));
+  };
+  const shut = (focus: DomNode) => {
+    assert.deepEqual(deckAttrs(h)[2], "closed");
+    assert.equal(h.nodes.list.getAttribute("role"), null);
+    assert.equal(h.nodes.list.getAttribute("aria-modal"), null);
+    assert.equal(h.nodes.list.getAttribute("aria-label"), "話題");
+    for (const n of [h.nodes.band, h.nodes.deckBox, h.nodes.main]) assert.equal((n as unknown as { inert: boolean }).inert, false);
+    assert.equal(h.nodes.findBackdrop.hidden, true);
+    assert.equal(h.nodes.searchBox.hidden, true);
+    assert.equal(h.document.activeElement, focus);
+  };
+  findBtn.focus();
+  lastBand(h).on.find!(findBtn);
+  opened();
+  // 絞り込んだ字は閉じると消える
+  const input = h.document.getElementById("v3-search")!;
+  (input as unknown as { value: string }).value = "ch:1";
+  input.dispatch("input");
+  h.fireDoc("keydown", keyEvent("Escape", input));
+  shut(findBtn);
+  assert.equal((input as unknown as { value: string }).value, "");
+  // Ctrl+K（開いたボタンは今の焦点）と幕
+  const k = keyEvent("k", findBtn, { ctrlKey: true });
+  h.fireDoc("keydown", k);
+  assert.equal(k.prevented, true);
+  opened();
+  h.nodes.findBackdrop.dispatch("click");
+  shut(findBtn);
+  // SA.app.palette も板
+  h.app.palette();
+  opened();
+  // 行を開くと閉じて席。焦点は席の［閉じる］
+  h.press.open("ch:2");
+  assert.deepEqual(deckAttrs(h)[2], "closed");
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
+  assert.equal(h.top.focuses.at(-1), "close");
+  assert.equal(h.calls.push, pushes + 1);
+  // ダイアログ・重ねた右腕の間は開かない
+  const doc = h.document as unknown as { querySelector: (sel: string) => unknown };
+  doc.querySelector = (sel: string) => (sel === "dialog[open]" ? {} : null);
+  lastBand(h).on.find!(findBtn);
+  assert.deepEqual(deckAttrs(h)[2], "closed");
+  doc.querySelector = () => null;
+  lastBand(h).on.hand!(h.nodes.bandButtons.hand);
+  assert.equal(h.nodes.v3.getAttribute("data-hand"), "open");
+  lastBand(h).on.find!(findBtn);
+  h.fireDoc("keydown", keyEvent("k", findBtn, { metaKey: true }));
+  assert.deepEqual(deckAttrs(h)[2], "closed");
+});
+
+test("web static: 流れの列: 右腕は幅 1400 でも重ねる形で、帯の［右腕］で開き、閉じると帯のボタンへ。下のバーは描かない（drawBar(null)）", async () => {
+  const h = await loadDeck({ width: 1400 });
+  assert.equal(h.nodes.v3.getAttribute("data-hand-mode"), "over");
+  assert.equal(h.list.bottoms.at(-1), null);
+  const hand = h.nodes.bandButtons.hand!;
+  lastBand(h).on.hand!(hand);
+  assert.equal(h.nodes.v3.getAttribute("data-hand"), "open");
+  assert.equal(lastBand(h).hand.open, true);
+  assert.equal(lastBand(h).controls, "v3-hand");
+  for (const n of [h.nodes.band, h.nodes.deckBox]) assert.equal((n as unknown as { inert: boolean }).inert, true);
+  h.nodes.backdrop.dispatch("click");
+  assert.equal(h.nodes.v3.getAttribute("data-hand"), "closed");
+  assert.equal(lastBand(h).hand.open, false);
+  assert.equal(h.document.activeElement, hand);
+  for (const n of [h.nodes.band, h.nodes.deckBox]) assert.equal((n as unknown as { inert: boolean }).inert, false);
+  // スマホに替えると下のバーが戻る
+  h.setPhone(true, 390);
+  assert.notEqual(h.list.bottoms.at(-1), null);
+  assert.equal(h.bottom().variant, "phone");
+});
+
+test("web static: 流れの列: 帯の［＋ 始める］は General の始める板、歯車の板は 知識・メモリ・使用量・（dev なら会話ログ）・設定、点は状態の画面", async () => {
+  const all = ["knowledge", "memories", "usage", "devlog", "settings", "status", "tasks", "reminders", "github", "notices"];
+  for (const dev of [false, true]) {
+    const h = await loadDeck({ width: 1440, known: (tab) => tab.startsWith("ch:") || (all.includes(tab) && (dev || tab !== "devlog")), status: { bots: [{ name: "見本", connected: true }] } });
+    assert.deepEqual(JSON.parse(JSON.stringify(lastBand(h).conn)), { tone: "ok", label: "見本 の Bot: 接続中" });
+    const more = h.nodes.bandButtons.more!;
+    lastBand(h).on.more!(more);
+    const sheet = h.nodes.sheet;
+    assert.equal(sheet.getAttribute("aria-label"), "ほか");
+    assert.deepEqual(sheet.querySelectorAll("button.more-row").map(textOf), ["題:knowledge", "題:memories", "題:usage", ...(dev ? ["題:devlog"] : []), "題:settings"]);
+    sheet.querySelector("button.sheet-close")!.dispatch("click");
+    lastBand(h).on.start!(h.nodes.bandButtons.start);
+    assert.equal(h.document.getElementById("v3-start")!.getAttribute("open"), "");
+    assert.equal((h.document.getElementById("v3-start-place") as unknown as { value: string }).value, "general");
+    (h.document.getElementById("v3-start") as unknown as { close: () => void }).close();
+    lastBand(h).on.status!();
+    assert.equal(h.app.activeTabId(), "status");
+    assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
+  }
+  // 状態を読めていなければ点は出さない
+  const quiet = await loadDeck({ width: 1440 });
+  assert.equal(lastBand(quiet).conn, null);
+});
+
+test("web static: 流れの列: 起動で flows.init を polling の前に 1 回、状態・一覧・知らせ・タブの描き直しで flows.render、状態では flows.status も", async () => {
+  const h = await loadDeck({ width: 1440 });
+  assert.equal(h.flows.inits, 1);
+  const before = { renders: h.flows.renders, statuses: h.flows.statuses };
+  h.app.refreshStatus();
+  assert.equal(h.flows.statuses, before.statuses + 1);
+  h.app.refreshSidebar();
+  h.app.refreshNotices();
+  h.app.refreshTabs();
+  assert.ok(h.flows.renders >= before.renders + 4);
+  // スマホの間は描かない
+  h.setPhone(true, 390);
+  const phoneRenders = h.flows.renders;
+  h.app.refreshSidebar();
+  assert.equal(h.flows.renders, phoneRenders);
+  const sh = read("shell.js");
+  const init = fnSource(sh, "init");
+  assert.ok(init.indexOf("SA.flows.init()") < init.indexOf("SA.poll.start()"));
+});
+
+test("web static: 流れの列: 入口（SA.deck）が無ければ属性を書かず、右腕は列の形・下のバーは広い幅のまま（今の落ち先）。SA.app のキーは古い殻と同じ", async () => {
+  const h = await loadHand({ width: 1400 });
+  assert.deepEqual(deckAttrs(h), [null, null, null]);
+  assert.equal(h.nodes.v3.getAttribute("data-hand-mode"), "column");
+  assert.equal(h.bottom().variant, "wide");
+  h.app.open("ch:1");
+  assert.equal(h.calls.push, 0);
+  assert.equal(h.lastTop().close, false);
+  assert.deepEqual(appKeys(read("shell.js")), appKeys(read("workbench.js")));
+});
+
+test("web static: shell.css の流れの列の規則は .v3[data-deck] 始まりか、素の display: none の 1 つだけで、スマホの塊に流れの列の字が無い", () => {
+  const css = read("shell.css");
+  const start = css.indexOf("===== 流れの列（D1");
+  const end = css.indexOf("/* ===== スマホ（639px 以下）");
+  assert.ok(start > 0 && end > start);
+  const block = css.slice(css.lastIndexOf("/*", start), end).replace(/\/\*[\s\S]*?\*\//g, "");
+  const rules = [...block.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ sel: m[1]!.trim().replace(/\s+/g, " "), body: m[2]!.trim() }));
+  assert.ok(rules.length >= 10);
+  const bare = rules.filter((r) => !r.sel.split(",").every((p) => p.trim().startsWith(".v3[data-deck")));
+  assert.deepEqual(bare, [{ sel: ".v3-band, .v3-deck, .v3-find-backdrop", body: "display: none;" }]);
+  const phone = css.slice(css.indexOf("@media (max-width: 639px)"));
+  const phoneBlock = phone.slice(0, phone.indexOf("\n}\n") + 3);
+  assert.doesNotMatch(phoneBlock, /data-deck|data-seat|data-find|v3-band|v3-deck|v3-find/);
+  // 流れの列の規則は media の外（幅の段を足さない）
+  assert.ok(end < css.indexOf("@media (max-width: 639px)"));
+});
+
+/** api.js と flows.js を同じ偽の window で読む（SA.api.get は get。topics・views・ui は作り物） */
+function loadFlows(get: (path: string) => Promise<unknown>) {
+  const SA: Record<string, unknown> = {
+    app: { shownChannelIds: () => [], activeTabId: () => null, refresh: () => undefined, refreshStatus: () => undefined, refreshSidebar: () => undefined, refreshNotices: () => undefined, open: () => undefined },
+    chat: { markSeenShown: () => undefined },
+    ui: { toast: () => undefined, shortTime: () => "12:00" },
+    topics: { data: () => null },
+    views: { ago: () => "", dayLabel: (d: string) => d, oneLine: (t: string) => t, githubParts: () => null },
+  };
+  const ctx: Record<string, unknown> = {
+    window: { SA, localStorage: { getItem: () => null, setItem: () => undefined }, addEventListener: () => undefined },
+    document: { visibilityState: "visible", addEventListener: () => undefined },
+    setTimeout: () => 0,
+    clearTimeout: () => undefined,
+    Promise,
+  };
+  vm.runInNewContext(read("api.js"), ctx);
+  (SA.api as { get: (path: string) => Promise<unknown> }).get = get;
+  vm.runInNewContext(read("flows.js"), ctx);
+  return SA as Record<string, unknown> & {
+    store: { status: unknown; want: (keys: string[]) => void; load: { lists: () => Promise<unknown> } };
+    flows: { init: () => void; status: () => void; state: () => Record<string, unknown>; lastKey: () => string | null };
+  };
+}
+
+test("web static: 流れの列の読み込み: init でタスク（open）とリマインドを読み、一度も読んでいなくても lists で読み直す。GitHub は有効と分かるまで読まず、分かった回に 1 回", async () => {
+  const paths: string[] = [];
+  const SA = loadFlows((path) => {
+    paths.push(path);
+    return Promise.resolve({});
+  });
+  // 何も足していなければ lists はタスク・リマインドを読まない
+  await SA.store.load.lists();
+  assert.equal(paths.length, 0);
+  SA.flows.init();
+  SA.flows.init();
+  assert.deepEqual(paths, ["/api/tasks?status=open", "/api/reminders"]);
+  await new Promise((r) => setImmediate(r));
+  paths.length = 0;
+  await SA.store.load.lists();
+  assert.deepEqual(paths.sort(), ["/api/reminders", "/api/tasks?status=open"]);
+  // GitHub
+  paths.length = 0;
+  SA.store.status = { github: { enabled: false } };
+  SA.flows.status();
+  await SA.store.load.lists();
+  assert.ok(!paths.some((p) => p.startsWith("/api/github")));
+  assert.equal(SA.flows.state().github, null);
+  SA.store.status = { github: { enabled: true } };
+  SA.flows.status();
+  SA.flows.status();
+  assert.equal(paths.filter((p) => p.startsWith("/api/github")).length, 1);
+  await new Promise((r) => setImmediate(r));
+  paths.length = 0;
+  await SA.store.load.lists();
+  assert.equal(paths.filter((p) => p.startsWith("/api/github")).length, 1);
+  // store.want で足した物は読んでいなくても読む
+  const other = loadFlows((path) => {
+    paths.push(path);
+    return Promise.resolve({});
+  });
+  paths.length = 0;
+  other.store.want(["memories"]);
+  await other.store.load.lists();
+  assert.deepEqual(paths, ["/api/memories"]);
+  // 押した項目の key は 1 回だけ
+  const st = other.flows.state() as { on: { open: (item: unknown, key: string) => void }; ops: boolean; cols: number };
+  assert.equal(st.ops, false);
+  assert.equal(st.cols, 3);
+  st.on.open({ target: "ch:1" }, "turn:ch:1");
+  assert.equal(other.flows.lastKey(), "turn:ch:1");
+  assert.equal(other.flows.lastKey(), null);
 });
