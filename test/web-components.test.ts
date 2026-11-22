@@ -1572,6 +1572,7 @@ test("web components: topModel の phone・talk（戻る・右腕、場所と切
     views: null,
     menu: true,
     hand: { name: shell.handLabel("turn"), mark: "turn" },
+    close: false,
   });
   assert.equal((shell.topModel(topProps({ variant: "tablet" })) as Obj).variant, "phone");
   assert.equal(shell.topModel(topProps({ note: "調べ物" }))?.rest, "場所: General ・ 調べ物");
@@ -1620,6 +1621,7 @@ test("web components: topModel の wide・compact（場所・切り替えは nul
     views: null,
     menu: true,
     hand: null,
+    close: false,
   });
   assert.equal(shell.topModel({ ...props, note: null })?.rest, "場所: General");
   assert.equal(shell.topModel({ ...props, place: null })?.rest, "調べ物");
@@ -1637,10 +1639,10 @@ test("web components: topModel の wide・compact（場所・切り替えは nul
 test("web components: topModel の other（状態・補足・場所・切り替え・「…」なし。phone は戻ると右腕だけ残る）", () => {
   const props = topProps({ view: "other", title: "設定", note: "調べ物", views: { value: "talk" } });
   assert.deepEqual(shell.topModel(props), {
-    variant: "phone", view: "other", title: "設定", back: true, compact: false, status: null, rest: "", place: null, mode: null, views: null, menu: false, hand: { name: shell.handLabel("turn"), mark: "turn" },
+    variant: "phone", view: "other", title: "設定", back: true, compact: false, status: null, rest: "", place: null, mode: null, views: null, menu: false, hand: { name: shell.handLabel("turn"), mark: "turn" }, close: false,
   });
   assert.deepEqual(shell.topModel({ ...props, variant: "wide" }), {
-    variant: "wide", view: "other", title: "設定", back: false, compact: false, status: null, rest: "", place: null, mode: null, views: null, menu: false, hand: null,
+    variant: "wide", view: "other", title: "設定", back: false, compact: false, status: null, rest: "", place: null, mode: null, views: null, menu: false, hand: null, close: false,
   });
 });
 
@@ -3899,7 +3901,6 @@ const deck = (await import(deckUrl)) as Record<string, Fn> & {
   reminderItems: (state: Obj) => FlowItem[];
   feedItems: (state: Obj) => FlowItem[];
   deckModel: (state: Obj) => { cols: number; columns: FlowColumn[] };
-  itemSelector: (key: string) => string;
 };
 
 /** 流れの列の state（既定は全部空で読めている） */
@@ -4094,7 +4095,6 @@ test("web components: deckModel の 3 つの列（名前・数・tone・phase・
   assert.deepEqual(rem.sections.map((s) => s.label), ["リマインド"]);
   // cols は 0〜3 に丸め、数でなければ 3
   assert.deepEqual([5, -1, 1.7, "x"].map((c) => deck.deckModel(flowOf({ cols: c })).cols), [3, 0, 1, 3]);
-  assert.equal(deck.itemSelector("task:1"), '[data-key="task:1"] .c-item-main');
 });
 
 test("web components: Deck は 3 つの section.c-col を常に出し、項目の data-*・aria-current、席に開けない物は div、外へのリンクは新しいタブ。押すと on.open(item, key)", () => {
@@ -4200,4 +4200,31 @@ test("web components: c-deck.css は区切りの線（左の線と 0 の外し�
     }
   }
   assert.doesNotMatch(stripCssComments(read("c-deck.css")), /@keyframes|@media \(min-width|1340/);
+});
+
+test("web components: TopBar の close（true で帯の右端に data-act=close の［閉じる］が 1 つ。false・無しは今と同じ出力、view none は出さない）", () => {
+  const calls: unknown[][] = [];
+  const on = { ...topRec().on, close: () => void calls.push(["close"]) };
+  for (const variant of ["wide", "phone"]) {
+    const v = shell.TopBar({ ...topProps({ variant }), close: true, on }) as VNode;
+    const keys = keysOf(v.props.children).filter((k) => k !== undefined);
+    assert.equal(keys.at(-1), "close", variant);
+    const bar = one(v);
+    const closes = bar.children.filter((c): c is El => typeof c !== "string" && c.props["data-act"] === "close");
+    assert.equal(closes.length, 1);
+    const btn = find(closes[0]!, "c-iconbtn")[0]!;
+    assert.equal(btn.props["aria-label"], "閉じる");
+    (btn.props.onClick as (e: unknown) => void)(fakeEvent());
+  }
+  assert.deepEqual(calls, [["close"], ["close"]]);
+  for (const close of [false, undefined, "true"]) {
+    const without = shell.TopBar({ ...topProps({ variant: "wide" }), close, on }) as VNode;
+    const plain = shell.TopBar({ ...topProps({ variant: "wide" }), on }) as VNode;
+    assert.deepEqual(keysOf(without.props.children), keysOf(plain.props.children), String(close));
+    assert.equal(textOf(one(without)), textOf(one(plain)));
+    assert.equal(one(without).children.length, one(plain).children.length);
+    assert.equal(shell.topModel({ ...topProps(), close })?.close, false);
+  }
+  assert.equal(shell.TopBar({ ...topProps({ view: "none" }), close: true, on }), null);
+  assert.equal(shell.topModel({ ...topProps({ view: "other" }), close: true })?.close, true);
 });

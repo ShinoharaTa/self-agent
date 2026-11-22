@@ -80,9 +80,10 @@ const TOP_VIEWS = [
  * compact（広い幅で根が狭いとき。入口が測って渡す）は、広い幅でも場所・切り替えを帯に出さず、スマホと同じく補足の語にする。
  * place は text が空でない文字列のときだけ場所として扱う。広い幅の帯のボタンは名前だけを見せ、「場所: 」付きは読み上げの名前（label）。
  * mode（プロジェクトのセッションの許可のモード）は、広い幅で compact でない会話の見出しで、value が default・acceptEdits・plan のときだけ帯のボタンにする
- * （スマホ・compact は帯にも補足の語にも出さない。「…」の板から）
+ * （スマホ・compact は帯にも補足の語にも出さない。「…」の板から）。
+ * close（流れの列の席。D1）は true のときだけ帯の右端に［閉じる］を出す
  */
-export function topModel({ variant, view, title, status, note, place, views, hand, menu, compact, mode }) {
+export function topModel({ variant, view, title, status, note, place, views, hand, menu, compact, mode, close }) {
   if (view !== "talk" && view !== "other") return null;
   const v = variant === "wide" ? "wide" : "phone";
   const narrow = v === "wide" && compact === true;
@@ -127,12 +128,13 @@ export function topModel({ variant, view, title, status, note, place, views, han
     views: vw,
     menu: talk && menu === true,
     hand: hd,
+    close: close === true,
   };
 }
 
-/** 会話の見出し（列 2 の上）。on: { back(), place(opener), mode(opener), view(value), menu(opener), hand(opener) }。直下の子は決まった key（増減しても残る子を作り直さない） */
-export function TopBar({ variant, view, title, status, note, place, views, hand, menu, compact, mode, controls, on }) {
-  const m = topModel({ variant, view, title, status, note, place, views, hand, menu, compact, mode });
+/** 会話の見出し（列 2 の上）。on: { back(), place(opener), mode(opener), view(value), menu(opener), hand(opener), close() }。直下の子は決まった key（増減しても残る子を作り直さない） */
+export function TopBar({ variant, view, title, status, note, place, views, hand, menu, compact, mode, close, controls, on }) {
+  const m = topModel({ variant, view, title, status, note, place, views, hand, menu, compact, mode, close });
   if (m === null) return null;
   const wide = m.variant === "wide";
   const statusEl = m.status ? html`<span class="c-top-status" key="status" data-tone=${m.status.tone}>${m.status.text}</span>` : null;
@@ -184,5 +186,6 @@ export function TopBar({ variant, view, title, status, note, place, views, hand,
           ${m.hand.mark ? html`<span class="c-top-hand-mark" data-state=${m.hand.mark} aria-hidden="true"></span>` : null}
         </button>`
       : null}
+    ${m.close ? html`<span class="c-top-act" key="close" data-act="close"><${IconButton} icon="x" label="閉じる" onPress=${() => on.close()} /></span>` : null}
   </header>`;
 }
