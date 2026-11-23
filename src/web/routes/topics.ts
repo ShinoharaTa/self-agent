@@ -315,7 +315,7 @@ export function createTopicCollector(deps: TopicRouteDeps): (at: number, done: s
     for (const guildId of guilds) {
       const settings = guildSettings.get(guildId)!;
       const latest = history.latestByChannel(guildId);
-      // last は id・at・kind だけ（lastAgent・lastOwnerId はセッションの話題の種にだけ使う）
+      // last は id・at・kind だけ（lastAgent・lastOwnerId・lastDividerId はセッションの話題の種にだけ使う）
       const lastOf = (channelId: string): TopicLast => {
         const row = latest.get(channelId);
         return row === undefined ? null : { id: row.id, at: row.at, kind: row.kind };
