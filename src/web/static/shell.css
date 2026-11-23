@@ -209,7 +209,7 @@
   min-height: 0;
   width: var(--v3-hand-w);
   border-left: var(--border-width) solid var(--border);
-  background: var(--surface);
+  background: var(--bg);
 }
 
 /* 畳んだ列は細い帯にボタン 1 つ（場所が動かない） */
@@ -345,6 +345,15 @@
 .v3[data-deck] .v3-main {
   grid-column: 2;
   grid-row: 2;
+  background: var(--surface);
+}
+
+/* app.css の .ed は --bg を塗るので、流れの列の形では板の色で上書きする（席の #ed と右腕の #v3-hand-ed） */
+.v3[data-deck] .ed {
+  background: var(--surface);
+}
+
+.v3[data-deck] .v3-hand {
   background: var(--surface);
 }
 

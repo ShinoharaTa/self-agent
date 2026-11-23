@@ -4814,7 +4814,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           if (problems.length > 0) throw new Error(`入口の検査で ${problems.length} 件`);
         });
       }
-      // 流れの列（D1。スマホは D2）: 列の数と幅・はみ出し・番の項目の面と線・帯のボタン。項目から席（スマホはスレッド）を開いて、列と席の幅・開いた項目の印・席の面（D3。地と台の色・見出しと入力欄の帯の線・欄の地）。
+      // 流れの列（D1。スマホは D2）: 列の数と幅・はみ出し・番の項目の面と線・帯のボタン。項目から席（スマホはスレッド）を開いて、列と席の幅・開いた項目の印・席の面（D3。席と席の中（#ed）の地と台の色・見出しと入力欄の帯の線・欄の地）。
       // ダークのスマホは続けて、スレッドの間の帯とバー・戻る・当たり・帯の名前・下のバーで送った列・通知の列の縦の位置・歯車の板・古い hash・動きを減らす設定（phoneDeck）
       {
         const deckShots = [`${p}-a-deck`, `${p}-a-deck-seat`, ...(vp === "phone" && theme === "dark" ? [`${p}-a-deck-tasks`, `${p}-a-deck-feed`, `${p}-a-deck-more`] : [])];
@@ -4849,14 +4849,16 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
               };
               const main = cs("#v3-main");
               const shell = cs("#v3");
+              const ed = cs("#ed");
               const top = cs("#v3-main .c-top");
               const composer = cs("#v3-main .c-composer");
               const input = cs("#v3-main .c-composer-input");
-              if (main === null || shell === null || top === null || composer === null || input === null) {
-                say(`席・殻・見出し・入力欄の帯・欄のどれかが無い（${[main, shell, top, composer, input].map((x) => (x === null ? "無" : "在")).join("・")}）`);
+              if (main === null || ed === null || shell === null || top === null || composer === null || input === null) {
+                say(`席・席の中・殻・見出し・入力欄の帯・欄のどれかが無い（${[main, ed, shell, top, composer, input].map((x) => (x === null ? "無" : "在")).join("・")}）`);
                 return out;
               }
               if (main.backgroundColor !== want.surface) say(`席の地 ${main.backgroundColor}（--surface ${want.surface} のはず）`);
+              if (ed.backgroundColor !== want.surface) say(`席の中（#ed）の地 ${ed.backgroundColor}（--surface ${want.surface} のはず）`);
               if (shell.backgroundColor !== want.bench) say(`台の地 ${shell.backgroundColor}（--bench ${want.bench} のはず）`);
               if (top.boxShadow !== "none") say(`見出しの影 ${top.boxShadow}（none のはず）`);
               if (composer.borderTopWidth !== "0px") say(`入力欄の帯の上の線 ${composer.borderTopWidth}（0px のはず）`);
@@ -5145,6 +5147,21 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         await shot(page, handName);
         // 開いた右腕の中は部品（最後に札の［開く］を押す）
         const problems = await handPartsLines(page, vp, vp === "phone");
+        // 右腕の中（#v3-hand-ed）の地は、流れの列の形では板（--surface。D3 の PR-1）、落ち先の形では --bg
+        problems.push(
+          ...(await page.evaluate(() => {
+            const probe = document.createElement("span");
+            document.body.append(probe);
+            const deck = document.querySelector("#v3")?.hasAttribute("data-deck") === true;
+            probe.style.color = deck ? "var(--surface)" : "var(--bg)";
+            const want = getComputedStyle(probe).color;
+            probe.remove();
+            const ed = document.querySelector("#v3-hand-ed");
+            if (ed === null) return ["右腕の中（#v3-hand-ed）が無い"];
+            const got = getComputedStyle(ed).backgroundColor;
+            return got === want ? [] : [`右腕の中の地 ${got}（${deck ? "--surface" : "--bg"} ${want} のはず）`];
+          })),
+        );
         for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
         if (problems.length > 0) throw new Error(`右腕の段の検査で ${problems.length} 件`);
         if (vp !== "phone") {
