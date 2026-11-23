@@ -1134,6 +1134,11 @@
     SA.chat.markSeenShown();
   }
 
+  /** 席が開くときの動き（shell.css の [data-moves="on"]。D5 の PR-1）は最初の操作（pointerdown か keydown）の後だけ。読み込みで開いた席（hash）は動かさない。付けた後は外さない */
+  function movesOn() {
+    refs.v3.setAttribute("data-moves", "on");
+  }
+
   function showBody() {
     setView("body");
     const hash = S.active ? hashOf(S.active) : location.pathname + location.search;
@@ -2102,6 +2107,8 @@
       if (tabId && tabId !== S.active && (SA.views.info(tabId) || oldPage(tabId) !== null)) open(tabId);
     });
     document.addEventListener("keydown", onKey);
+    // 押した物の受け口より先に（capture）、1 回だけ
+    for (const type of ["pointerdown", "keydown"]) document.addEventListener(type, movesOn, { capture: true, once: true });
     // 畳んだ帯の口と backdrop（下のバーの右腕のボタンは BAR_ON.hand、見出しの [右腕] は TOP_ON.hand）
     const show = $("v3-hand-show");
     if (show) show.addEventListener("click", () => openHand(show, false));
