@@ -3222,7 +3222,13 @@ test("web components: カードの言葉は今の画面に在る物（新しい�
   const rules = parseCss(read("c-cards.css"));
   const decls = (sel: string, inFine = false): string[] =>
     rules.filter((r) => r.selectors.includes(sel) && (inFine ? r.at.some((a) => a.includes(FINE)) : r.at.length === 0)).flatMap((r) => r.body.split(";").map((d) => d.trim()).filter((d) => d !== ""));
-  for (const d of ["border: var(--border-width) solid var(--warning)", "border-radius: var(--c-card-r)", "background: var(--surface)", "max-width: var(--c-card-max)"]) assert.ok(decls(".c-card").includes(d), d);
+  // 番の面と左の --warning の線（枠は無く、左の角は丸めない）
+  for (const d of ["border: 0", "border-left: var(--c-deck-line) solid var(--warning)", "border-radius: 0 var(--c-card-r) var(--c-card-r) 0", "background: var(--turn-surface)", "max-width: var(--c-card-max)"]) assert.ok(decls(".c-card").includes(d), d);
+  // 見出しと急ぎの残り時間の字は --text（急ぎは太さで分ける）
+  assert.ok(decls(".c-card-title").includes("color: var(--text)"));
+  assert.ok(decls('.c-card-meta[data-urgent="true"]').includes("color: var(--text)"));
+  assert.ok(decls('.c-card-meta[data-urgent="true"]').includes("font-weight: var(--weight-semibold)"));
+  for (const sel of [".c-card-title", '.c-card-meta[data-urgent="true"]']) assert.ok(!decls(sel).some((d) => d.startsWith("color:") && d.includes("--warning")), sel);
   for (const prop of ["margin", "font-weight", "line-height", "font-size"]) assert.ok(decls(".c-card-title").some((d) => d.startsWith(prop + ":")), prop);
   assert.ok(decls(".c-card-check").includes("min-height: var(--c-tap)"));
   for (const d of ["width: var(--c-check)", "height: var(--c-check)", "accent-color: var(--accent)"]) assert.ok(decls(".c-card-check-input").includes(d), d);
@@ -3525,6 +3531,36 @@ test("web components: c-cards.js の .value の代入は口の 1 か所だけで
     rules.filter((r) => r.at.length === 0 && r.selectors.length === 1 && r.selectors[0] === sel).flatMap((r) => r.body.split(";").map((d) => d.trim()).filter((d) => d !== ""));
   for (const d of ["caret-color: var(--accent)", "font-size: var(--c-font-body)"]) assert.ok(decls(".c-card-other").includes(d), d);
   for (const d of ["border: 0", "padding: 0", "margin: 0", "min-width: 0"]) assert.ok(decls(".c-card-q").includes(d), d);
+  // 問と問の間は線でなく余白（1 問目の上の余白 0 より大きい）
+  const between = decls(".c-card-q + .c-card-q");
+  assert.ok(between.includes("padding-top: var(--space-4)"), between.join("; "));
+  assert.deepEqual(between.filter((d) => d.startsWith("border")), []);
+  // 「その他」の欄は番の面の上の板の地（--muted はライトで番の面と 1.02 になり見分けられない）
+  assert.ok(decls(".c-card-other").includes("background: var(--surface)"));
+});
+
+test("web components: c-cards.css のカードの中の字は --text・--text-secondary・--text-muted だけで、番の面（--turn-surface）の上でダーク・ライトとも 4.5 以上。--warning は .c-card の左の線だけ", () => {
+  const rules = parseCss(read("c-cards.css"));
+  const inCard = rules.filter((r) => r.selectors.some((s) => /^\.c-card(?![a-z])/.test(s)));
+  const colors = new Set(inCard.flatMap((r) => [...r.body.matchAll(/(?:^|; ?)color: var\((--[a-z-]+)\)/g)].map((m) => m[1] ?? "")));
+  assert.deepEqual([...colors].sort(), ["--text", "--text-muted", "--text-secondary"]);
+  const warnings = rules.flatMap((r) => r.body.split(";").map((d) => d.trim()).filter((d) => d.includes("--warning")).map((d) => `${r.selectors.join(",")} { ${d} }`));
+  assert.deepEqual(warnings, [".c-card { border-left: var(--c-deck-line) solid var(--warning) }"]);
+  const tokenRules = parseCss(read("tokens.css")).filter((r) => r.body.includes("--turn-surface:"));
+  assert.equal(tokenRules.length, 4);
+  for (const block of tokenRules) {
+    const v = new Map([...block.body.matchAll(/(--[a-z0-9-]+):\s*(#[0-9a-f]{6})\b/g)].map((m) => [m[1] ?? "", m[2] ?? ""]));
+    const turn = v.get("--turn-surface")!;
+    for (const name of colors) assert.ok(contrast(v.get(name)!, turn) >= 4.5, `${block.selectors.join(",")} ${name} ${contrast(v.get(name)!, turn)}`);
+  }
+});
+
+test("web components: ライトの --warning は番の面（--turn-surface）の上で 4.5 を割る（4.499）。だからカードの見出し・急ぎの字を --warning にしない", () => {
+  const light = parseCss(read("tokens.css")).find((r) => r.selectors.includes(':root[data-theme="light"]'))!;
+  const v = new Map([...light.body.matchAll(/(--[a-z0-9-]+):\s*(#[0-9a-f]{6})\b/g)].map((m) => [m[1] ?? "", m[2] ?? ""]));
+  const ratio = contrast(v.get("--warning")!, v.get("--turn-surface")!);
+  assert.ok(ratio < 4.5, String(ratio));
+  assert.equal(ratio.toFixed(3), "4.499");
 });
 
 // ===== 許可のモード（プロジェクトのセッション。見出しの帯のボタン） =====

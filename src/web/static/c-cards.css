@@ -7,7 +7,7 @@
   gap: var(--space-3);
 }
 
-/* 枠。どの幅でも --warning の線と角。字と色は自分で持つ（置かれた先からの継承を当てにしない） */
+/* 番の面と左の --warning の線（列の番の項目と同じ形。枠は無く、左の角は丸めない）。字と色は自分で持つ（置かれた先からの継承を当てにしない） */
 .c-card {
   box-sizing: border-box;
   display: grid;
@@ -17,9 +17,10 @@
   max-width: var(--c-card-max);
   margin: 0;
   padding: var(--space-3) var(--space-4);
-  border: var(--border-width) solid var(--warning);
-  border-radius: var(--c-card-r);
-  background: var(--surface);
+  border: 0;
+  border-left: var(--c-deck-line) solid var(--warning);
+  border-radius: 0 var(--c-card-r) var(--c-card-r) 0;
+  background: var(--turn-surface);
   color: var(--text);
   font-size: var(--c-font-body);
   line-height: var(--leading-normal);
@@ -33,10 +34,10 @@
   gap: var(--space-1) var(--space-3);
 }
 
-/* 見出しは一覧の「あなたの番」の見出しと同じ字。base.css の裸の h2 の字と余白を全部書き直す */
+/* 見出しは一覧の「あなたの番」の見出しと同じ字の大きさ。色は --text（ライトの --warning は番の面の上で 4.5 を割るので字にしない）。base.css の裸の h2 の字と余白を全部書き直す */
 .c-card-title {
   margin: 0;
-  color: var(--warning);
+  color: var(--text);
   font-size: var(--font-xs);
   font-weight: var(--weight-semibold);
   line-height: var(--leading-normal);
@@ -52,8 +53,10 @@
   color: var(--text);
 }
 
+/* 急ぎは色でなく太さで（--warning の字は番の面の上に置かない） */
 .c-card-meta[data-urgent="true"] {
-  color: var(--warning);
+  color: var(--text);
+  font-weight: var(--weight-semibold);
 }
 
 /* ツール名とモード */
@@ -182,12 +185,12 @@
   border: 0;
 }
 
+/* 問と問の間は線でなく余白で分ける */
 .c-card-q + .c-card-q {
-  padding-top: var(--space-3);
-  border-top: var(--border-width) solid var(--border);
+  padding-top: var(--space-4);
 }
 
-/* legend は既定では枠の上の線に乗る（線が字の右にだけ出て、長い見出しでは消える）。float にして線の下に置く */
+/* legend は既定では fieldset の枠の上の線に乗る（線が字の右にだけ出て、長い見出しでは消える）。float にして中に置く */
 .c-card-q-legend {
   float: left;
   width: 100%;
@@ -221,7 +224,7 @@
   padding: var(--space-2) var(--space-3);
   border: var(--border-width) solid var(--border);
   border-radius: var(--radius-md);
-  background: var(--bg);
+  background: var(--surface);
   color: var(--text);
   font-size: var(--c-font-body);
   line-height: var(--leading-normal);
