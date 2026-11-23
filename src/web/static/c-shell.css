@@ -380,3 +380,66 @@
     opacity: 0.9;
   }
 }
+
+/* ===== 右腕の丸（HandOrb。#463 の D6）: 56 の円。中のアイコンと印は格子の同じ升に重ねる（position を使わない）。影・ぼかし・半透明・動きは付けない ===== */
+
+/* 静かな顔（席が開いている間）: 地は板の色、輪郭は見出しの［右腕］と同じ押す所の輪郭 */
+.c-orb {
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  width: var(--c-orb);
+  height: var(--c-orb);
+  padding: 0;
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-full);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+/* 列だけの間: 地は accent、輪郭なし */
+.c-orb[data-tone="accent"] {
+  border: 0;
+  background: var(--accent);
+  color: var(--primary-text);
+}
+
+.c-orb > * {
+  grid-area: 1 / 1;
+}
+
+/* 印の置き場所（丸の右上） */
+.c-orb-mark {
+  display: flex;
+  align-self: start;
+  justify-self: end;
+}
+
+/* accent の顔の自前の点（下のバーの右腕と同じ配色。K2 の Mark の色は地と同化する） */
+.c-orb-dot {
+  flex: none;
+  width: var(--c-mark);
+  height: var(--c-mark);
+  border-radius: var(--radius-full);
+}
+
+.c-orb-dot[data-state="turn"] {
+  background: var(--warning);
+  box-shadow: 0 0 0 var(--c-mark-ring) var(--primary-text);
+}
+
+.c-orb-dot[data-state="unread"] {
+  background: var(--primary-text);
+}
+
+/* 押した・乗った（下のバーの右腕と同じ宣言） */
+.c-orb:active {
+  transform: scale(0.97);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .c-orb:hover {
+    opacity: 0.9;
+  }
+}
