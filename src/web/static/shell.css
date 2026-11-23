@@ -381,6 +381,28 @@
   display: none;
 }
 
+/*
+ * 席が開くとき（display: none から出る）だけ、右から --c-deck-seat-in + 透明 → 定位置（D5 の PR-1）。data-moves="on" は shell.js が最初の操作の後に付ける（読み込みで開いた席は動かさない）。
+ * 閉じるのはすぐ（display: none）。席が開いたままの切り替え・列の幅と本数・格子は動かさない。reduced-motion では base.css が止める
+ */
+.v3[data-deck][data-moves="on"][data-view="body"] .v3-main {
+  transition-property: opacity, transform;
+  transition-duration: var(--dur-short);
+  transition-timing-function: var(--ease-out);
+}
+
+@starting-style {
+  .v3[data-deck][data-moves="on"][data-view="body"] .v3-main {
+    opacity: 0;
+    transform: translateX(var(--c-deck-seat-in));
+  }
+}
+
+/* スマホの全面の席は long */
+.v3[data-deck][data-moves="on"][data-seat="full"][data-view="body"] .v3-main {
+  transition-duration: var(--dur-long);
+}
+
 .v3[data-deck="0"][data-view="body"][data-seat] .v3-deck {
   display: none;
 }

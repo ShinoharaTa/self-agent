@@ -24,6 +24,7 @@
 
 /*
  * 動きの長さと曲線（docs/design/WEB-UI-GUIDELINES.md §6）。押下は micro、ダイアログ・トーストの出は short、ドロワーの開きは long。
+ * 流れの列の席が開くとき（shell.css。D5 の PR-1）は short（スマホの全面は long）で、右からのずれは --c-deck-seat-in。
  * 消えるときは出るときの 65%（ダイアログ・トースト）か short（ドロワー）。prefers-reduced-motion では base.css が transition を全部止める
  */
 :root {
@@ -195,6 +196,7 @@
   --c-deck-band-h: 48px;
   --c-deck-col-max: 420px;
   --c-deck-line: 3px;
+  --c-deck-seat-in: 16px;
 }
 
 @media (min-width: 640px) and (hover: hover) and (pointer: fine) {

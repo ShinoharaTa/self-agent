@@ -16,6 +16,7 @@ const C_TOKENS = [
   "tap", "bar-h", "bottom-h", "row-h", "gutter", "list-w", "hand-w", "card-r", "btn-sm-h", "round-r",
   "icon", "icon-sm", "mark", "mark-ring", "badge-h", "badge-pad", "seg-h", "seg-pad", "toast-w", "spin", "font-body", "row-indent", "list-gap",
   "top-full-min", "top-place-min", "talk-max", "bubble-pad-y", "bubble-pad-x", "card-max", "check", "deck-band-h", "deck-col-max", "deck-line",
+  "deck-seat-in",
 ].map((n) => `--c-${n}`);
 
 /** c-*.css が var() で使ってよい --c-* 以外の変数（base.css の目盛り・tokens.css の色・動き・重なり・字）。--bubble-* は古い殻（app.css）だけの色で、部品は使わない */
@@ -390,6 +391,31 @@ test("web components: 一覧と下のバー（c-list・c-shell）と会話（c-t
   }
   if (CSS_FILES.includes("c-hand.css")) assert.doesNotMatch(stripCssComments(read("c-hand.css")), /position:\s*(?:fixed|absolute)/, "c-hand.css");
   if (CSS_FILES.includes("c-term.css")) assert.doesNotMatch(stripCssComments(read("c-term.css")), /position:\s*(?:fixed|absolute)/, "c-term.css");
+});
+
+test("web components: shell.css の動きは流れの列の席が開くときだけ（D5 の PR-1）。transition と @starting-style を書くのは決めた 3 つの規則で、どれも [data-moves=\"on\"] 付き。対象は opacity と transform、長さは --dur-short（スマホの全面は --dur-long）、曲線は --ease-out、ずれは --c-deck-seat-in。all・will-change・animation・@keyframes は無い", () => {
+  const SEAT = '.v3[data-deck][data-moves="on"][data-view="body"] .v3-main';
+  const FULL = '.v3[data-deck][data-moves="on"][data-seat="full"][data-view="body"] .v3-main';
+  const rules = parseCss(read("shell.css"));
+  const MOVE = /(?:^|; ?)(?:transition|animation)(?:-[a-z-]+)?\s*:/;
+  // 動きの宣言を持つ規則と、@starting-style の中の規則（0 個なら落ちる）
+  const moving = rules.filter((r) => MOVE.test(r.body)).map((r) => ({ at: r.at, selectors: r.selectors, body: r.body }));
+  const starting = rules.filter((r) => r.at.includes("@starting-style")).map((r) => ({ at: r.at, selectors: r.selectors, body: r.body }));
+  assert.deepEqual(moving, [
+    { at: [], selectors: [SEAT], body: "transition-property: opacity, transform; transition-duration: var(--dur-short); transition-timing-function: var(--ease-out);" },
+    { at: [], selectors: [FULL], body: "transition-duration: var(--dur-long);" },
+  ]);
+  assert.deepEqual(starting, [{ at: ["@starting-style"], selectors: [SEAT], body: "opacity: 0; transform: translateX(var(--c-deck-seat-in));" }]);
+  for (const r of [...moving, ...starting]) for (const s of r.selectors) assert.ok(s.startsWith(".v3[data-deck]") && s.includes('[data-moves="on"]') && s.endsWith(" .v3-main"), s);
+  const src = stripCssComments(read("shell.css"));
+  assert.doesNotMatch(src, /@keyframes|will-change|(?:^|[\s;{])animation(?:-[a-z-]+)?\s*:|transition(?:-property)?\s*:[^;]*\ball\b/);
+  // 動く値は opacity と transform だけ（ほかの規則に opacity・transform を書かない）
+  for (const r of rules) {
+    if (r.body.split(";").some((d) => /^\s*(?:opacity|transform)\s*:/.test(d))) assert.deepEqual([r.at, r.selectors], [["@starting-style"], [SEAT]], r.selectors.join(","));
+  }
+  // ずれのトークンは tokens.css に在り、shell.css だけが使う
+  assert.match(read("tokens.css"), /--c-deck-seat-in: 16px;/);
+  assert.equal((src.match(/var\(--c-deck-seat-in\)/g) ?? []).length, 1);
 });
 
 test("web components: 下のバーの自前のボタンは当たりの下限を持つ", () => {
