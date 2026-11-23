@@ -249,6 +249,56 @@ function hitProblems({ min, scopes, targets, toast }: { min: number; scopes: str
   return lines;
 }
 
+/** スマホの上の帯の題（#c-band-root の .c-band-name）と、下のバーの今の列の section の aria-label・並びの崩れ（ブラウザの中で動く。page.evaluate に渡すので外の変数を使わない） */
+function bandTitleState(): { kind: string | null; tag: string | null; title: string | null; badge: string | null; count: string | null; label: string | null; page: string | null; colLabel: string | null; layout: string[] } {
+  const name = document.querySelector<HTMLElement>("#c-band-root .c-band-name");
+  const page = document.querySelector('#c-foot-root [aria-current="true"]')?.getAttribute("data-page") ?? null;
+  const col = page === null ? undefined : [...document.querySelectorAll<HTMLElement>("#c-deck-root .c-deck > .c-col")].find((c) => c.dataset.col === page);
+  const text = (sel: string): string | null => {
+    const el = name === null ? null : name.querySelector(sel);
+    return el === null ? null : (el.textContent ?? "").trim();
+  };
+  const layout: string[] = [];
+  const band = document.querySelector<HTMLElement>("#c-band-root .c-band");
+  const ops = document.querySelector<HTMLElement>("#c-band-root .c-band-ops");
+  if (name !== null && band !== null && ops !== null) {
+    const r = name.getBoundingClientRect();
+    const b = band.getBoundingClientRect();
+    const o = ops.getBoundingClientRect();
+    if (r.left < b.left - 0.5 || r.right > b.right + 0.5 || r.top < b.top - 0.5 || r.bottom > b.bottom + 0.5) layout.push(`帯の題の箱 ${r.left.toFixed(1)}〜${r.right.toFixed(1)}・${r.top.toFixed(1)}〜${r.bottom.toFixed(1)} が帯からはみ出る`);
+    if (r.right > o.left + 0.5) layout.push(`帯の題の右端 ${r.right.toFixed(1)} が帯のボタンの左端 ${o.left.toFixed(1)} に重なる`);
+    if (name.scrollWidth > name.clientWidth + 0.5) layout.push(`帯の題がはみ出る 幅 ${name.clientWidth} 要る幅 ${name.scrollWidth}`);
+    for (const el of name.querySelectorAll<HTMLElement>(":scope > :not(.c-band-title)")) {
+      const n = el.getBoundingClientRect();
+      if (n.width <= 0 || n.right > r.right + 0.5) layout.push(`帯の題の数「${(el.textContent ?? "").trim()}」が縮むか題の箱からはみ出る`);
+    }
+  }
+  return {
+    kind: name === null ? null : name.getAttribute("data-kind"),
+    tag: name === null ? null : name.tagName.toLowerCase(),
+    title: text(".c-band-title"),
+    badge: text(":scope > .c-badge"),
+    count: text(":scope > .c-band-count"),
+    label: name === null ? null : name.getAttribute("aria-label"),
+    page,
+    colLabel: col === undefined ? null : col.getAttribute("aria-label"),
+    layout,
+  };
+}
+
+/** 帯の題が今の列（section の aria-label「名前 N 件」か名前）と同じか。違う所の文（when は文の頭） */
+function bandTitleProblems(s: ReturnType<typeof bandTitleState>, when: string): string[] {
+  const out = s.layout.map((l) => `${when}: ${l}`);
+  if (s.kind !== "page" || s.tag !== "h2") return [...out, `${when}: 帯の題が h2[data-kind="page"] でない（${String(s.tag)}・${String(s.kind)}）`];
+  const m = s.colLabel === null ? null : /^(.*) (\d+) 件$/.exec(s.colLabel);
+  const name = m === null ? s.colLabel : m[1]!;
+  const count = m === null ? null : m[2]!;
+  const shown = s.badge ?? s.count;
+  if (s.title !== name || shown !== count || s.label !== s.colLabel) out.push(`${when}: 帯の題「${String(s.title)}」・数 ${String(shown)}・名前 ${String(s.label)}（今の列 ${String(s.page)} の「${String(s.colLabel)}」のはず）`);
+  if (s.badge !== null && s.count !== null) out.push(`${when}: 帯の題に Badge と数の両方が在る`);
+  return out;
+}
+
 /**
  * 知らせの文。role は status（知らせ）か alert（失敗）。ブラウザの中で動く。
  * 部品の #c-notice-root と、口が描けなかったときの古い入れ物（#toast・#toast-alert）の両方を読む（「知らせが出ない」の検査が古い道で空振りしない）
@@ -1876,14 +1926,20 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     if (JSON.stringify(form.texts) !== JSON.stringify(["あなたの番", "タスク", "通知", "右腕"])) say(`下のバーが あなたの番・タスク・通知・右腕 でない（${form.texts.join("・")}）`);
     if (form.ids !== 0) say(`下のバーの中に id の付いた要素が ${form.ids} 個`);
     if (form.badges.slice(1).some(Boolean)) say("タスク・通知・右腕に数の印が在る（あなたの番 だけのはず）");
-    // 数は列の見出しと同じ（入口の口の 5。番の数を作り物で替える手段が無いので、右腕を番にした前後で見出しと同じかを見る）
-    const counts = (): Promise<{ head: string; bar: string }> =>
+    // 数は上の帯の題と同じ（入口の口の 5。スマホは列の見出しを出さず、今の列の名前と数は帯の題。番の数を作り物で替える手段が無いので、右腕を番にした前後で帯と同じかを見る）
+    const counts = (): Promise<{ head: string; bar: string; title: string }> =>
       page.evaluate(() => ({
-        head: (document.querySelector('#c-deck-root .c-col[data-col="turn"] .c-col-head .c-badge')?.textContent ?? "").trim(),
+        head: (document.querySelector('#c-band-root .c-band-name[data-kind="page"] > .c-badge')?.textContent ?? "").trim(),
         bar: (document.querySelector('#c-foot-root button[data-page="turn"] .c-badge')?.textContent ?? "").trim(),
+        title: (document.querySelector('#c-band-root .c-band-name[data-kind="page"] .c-band-title')?.textContent ?? "").trim(),
       }));
     const c0 = await counts();
-    if (c0.head !== c0.bar) say(`あなたの番 の数が 列の見出し「${c0.head}」・下のバー「${c0.bar}」`);
+    if (c0.title !== "あなたの番") say(`始めの帯の題が「${c0.title}」（あなたの番 のはず）`);
+    if (c0.head !== c0.bar) say(`あなたの番 の数が 帯の題「${c0.head}」・下のバー「${c0.bar}」`);
+    for (const line of bandTitleProblems(await page.evaluate(bandTitleState), "始めの帯")) say(line);
+    // 列の見出しは場所を取らない（名前と数は帯の題）
+    const heads = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>("#c-deck-root .c-col-head")].map((el) => el.getBoundingClientRect().height));
+    if (heads.length !== 3 || heads.some((h) => h !== 0)) say(`列の見出しの高さが ${heads.join("・")}（3 つとも 0 のはず）`);
     // 高さ・下端（3）・最後の項目: 今の列を末尾まで送った最後の項目がバーに隠れない
     await page.evaluate(() => {
       const body = document.querySelector('#c-deck-root .c-col[data-col="turn"] .c-col-body');
@@ -1951,6 +2007,9 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     if (JSON.stringify(s1.cur) !== JSON.stringify(["tasks"])) say(`タスクを押した後の印の移り ${s1.cur.join("→")}（tasks の 1 回のはず）`);
     if (s1.paged.length !== 0) say(`バーで送った後に指の送りの知らせが来た（${s1.paged.join("・")}）`);
     if (s1.focus !== "tasks") say(`タスクを押した後の焦点が ${String(s1.focus)}（タスクのボタンのはず）`);
+    const t1 = await page.evaluate(bandTitleState);
+    if (t1.page !== "tasks" || t1.title !== "タスク") say(`タスクを押した後の帯の題が「${String(t1.title)}」（タスク のはず）`);
+    for (const line of bandTitleProblems(t1, "タスクを押した後の帯")) say(line);
     // 今の列をもう一度押しても位置も印も変わらない（入口の口の 2）
     await page.click(PAGE("tasks"));
     await settled(page);
@@ -1968,6 +2027,10 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     s1 = await seen();
     if (!followed) say(`列の位置を通知に書いても印が通知に付かない（${String(s1.current)}）`);
     if (JSON.stringify(s1.paged) !== JSON.stringify(["feed"])) say(`列の位置を通知に書いた後の指の送りの知らせが ${s1.paged.join("・") || "無い"}（feed の 1 回のはず）`);
+    // 帯の題も付いてくる
+    const t2 = await page.evaluate(bandTitleState);
+    if (t2.page !== "feed" || t2.title !== "通知") say(`列の位置を通知に書いた後の帯の題が「${String(t2.title)}」（通知 のはず）`);
+    for (const line of bandTitleProblems(t2, "列の位置を通知に書いた後の帯")) say(line);
     // あなたの番 に戻す
     await page.click(PAGE("turn"));
     await settled(page);
@@ -1996,7 +2059,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       if (!same.turn) say("右腕のボタンに「あなたの番」の印が無い");
       if (same.label !== "右腕に頼む・訊く（あなたの番）") say(`右腕のボタンの名前が ${String(same.label)}`);
       const c1 = await counts();
-      if (c1.head !== c1.bar) say(`右腕を番にした後の あなたの番 の数が 列の見出し「${c1.head}」・下のバー「${c1.bar}」`);
+      if (c1.head !== c1.bar) say(`右腕を番にした後の あなたの番 の数が 帯の題「${c1.head}」・下のバー「${c1.bar}」`);
       // 閉じた後の焦点: 開いている間に描き直されても、閉じたら右腕のボタンへ
       await page.click(BAR_HAND);
       await page.waitForSelector('#v3[data-hand="open"]', { timeout: 5000 });
@@ -2016,6 +2079,14 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       const kids = (): Promise<number> => page.evaluate(() => document.querySelector("#c-foot-root")?.children.length ?? -1);
       const wideBand = await band();
       if ((await kids()) !== 0 || JSON.stringify(wideBand) !== JSON.stringify(["find", "hand", "start", "more"])) say(`800 で下のバーが空で帯のボタン 4 つの形にならない（子 ${await kids()}・帯 ${wideBand.join("・")}）`);
+      // 広い幅の帯は「self-agent」のまま、列の見出しは見える
+      const wideHead = await page.evaluate(() => {
+        const name = document.querySelector("#c-band-root .c-band-name");
+        const heads = [...document.querySelectorAll<HTMLElement>("#c-deck-root .c-col-head")].filter((el) => el.closest(".c-col")!.getBoundingClientRect().width > 0);
+        return { tag: name?.tagName.toLowerCase() ?? null, text: (name?.textContent ?? "").trim(), heads: heads.map((el) => el.getBoundingClientRect().height) };
+      });
+      if (wideHead.tag !== "span" || wideHead.text !== "self-agent") say(`800 の帯の名前が ${String(wideHead.tag)}「${wideHead.text}」（span の self-agent のはず）`);
+      if (wideHead.heads.length !== 3 || wideHead.heads.some((h) => h <= 0)) say(`800 の列の見出しの高さが ${wideHead.heads.join("・")}（3 つとも見えるはず）`);
       const scrolled = await page.evaluate(() => {
         const box = document.querySelector<HTMLElement>("#c-deck-root .c-deck");
         if (box === null) return { paged: true, moved: false };
@@ -2036,6 +2107,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       current: document.querySelector('#c-foot-root [aria-current="true"]')?.getAttribute("data-page") ?? null,
     }));
     if (narrow.foot !== 4 || JSON.stringify(narrow.band) !== JSON.stringify(["find", "start", "more"]) || narrow.current !== "turn") say(`390 に戻しても下のバー 4 つ・帯 3 つ・今の列 あなたの番 にならない（${narrow.foot}・${narrow.band.join("・")}・${String(narrow.current)}）`);
+    for (const line of bandTitleProblems(await page.evaluate(bandTitleState), "390 に戻した後の帯")) say(line);
     // 開いたボタンの無い戻り（7）: 焦点の無いまま右腕のチャンネルを開き、閉じたら下のバーの右腕のボタンへ
     const opened = await page.evaluate(() => {
       const sa = (window as unknown as { SA: { topics: { data: () => { rightHands: Array<{ id: string }> } | null }; app: { open: (id: string) => void } } }).SA;
@@ -4497,7 +4569,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
    */
   /**
    * スマホの流れの列（D2。ダークのスマホの段 deck の続き。スレッドを開いた所から）: スレッドの間は帯・列・下のバーが見えない・戻ると列で焦点は押した項目（UI-7）・
-   * 下のバーと帯の当たり 44・帯の「self-agent」が省かれない・下のバーでタスク・通知へ送った所を撮る・通知の列を下へ送って項目を開き戻ると同じ列と縦の位置・
+   * 下のバーと帯の当たり 44・帯の題（今の列の名前と数）が省かれず今の列と同じで帯のボタンに重ならない・下のバーでタスク・通知へ送った所を撮る・通知の列を下へ送って項目を開き戻ると同じ列と縦の位置・
    * 歯車の板を撮る・#/tasks で読み込むとタスクの列・動きを減らす設定でもバーで切り替わる。足りない物の文
    */
   async function phoneDeck(page: Page, p: string): Promise<string[]> {
@@ -4526,16 +4598,20 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     // 当たり 44・帯の名前
     for (const line of await page.evaluate(hitProblems, { min: 44, scopes: "#c-foot-root, #c-band-root", targets: "button", toast: false })) say(line);
     const name = await page.evaluate(() => {
-      const el = document.querySelector<HTMLElement>("#c-band-root .c-band-name");
+      const el = document.querySelector<HTMLElement>("#c-band-root .c-band-name .c-band-title");
       return el === null ? null : { text: (el.textContent ?? "").trim(), cut: el.scrollWidth > el.clientWidth };
     });
-    if (name === null || name.text !== "self-agent" || name.cut) say(`帯の「self-agent」が省かれる・無い（${JSON.stringify(name)}）`);
+    if (name === null || name.text !== "あなたの番" || name.cut) say(`帯の題「あなたの番」が省かれる・無い（${JSON.stringify(name)}）`);
+    for (const line of bandTitleProblems(await page.evaluate(bandTitleState), "スレッドから戻った後の帯")) say(line);
     // 下のバーで送った所
     for (const id of ["tasks", "feed"] as const) {
       await page.click(PAGE(id));
       await settled(page);
       const c = await current();
       if (c.page !== id || Math.abs(c.left - c.at) > 1) say(`${id} を押した後の今の列 ${String(c.page)}・位置 ${c.left}（列の左端 ${c.at} のはず）`);
+      const t = await page.evaluate(bandTitleState);
+      if (t.page !== id) say(`${id} を押した後の帯の今の列が ${String(t.page)}`);
+      for (const line of bandTitleProblems(t, `${id} を押した後の帯`)) say(line);
       await shot(page, `${p}-a-deck-${id}`);
     }
     // 通知の列を下へ送って項目を開き、戻ると同じ列・同じ縦の位置
@@ -4626,6 +4702,11 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
             if (el.getClientRects().length === 0 || el.matches(".c-deck")) continue;
             if (el.scrollWidth > el.clientWidth + 0.5) say(`${sel}「${(el.textContent ?? "").trim().slice(0, 20)}」がはみ出る 幅 ${el.clientWidth} 要る幅 ${el.scrollWidth}`);
           }
+        }
+        // 列の見出し: スマホは場所を取らない（名前と数は帯の題）、640 以上は見える列の見出しが見える
+        for (const c of phone ? cols : shown) {
+          const h = c.querySelector<HTMLElement>(":scope > .c-col-head")?.getBoundingClientRect().height ?? -1;
+          if (phone ? h !== 0 : h <= 0) say(`列 ${c.dataset.col} の見出しの高さ ${h}（${phone ? "0" : "0 より大きい"} のはず）`);
         }
         // 番の項目の面と線（変数の値を色に直して比べる）
         const probe = document.createElement("span");
@@ -4742,6 +4823,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           await page.waitForSelector("#v3[data-deck] #c-deck-root .c-deck .c-col", { timeout: 5000 });
           await settled(page);
           const problems: string[] = [...(await deckLines(page, vp, "列"))];
+          // スマホの帯の題は今の列（あなたの番）の名前と数で、帯のボタンに重ならない
+          if (vp === "phone") problems.push(...bandTitleProblems(await page.evaluate(bandTitleState), `スマホの帯（${theme}）`).map((l) => `流れの列: ${l}`));
           await shot(page, `${p}-a-deck`);
           await page.locator('#c-deck-root .c-col[data-col="turn"] .c-item[data-turn="true"] button.c-item-main').first().click();
           await page.waitForSelector('#v3[data-view="body"] #ed textarea', { timeout: 5000 });
@@ -4772,6 +4855,10 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           }
           const keys = (): Promise<string[]> => page.evaluate((sel: string) => [...document.querySelectorAll(sel)].map((el) => el.getAttribute("data-key") ?? ""), TASK);
           const before = await keys();
+          // スマホは帯の題がタスクの列の名前と数（［完了］で 1 減る）
+          const bandShown = (t: ReturnType<typeof bandTitleState>): number | null => (t.badge ?? t.count) === null ? null : Number(t.badge ?? t.count);
+          const bandBefore = vp === "phone" ? await page.evaluate(bandTitleState) : null;
+          if (bandBefore !== null) for (const line of bandTitleProblems(bandBefore, "［完了］の前の帯")) say(line);
           for (const line of await page.evaluate(hitProblems, { min: 44, scopes: '#c-deck-root .c-col[data-col="tasks"]', targets: ".c-item-meta .c-iconbtn", toast: false })) say(line);
           await page.click(`${TASK} .c-item-meta .c-iconbtn`);
           const gone = await page
@@ -4779,6 +4866,20 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
             .then(() => true, () => false);
           if (!gone) say(`［完了］の後の列の項目が ${(await keys()).length} 個（${before.length - 1} 個のはず）`);
           else if ((await keys()).includes(before[0]!)) say(`押した項目 ${before[0]} が列に残る`);
+          if (bandBefore !== null) {
+            const was = bandShown(bandBefore);
+            const want = was === null || was <= 1 ? null : was - 1;
+            const now = await page
+              .waitForFunction((n: number | null) => {
+                const el = document.querySelector('#c-band-root .c-band-name[data-kind="page"] > :not(.c-band-title)');
+                const shown = el === null ? null : Number((el.textContent ?? "").trim());
+                return shown === n;
+              }, want, { timeout: 5000 })
+              .then(() => true, () => false);
+            const after = await page.evaluate(bandTitleState);
+            if (was === null || !now) say(`［完了］の後の帯の数が ${String(bandShown(after))}（${String(was)} から 1 減るはず）`);
+            for (const line of bandTitleProblems(after, "［完了］の後の帯")) say(line);
+          }
           const notice = await page
             .waitForSelector(`${UNDO} >> text=取り消す`, { timeout: 5000 })
             .then(() => page.evaluate(() => (document.querySelector('#c-notice-root .c-toast-list[role="status"]')?.textContent ?? "").trim()), () => null);
@@ -5302,6 +5403,30 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         if (band.querySelector('[data-act="start"] .c-iconbtn')?.getAttribute("aria-label") !== "始める") out.push("band-phone: ［始める］が名前「始める」の IconButton でない");
         const name = band.querySelector(".c-band-name");
         if (name === null || (name.textContent ?? "") !== "self-agent" || cut(name)) out.push("band-phone: 「self-agent」が省かれているか無い");
+      }
+      // 題つきのスマホの帯: 列の名前と数（あなたの番 は Badge・タスクは数・通知は 0 なので数なし）。題は省かれず、帯のボタンに重ならない
+      const titled: ReadonlyArray<[string, string, string, string]> = [
+        ["band-phone-turn", "あなたの番", "badge", "2"],
+        ["band-phone-tasks", "タスク", "count", "3"],
+        ["band-phone-feed", "通知", "none", ""],
+      ];
+      for (const [demo, title, kind, count] of titled) {
+        const b = document.querySelector(`[data-demo="${demo}"] .c-band`);
+        const name = b === null ? null : b.querySelector('h2.c-band-name[data-kind="page"]');
+        const ops = b === null ? null : b.querySelector(".c-band-ops");
+        if (b === null || name === null || ops === null) {
+          out.push(`${demo}: 帯か題か帯のボタンが無い`);
+          continue;
+        }
+        const t = name.querySelector(".c-band-title");
+        if (t === null || (t.textContent ?? "").trim() !== title || cut(t)) out.push(`${demo}: 題「${t?.textContent ?? ""}」（省かれない ${title} のはず）`);
+        const badge = name.querySelector(":scope > .c-badge");
+        const num = name.querySelector(":scope > .c-band-count");
+        const got = badge !== null && num === null ? "badge" : badge === null && num !== null ? "count" : badge === null && num === null ? "none" : "both";
+        const text = ((badge ?? num)?.textContent ?? "").trim();
+        if (got !== kind || text !== count) out.push(`${demo}: 数が ${got}「${text}」（${kind}「${count}」のはず）`);
+        if (name.getBoundingClientRect().right > ops.getBoundingClientRect().left + 0.5) out.push(`${demo}: 題が帯のボタンに重なる`);
+        if (cut(b)) out.push(`${demo}: 帯が横にはみ出している`);
       }
       const box = document.querySelector('[data-demo="deck-paged"] .c-gallery-phone');
       const deck = box?.querySelector(".c-deck") ?? null;
