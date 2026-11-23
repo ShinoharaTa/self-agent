@@ -5164,7 +5164,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
               view,
               props: anims.map((a) => (a as CSSTransition).transitionProperty ?? "").sort(),
               durations: anims.map((a) => Number(a.effect?.getTiming().duration)),
-              easings: anims.map((a) => a.effect?.getTiming().easing ?? ""),
+              easings: anims.map((a) => String(a.effect?.getTiming().easing ?? "")),
+              ease: getComputedStyle(document.documentElement).getPropertyValue("--ease-out"),
             };
           }, OPENER);
           if (started === null) throw new Error("開く項目か #v3-main が無い");
@@ -5172,6 +5173,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           if (started.props.length === 0) throw new Error("席の動きが 0 個");
           if (JSON.stringify(started.props) !== JSON.stringify(["opacity", "transform"])) say(`動いている物が ${started.props.join("・")}（opacity・transform のはず）`);
           if (started.durations.some((d) => d !== want)) say(`長さが ${started.durations.join("・")}（${want} のはず）`);
+          const tight = (v: string): string => v.replace(/\s+/g, "");
+          if (tight(started.ease) === "" || started.easings.some((e) => tight(e) !== tight(started.ease))) say(`曲線が ${started.easings.join("・")}（--ease-out の ${started.ease.trim()} のはず）`);
           const boxes: Box[] = [];
           for (const f of frames) {
             await page.evaluate((at: number) => {
