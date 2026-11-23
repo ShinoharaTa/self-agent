@@ -56,6 +56,8 @@ export type LatestHistory = {
   lastAgent: { id: number; at: string; outcome: HistoryOutcome | null; durationMs: number | null } | null;
   /** 最後の owner の行の id。無ければ null */
   lastOwnerId: number | null;
+  /** 最後の divider の行の id。無ければ null */
+  lastDividerId: number | null;
 };
 
 /** text を切る字数（返事の全文は Discord にある） */
@@ -176,15 +178,16 @@ export class HistoryStore {
 
   /**
    * そのサーバーのチャンネルごとの最後の行（key は channelId）。lastAgent は最後の agent の行（無ければ null）、
-   * lastOwnerId は最後の owner の行の id（無ければ null）
+   * lastOwnerId は最後の owner の行の id（無ければ null）、lastDividerId は最後の divider の行の id（無ければ null）
    */
   latestByChannel(guildId: string): Map<string, LatestHistory> {
     const rows = this.db
       .prepare(
         "SELECT h.channel_id, h.id, h.at, h.kind, a.id AS agent_id, a.at AS agent_at, a.outcome AS agent_outcome, " +
-          "a.duration_ms AS agent_duration_ms, m.owner_id FROM history h " +
+          "a.duration_ms AS agent_duration_ms, m.owner_id, m.divider_id FROM history h " +
           "JOIN (SELECT channel_id, MAX(id) AS id, MAX(CASE WHEN kind = 'agent' THEN id END) AS agent_id, " +
-          "MAX(CASE WHEN kind = 'owner' THEN id END) AS owner_id FROM history WHERE guild_id = ? GROUP BY channel_id) m ON h.id = m.id " +
+          "MAX(CASE WHEN kind = 'owner' THEN id END) AS owner_id, MAX(CASE WHEN kind = 'divider' THEN id END) AS divider_id " +
+          "FROM history WHERE guild_id = ? GROUP BY channel_id) m ON h.id = m.id " +
           "LEFT JOIN history a ON a.id = m.agent_id",
       )
       .all(guildId);
@@ -206,6 +209,7 @@ export class HistoryStore {
                   durationMs: nullableNumber(row.agent_duration_ms),
                 },
           lastOwnerId: nullableNumber(row.owner_id),
+          lastDividerId: nullableNumber(row.divider_id),
         },
       ]),
     );
