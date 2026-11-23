@@ -2495,6 +2495,49 @@ test("web components: 会話の行は吹き出しでない（docs/plan/web-ui-de
   assert.ok(talkRule(".c-talk").some((r) => r.decls.includes("gap: var(--space-4)")), ".c-talk の gap");
 });
 
+/** c-talk.css の全部の規則（at の中も・セレクタを並べた規則も。@keyframes の中は除く）と宣言 */
+function talkAllRules(): { rule: CssRule; decls: { prop: string; value: string }[] }[] {
+  return parseCss(read("c-talk.css"))
+    .filter((r) => !r.keyframe)
+    .map((rule) => ({
+      rule,
+      decls: rule.body
+        .split(";")
+        .map((d) => d.trim())
+        .filter((d) => d !== "")
+        .map((d) => ({ prop: d.slice(0, d.indexOf(":")).trim(), value: d.slice(d.indexOf(":") + 1).trim() })),
+    }));
+}
+
+/** セレクタの最後の複合セレクタ（属性の中の字は区切りに使わない） */
+const lastCompound = (selector: string): string => selector.replace(/\[[^\]]*\]/g, "[]").trim().split(/\s*[>+~]\s*|\s+/).at(-1) ?? "";
+
+test("web components: 返事の本文の箱に地・余白・枠・影をどの書き方でも書き戻さない。自分の発言の規則は at の外に 1 つで宣言は 3 つだけ（D4）", () => {
+  const OWNER = '.c-msg[data-who="owner"] > .c-bubble';
+  const all = talkAllRules();
+  // 最後の複合セレクタが .c-bubble の規則（自分の発言の規則そのものは除く）は、background・padding・border・box-shadow で始まる宣言を持たない
+  const bubbles = all.filter(({ rule }) => rule.selectors.some((s) => s !== OWNER && classesInSelector(lastCompound(s)).includes("c-bubble")));
+  assert.ok(bubbles.length > 0, ".c-bubble の規則が無い");
+  for (const { rule, decls } of bubbles) {
+    for (const { prop } of decls) assert.ok(!/^(?:background|padding|border|box-shadow)/.test(prop), `${rule.at.join(" ")} ${rule.selectors.join(",")} の ${prop}`);
+  }
+  const owners = all.filter(({ rule }) => rule.selectors.includes(OWNER));
+  assert.equal(owners.length, 1, "自分の発言の規則の数");
+  assert.deepEqual(owners[0]!.rule.at, [], "自分の発言の規則は at の外");
+  assert.deepEqual(
+    owners[0]!.decls.map((d) => `${d.prop}: ${d.value}`),
+    ["padding: var(--c-bubble-pad-y) var(--c-bubble-pad-x)", "background: var(--muted)", "border-radius: var(--c-card-r)"],
+  );
+});
+
+test("web components: 行（.c-msg）と待ちの行（.c-run）の max-width は、どの規則を合わせても 1 つだけで 100%。.c-talk の gap も 1 つだけで --space-4（D4）", () => {
+  const all = talkAllRules();
+  const declsFor = (cls: string, prop: string): string[] =>
+    all.filter(({ rule }) => rule.selectors.some((s) => classesInSelector(s).includes(cls))).flatMap(({ decls }) => decls.filter((d) => d.prop === prop).map((d) => d.value));
+  for (const cls of ["c-msg", "c-run"]) assert.deepEqual(declsFor(cls, "max-width"), ["100%"], `.${cls} の max-width`);
+  assert.deepEqual(declsFor("c-talk", "gap"), ["var(--space-4)"], ".c-talk の gap");
+});
+
 test("web components: 会話のコードは文中も段も地が --muted で、段は 1px の --border の線で囲む。c-talk.css は吹き出しの変数（--bubble-*・--c-bubble-r・--c-bubble-tail）と右寄せを使わない", () => {
   for (const selector of [".c-md-code", ".c-md-pre"]) assert.ok(talkRule(selector).some((r) => r.decls.includes("background: var(--muted)")), `${selector} の地`);
   assert.ok(talkRule(".c-md-pre").some((r) => r.decls.includes("border: var(--border-width) solid var(--border)")), ".c-md-pre の線");
