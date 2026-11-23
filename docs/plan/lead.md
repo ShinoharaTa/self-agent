@@ -120,13 +120,13 @@
 ### L1a（済。#459）
 - `store/history.ts` の `latestByChannel`: 今の id・at・kind は変えず、`lastAgent`（最後の **agent の行** の id・at・`outcome`・`durationMs`。無ければ null）と `lastOwnerId`（最後の owner の行の id。無ければ null）を足した（1 つの問い合わせ）。
 - `app/handler.ts`: `queuedChannels()` を足した。発言を積んだが、まだ始まっていない（同時実行の枠か、同じチャンネルの前のジョブを待っている）ターンの在るチャンネルの ID。handler が数える。待ち行列の `has` は /close の要約・/renew・場所の付け替え・返信の投稿も運ぶので使わない（これらの最中は順番待ちに入らない）。
-- `app/topics.ts`: `TopicSeed` に `queued`・`lastAgent`・`lastOwnerId`・`byRightHand`、`Topic` に `queued`・`stopped`・`ended`・`tookMs`・`byRightHand` を足した。`stoppedOf(lastAgent, lastOwnerId)` は、最後の agent の行が max_turns・failed・aborted で、その後に owner の行が無い。`topicOf` は `queued` を実行中・完了でないときだけ、`stopped` を実行中・順番待ち・完了でないときだけ立てる。`mark`・並び・群の数は変えない。
+- `app/topics.ts`: `TopicSeed` に `queued`・`lastAgent`・`lastOwnerId`・`byRightHand`、`Topic` に `queued`・`stopped`・`ended`・`tookMs`・`byRightHand` を足した。`stoppedOf(lastAgent, lastOwnerId)` は、最後の agent の行が max_turns・failed・aborted で、その後に owner の行が無い。`topicOf` は `queued` を実行中・完了でないときだけ、`stopped` を実行中・順番待ち・完了でないときだけ立てる。`mark`・並び・群の数は変えない。区切り（/renew・場所の付け替え）の後は止まったと見ない（#487。`latestByChannel` の `lastDividerId` を種に渡し、最後の agent の行より後に divider の行が在れば `stoppedOf` は偽）。
 - `topicListRows`: `state` に `stopped`・`queued` を足した（決め方は your_turn → running → queued → stopped → waiting・idle。並びは your_turn → stopped → running → queued → 残り）。行に `ended`（done / max_turns / failed / aborted）・`took_min`（分。1 以上に丸める）・`by_right_hand: true` を値が在るときだけ足す。**`ended`・`took_min` は作業中・順番待ちの行には付けない**（前のターンの値なので）。`counts` に `queued`・`stopped` を足した。
 - `web/routes/topics.ts`: `queued` = `queuedChannels()` に在り、`runningTurns` に無い。`byRightHand` = `sessions.origin` が inbox（#inbox の右腕と、**足した人格の入口 #<NAME> の `session_open` で始めた話題にも付く**）。入口・端末の行（`claude_code`）はどれも false・null。
 - ツールの名前・説明の文・入力の形・システムプロンプト・DB の形・Web の画面は変えていない。書き方は `docs/plan/web-ui-v3.md` の §3 と §4 の L1a の 2 か所。
 - **受け入れ**: (1) 枠を待つターンの在る話題が `queued` で返る (2) 上限で止まった話題が `stopped`・`ended: max_turns` で返り、オーナーが発言すると外れる (3) `TOPIC_LIST_DESCRIPTION` と zod の形が 1 字も変わらない（見張るテストは無い。#459 の差分で確かめた） (4) 端末の行（`claude_code`）は今のまま。
 - **元の案との違い**: 順番待ちは待ち行列の `has` でなく handler の数／作業中・順番待ちの行に `ended`・`took_min` を付けない／`by_right_hand` は足した人格の入口から始めた話題にも付く。
-- **残した事**: 再起動で切れたターンは「止まった」に出ない／上限・失敗の後に /renew・場所の付け替えをしても、オーナーの発言が来るまで「止まった」のまま／`topic_list` の説明の文の並び（「オーナーの番 → 作業中 → 新しい順」）は古いまま（L4 で合わせる）。
+- **残した事**: 再起動で切れたターンは「止まった」に出ない／`topic_list` の説明の文の並び（「オーナーの番 → 作業中 → 新しい順」）は古いまま（L4 で合わせる）。
 
 ### L1b（済。#461）
 - `web/static/c-list.js` の `rowModel`: 行の右の語を あなたの番 > 作業中 > 順番待ち（`queued`。muted）> 止まった（`stopped`）の順で 1 つ。止まったの語は `STOPPED_LABEL`（max_turns = 上限で停止・failed = 失敗（warning）、aborted = 中断（muted）、ほかの値 = 停止（muted））。どれでもなければ今までどおり時刻
