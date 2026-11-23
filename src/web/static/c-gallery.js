@@ -4,7 +4,7 @@ import { html, render, useRef, useState } from "./c-lib.js";
 import { Badge, Button, Empty, Field, IconButton, Loading, Mark, Segmented } from "./c-atoms.js";
 import { Confirm, Sheet, Toast } from "./c-sheet.js";
 import { TopicList, YourTurn, listModel } from "./c-list.js";
-import { BottomBar, TopBar } from "./c-shell.js";
+import { BottomBar, HandOrb, TopBar } from "./c-shell.js";
 import { TalkTimeline, parseBlocks, talkModel } from "./c-talk.js";
 import { Composer, composerModel } from "./c-composer.js";
 import { Cards } from "./c-cards.js";
@@ -475,6 +475,31 @@ function Bottoms() {
   <//>`;
 }
 
+// ===== 右腕の丸（HandOrb。#463 の D6）: 列だけの間の accent の顔と、席が開いている間の静かな顔 × 印なし・番・未読 =====
+
+const ORB_ON = { hand: noop };
+const ORB_DEMOS = Object.freeze([
+  { demo: "orb-accent", tone: "accent", mark: null },
+  { demo: "orb-accent-turn", tone: "accent", mark: "turn" },
+  { demo: "orb-accent-unread", tone: "accent", mark: "unread" },
+  { demo: "orb-quiet", tone: "quiet", mark: null },
+  { demo: "orb-quiet-turn", tone: "quiet", mark: "turn" },
+  { demo: "orb-quiet-unread", tone: "quiet", mark: "unread" },
+]);
+
+/** 地は本番と同じ列の間の台（--bg）。押しても何も起きない */
+function Orbs() {
+  return html`<${Section} name="orb" title="右腕の丸">
+    <div class="c-gallery-deck c-gallery-orbs">
+      ${ORB_DEMOS.map(
+        (d) => html`<div key=${d.demo} data-demo=${d.demo}>
+          <${HandOrb} tone=${d.tone} mark=${d.mark} open=${false} controls="v3-hand" on=${ORB_ON} />
+        </div>`,
+      )}
+    </div>
+  <//>`;
+}
+
 // ===== 会話の行（K4）。データは作り物（手順は Read src/app.ts のような形） =====
 
 const FENCE = "```";
@@ -934,6 +959,7 @@ function Gallery() {
     <${Lists} />
     <${Tops} />
     <${Bottoms} />
+    <${Orbs} />
     <${Talks} />
     <${Composers} />
     <${CardDemos} />

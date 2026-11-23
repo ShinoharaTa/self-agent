@@ -163,6 +163,14 @@
   background: var(--bg);
 }
 
+/* 右腕の丸の見本（D6）: 地は台（--bg）のまま、6 つを横に並べる（入りきらなければ折り返す） */
+.c-gallery-orbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  padding: var(--space-3);
+}
+
 /* 帯は 640px 以上でだけ出るので、スマホの幅でも縮めずに横に送る（幅は見出しの見本の一番きつい幅と同じ） */
 .c-gallery-band {
   width: var(--c-top-full-min);
