@@ -113,6 +113,11 @@
 }
 
 /* ===== 始めるダイアログ（#v3-start。幅は dialog の既定のまま。≤639px は app.css の下からのシート） ===== */
+/* 板は幕で区切るので、base.css・app.css の dialog の枠を外す（D3） */
+.v3-start {
+  border: 0;
+}
+
 .v3-start .textarea {
   resize: vertical;
 }
@@ -122,6 +127,8 @@
   width: min(360px, 100vw - 32px);
   /* base.css の dialog の余白でなく、古い殻の .more-sheet と同じ */
   padding: var(--space-2) 0;
+  /* 板は幕で区切るので、dialog の枠を外す（D3） */
+  border: 0;
 }
 
 .v3-sheet .more-list {

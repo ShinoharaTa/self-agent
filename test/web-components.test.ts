@@ -275,6 +275,24 @@ test("web components: animation を書いた c-*.css は reduced-motion で止�
   }
 });
 
+test("web components: 板（.c-sheet）は枠を持たない（幕で区切る）。根の規則に border: 0 があり、ほかの規則（スマホも）は border を書き戻さない。知らせ（.c-toast-item）は枠のまま", () => {
+  const rules = parseCss(read("c-sheet.css")).filter((r) => !r.keyframe);
+  const declsOf = (r: CssRule): string[] => r.body.split(";").map((d) => d.trim()).filter((d) => d !== "");
+  const root = rules.filter((r) => r.at.length === 0 && r.selectors.length === 1 && r.selectors[0] === ".c-sheet");
+  assert.equal(root.length, 1);
+  assert.ok(declsOf(root[0]!).includes("border: 0"), root[0]!.body);
+  // 板の箱（.c-sheet と .c-sheet[open]）の規則は、根の border: 0 のほかに border・border-width・border-*-width・border-style・border-color を書かない（border-radius は角）
+  for (const rule of rules.filter((r) => r.selectors.some((sel) => /^\.c-sheet(?:\[open\])?$/.test(sel)))) {
+    for (const decl of declsOf(rule)) {
+      const prop = decl.slice(0, decl.indexOf(":")).trim();
+      if (prop.startsWith("border") && prop !== "border-radius") assert.ok(rule === root[0] && decl === "border: 0", `${rule.at.join(" ")} ${rule.selectors.join(",")}: ${decl}`);
+    }
+  }
+  // 知らせは幕が無いので枠を残す
+  const toast = rules.filter((r) => r.at.length === 0 && r.selectors.includes(".c-toast-item")).flatMap(declsOf);
+  assert.ok(toast.includes("border: var(--border-width) solid var(--border)"), toast.join("; "));
+});
+
 test("web components: c-*.js のクラスは c- の固定の文字列だけで、c-gallery.js は c-gallery だけ。defaultProps が無い", () => {
   for (const name of JS_FILES.filter((n) => n !== "c-lib.js")) {
     const js = read(name);
