@@ -60,6 +60,7 @@
  * inset は Bot の吹き出しの中のコードの地（ライトは白、ダークは --surface）。
  * --turn-surface（流れの列のあなたの番の項目の地。docs/plan/web-ui-deck.md §4.5）は --warning を 12% だけ --surface に混ぜた実色（半透明にしない）。
  * この面の上で --warning は線だけに使い、字にしない（字の比は test/web-components.test.ts が計算して見る）
+ * --bench（台。流れの列の画面の地。docs/plan/web-ui-deck.md §4.5）は板（--surface）より一段暗い色。台の上に直に置くのは板だけで、字・--muted・--turn-surface を直に置かない
  */
 :root[data-theme="dark"] {
   color-scheme: dark;
@@ -82,6 +83,7 @@
   --bubble-agent: #1a1e28;
   --bubble-inset: #11141c;
   --turn-surface: #2c2721;
+  --bench: #05060a;
 }
 
 :root[data-theme="light"] {
@@ -105,6 +107,7 @@
   --bubble-agent: #e4e8ef;
   --bubble-inset: #ffffff;
   --turn-surface: #f4ebe1;
+  --bench: #e9edf2;
 }
 
 :root:not([data-theme]) {
@@ -128,6 +131,7 @@
   --bubble-agent: #e4e8ef;
   --bubble-inset: #ffffff;
   --turn-surface: #f4ebe1;
+  --bench: #e9edf2;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -152,6 +156,7 @@
     --bubble-agent: #1a1e28;
     --bubble-inset: #11141c;
     --turn-surface: #2c2721;
+    --bench: #05060a;
   }
 }
 
