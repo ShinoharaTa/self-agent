@@ -5815,6 +5815,92 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
   }
 
   /**
+   * 見本の右腕の丸（#463 の D6）: 6 つの見本（accent・静か × 印なし・番・未読）が 56×56 で角丸が半分以上、svg が 1 つ・字なし、
+   * accent の顔の地が --accent で輪郭 0、静かな顔の地が --surface で輪郭 1px、名前（aria-label と title）、印の数と丸の箱の中に在る事。
+   * 足りない物は 1 行ずつ console.log に書き、1 つでもあれば投げて段を失敗にする
+   */
+  async function checkOrbs(page: Page, label: string): Promise<void> {
+    const lines = await page.evaluate(() => {
+      const out: string[] = [];
+      const NAME = "右腕に頼む・訊く";
+      const demos: ReadonlyArray<[string, string, string]> = [
+        ["orb-accent", "accent", ""],
+        ["orb-accent-turn", "accent", "turn"],
+        ["orb-accent-unread", "accent", "unread"],
+        ["orb-quiet", "quiet", ""],
+        ["orb-quiet-turn", "quiet", "turn"],
+        ["orb-quiet-unread", "quiet", "unread"],
+      ];
+      const colorOf = (host: Element, value: string): string => {
+        const probe = document.createElement("span");
+        probe.style.backgroundColor = value;
+        host.append(probe);
+        const c = getComputedStyle(probe).backgroundColor;
+        probe.remove();
+        return c;
+      };
+      const all = document.querySelectorAll('[data-section="orb"] .c-orb').length;
+      if (all !== demos.length) out.push(`丸: 見本の丸が ${all}（${demos.length} のはず）`);
+      for (const [demo, tone, mark] of demos) {
+        const orbs = document.querySelectorAll(`[data-section="orb"] [data-demo="${demo}"] > button.c-orb`);
+        if (orbs.length !== 1) {
+          out.push(`丸 ${demo}: 丸が ${orbs.length}（1 のはず）`);
+          continue;
+        }
+        const orb = orbs[0] as HTMLElement;
+        const r = orb.getBoundingClientRect();
+        const cs = getComputedStyle(orb);
+        if (Math.abs(r.width - 56) > 0.5 || Math.abs(r.height - 56) > 0.5) out.push(`丸 ${demo}: 箱が ${r.width.toFixed(1)}×${r.height.toFixed(1)}（56×56 のはず）`);
+        if (parseFloat(cs.borderTopLeftRadius) < r.width / 2) out.push(`丸 ${demo}: 角丸が ${cs.borderTopLeftRadius}（${(r.width / 2).toFixed(1)}px 以上のはず）`);
+        if (orb.getAttribute("data-tone") !== tone) out.push(`丸 ${demo}: data-tone が ${orb.getAttribute("data-tone")}（${tone} のはず）`);
+        const svgs = orb.querySelectorAll("svg").length;
+        if (svgs !== 1) out.push(`丸 ${demo}: svg が ${svgs}（1 のはず）`);
+        if ((orb.textContent ?? "").trim() !== "") out.push(`丸 ${demo}: 字が在る ${JSON.stringify(orb.textContent)}`);
+        const bg = cs.backgroundColor;
+        const want = colorOf(orb.parentElement ?? orb, tone === "accent" ? "var(--accent)" : "var(--surface)");
+        if (bg !== want) out.push(`丸 ${demo}: 地が ${bg}（${tone === "accent" ? "--accent" : "--surface"} ${want} のはず）`);
+        const borders = [cs.borderTopWidth, cs.borderRightWidth, cs.borderBottomWidth, cs.borderLeftWidth];
+        const wantBorder = tone === "accent" ? "0px" : "1px";
+        if (borders.some((w) => w !== wantBorder)) out.push(`丸 ${demo}: 輪郭が ${borders.join(" ")}（${wantBorder} のはず）`);
+        if (cs.boxShadow !== "none") out.push(`丸 ${demo}: 影が在る ${cs.boxShadow}`);
+        const name = mark === "turn" ? `${NAME}（あなたの番）` : mark === "unread" ? `${NAME}（未読）` : NAME;
+        if (orb.getAttribute("aria-label") !== name || orb.getAttribute("title") !== name) out.push(`丸 ${demo}: 名前が ${JSON.stringify(orb.getAttribute("aria-label"))}・title ${JSON.stringify(orb.getAttribute("title"))}（「${name}」のはず）`);
+        if (orb.hasAttribute("id")) out.push(`丸 ${demo}: id が在る`);
+        // 印: accent の顔は自前の点、静かな顔は K2 の Mark。丸の箱の中に収まる
+        const dots = orb.querySelectorAll(tone === "accent" ? ".c-orb-dot" : ".c-mark");
+        const others = orb.querySelectorAll(tone === "accent" ? ".c-mark" : ".c-orb-dot").length;
+        const wantDots = mark === "" ? 0 : 1;
+        if (dots.length !== wantDots || others !== 0) out.push(`丸 ${demo}: 印が ${dots.length}・違う顔の印が ${others}（${wantDots}・0 のはず）`);
+        for (const dot of dots) {
+          if (dot.getAttribute("data-state") !== mark) out.push(`丸 ${demo}: 印の data-state が ${dot.getAttribute("data-state")}（${mark} のはず）`);
+          const d = dot.getBoundingClientRect();
+          if (d.width < 1 || d.height < 1) out.push(`丸 ${demo}: 印の大きさが ${d.width.toFixed(1)}×${d.height.toFixed(1)}`);
+          if (d.left < r.left - 0.5 || d.right > r.right + 0.5 || d.top < r.top - 0.5 || d.bottom > r.bottom + 0.5) out.push(`丸 ${demo}: 印が丸の箱の外`);
+          // 印の箱の 4 隅（輪の box-shadow が在ればその分だけ広げる）が円の中（中心から 箱の幅 / 2 以内）。外に出ると地が顔の色でなくなる
+          const shadow = getComputedStyle(dot).boxShadow;
+          const ring = shadow === "none" ? 0 : Math.max(0, ...[...shadow.matchAll(/(-?[\d.]+)px/g)].map((m) => parseFloat(m[1] ?? "0")));
+          const cx = r.left + r.width / 2;
+          const cy = r.top + r.height / 2;
+          const far = Math.max(
+            ...[
+              [d.left - ring, d.top - ring],
+              [d.right + ring, d.top - ring],
+              [d.left - ring, d.bottom + ring],
+              [d.right + ring, d.bottom + ring],
+            ].map(([x, y]) => Math.hypot((x ?? 0) - cx, (y ?? 0) - cy)),
+          );
+          if (far > r.width / 2 + 0.5) out.push(`丸 ${demo}: 印（輪 ${ring}px を含む）の隅が円の外（中心から ${far.toFixed(1)}、半径 ${(r.width / 2).toFixed(1)}）`);
+          // 印は右上（中心より右・上）
+          if (d.left + d.width / 2 <= cx || d.top + d.height / 2 >= cy) out.push(`丸 ${demo}: 印が右上でない`);
+        }
+      }
+      return out;
+    });
+    for (const line of lines) logLines.push(`[${label}] ${line}`);
+    if (lines.length > 0) throw new Error(`右腕の丸の見本の検査で ${lines.length} 件`);
+  }
+
+  /**
    * スマホの流れの列の見本（D2）: 下のバーの deck の 2 つ（外側 390 の枠・列 3 つと右腕・今の列は 1 つ・数の Badge は番の列だけ・4 つの字が省かれない・id なし）、
    * 帯の phone（点・探す・始める・ほかで右腕なし・「self-agent」が省かれない）、deck-paged（列 3 つが枠の幅で、1 列ずつ止まる横送り）、
    * deck-phone-ops（リマインドの操作の行が 1 行で項目の中）と当たり（PC でも 44）。
@@ -5973,6 +6059,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         await checkHands(page, label);
         await checkTerms(page, vp, label);
         await checkDeckPhone(page, label);
+        await checkOrbs(page, label);
         // 検査で動かした位置（ページと横に送る入れ物）を先頭に戻す
         await page.evaluate(() => {
           for (const el of document.querySelectorAll("*")) if (el.scrollLeft !== 0) el.scrollLeft = 0;

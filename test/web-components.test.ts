@@ -4833,7 +4833,7 @@ test("web components: 新しい殻の CSS（shell.css と c-*.css。c-gallery.cs
   ].sort());
 });
 
-test("web components: 右腕の丸（c-shell.css の .c-orb）は幅・高さ var(--c-orb)（tokens.css で 56px）の円。静かな顔は --surface と 1px の輪郭、accent の顔は --accent・border: 0・--primary-text。影・gradient を書かず、opacity は乗った時だけ。印は格子の右上", () => {
+test("web components: 右腕の丸（c-shell.css の .c-orb）は幅・高さ var(--c-orb)（tokens.css で 56px）の円。静かな顔は --surface と 1px の輪郭、accent の顔は --accent・border: 0・--primary-text。影・gradient を書かず、opacity は乗った時だけ。印は格子の右上で円の中へ寄せ、当たりの箱は ::after で角まで覆う", () => {
   assert.match(read("tokens.css"), /--c-orb: 56px;/);
   const rules = parseCss(read("c-shell.css"));
   const orbRules = rules.filter((r) => r.selectors.some((s) => /^\.c-orb(?![a-z])/.test(s)));
@@ -4850,6 +4850,10 @@ test("web components: 右腕の丸（c-shell.css の .c-orb）は幅・高さ va
   assert.deepEqual(declsOf(".c-orb > *"), ["grid-area: 1 / 1"]);
   const place = declsOf(".c-orb-mark");
   assert.ok(place.includes("align-self: start") && place.includes("justify-self: end"), place.join("; "));
+  // 印は円の中へ寄せる（点と accent の番の輪が円の外に出ない。画面写しの checkOrbs が隅を測る）
+  assert.ok(place.includes("margin: calc(var(--space-2) + var(--c-mark-ring))"), place.join("; "));
+  // 当たりの箱は角も四角に覆う（.c-btn::after と同じ考え方。position を使わず格子の同じ升）
+  assert.deepEqual(declsOf(".c-orb::after"), ['content: ""', "grid-area: 1 / 1", "place-self: stretch"]);
   // 押した・乗った（下のバーの右腕と同じ宣言）
   assert.deepEqual(declsOf(".c-orb:active"), ["transform: scale(0.97)"]);
   assert.deepEqual(declsOf(".c-orb:hover", [`@media ${FINE}`]), ["opacity: 0.9"]);
