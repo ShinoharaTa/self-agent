@@ -1455,7 +1455,11 @@ test("web static: manifest は §11.1 の値で、アイコンは配るファイ
   assert.equal(manifest.start_url, "/");
   assert.equal(manifest.scope, "/");
   assert.equal(manifest.display, "standalone");
-  assert.equal(manifest.background_color, "#0b0d14");
+  assert.equal(manifest.background_color, "#05060a");
+  // 起動画面の地は殻の地（tokens.css のダークの --bg）と同じ値（離れないように）
+  const darkTokens = read("tokens.css").match(/:root\[data-theme="dark"\] \{[^}]*?--bg: (#[0-9a-f]{6});/);
+  assert.ok(darkTokens, "tokens.css の :root[data-theme=\"dark\"] の --bg");
+  assert.equal(manifest.background_color, darkTokens[1]);
   assert.equal(manifest.theme_color, "#11141c");
   assert.equal(manifest.lang, "ja");
   assert.equal("orientation" in manifest, false);
