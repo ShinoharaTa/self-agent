@@ -26,7 +26,6 @@
 /*
  * ホーム画面から開いたとき（black-translucent）、ステータスバーの文字は白で、その裏は .v3 の上の余白。
  * ライトでは白地に白文字にならないよう、その帯だけ暗い色（--primary）にする（app.css の .wb-titlebar と同じ決定。docs/plan/web-ui.md §11.2）。ダークは地（--bg）のまま
- * 地をまとめて書くので、流れの列の形（data-deck）の台（--bench）はここでも書く（下の .v3[data-deck] より強い規則なので、書かないと --bg に戻る）
  */
 @media (display-mode: standalone) {
   .v3:is(:root[data-theme="light"] *) {
@@ -35,23 +34,11 @@
       var(--bg);
   }
 
-  .v3[data-deck]:is(:root[data-theme="light"] *) {
-    background:
-      linear-gradient(var(--primary), var(--primary)) top / 100% env(safe-area-inset-top, 0px) no-repeat,
-      var(--bench);
-  }
-
   @media (prefers-color-scheme: light) {
     .v3:is(:root:not([data-theme]) *) {
       background:
         linear-gradient(var(--primary), var(--primary)) top / 100% env(safe-area-inset-top, 0px) no-repeat,
         var(--bg);
-    }
-
-    .v3[data-deck]:is(:root:not([data-theme]) *) {
-      background:
-        linear-gradient(var(--primary), var(--primary)) top / 100% env(safe-area-inset-top, 0px) no-repeat,
-        var(--bench);
     }
   }
 }
@@ -328,7 +315,6 @@
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: var(--c-deck-band-h) minmax(0, 1fr);
   gap: var(--space-2);
-  background: var(--bench);
 }
 
 /* 席: 並ぶ幅（data-seat="side"。境は c-deck.js の DECK.SIDE_MIN）は 幅 − 900（最大 720）、畳む幅は幅の 48%（440〜600）。DECK と同じ数 */

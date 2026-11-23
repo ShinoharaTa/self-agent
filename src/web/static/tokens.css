@@ -56,16 +56,18 @@
  * テーマの切り替え。既定は data-theme="dark"。設定で「OS に合わせる」を選ぶと data-theme を外し、prefers-color-scheme で選ぶ。
  * 値は docs/design/WEB-UI-GUIDELINES.md §2.1 の決まり（夜勤の計器盤）で、base.css の同名の変数を上書きする（base.css は変えない）。
  * --text-secondary（二次の文字）は app.css だけの変数。data-theme が無いときも base.css の既定に落ちないよう、同じ値を 4 か所に書く。
- * --bubble-*（会話の吹き出し。#263）は app.css（古い殻）だけが使う変数（c-talk.css は D4 から使わない）: owner はオーナーの地（ダーク 20%・ライト 15% の --accent を --bg に混ぜた色）、
- * agent は Bot の地（ライトは --bg より一段暗い #e4e8ef、ダークは --surface が --bg と見分けにくいので --muted）、
+ * --bubble-*（会話の吹き出し。#263）は app.css（古い殻）だけが使う変数（c-talk.css は D4 から使わない）: owner はオーナーの地（ダーク 20%・ライト 15% の --accent を前の --bg に混ぜた色）、
+ * agent は Bot の地（ライトは前の --bg より一段暗い #e4e8ef、ダークは --surface が前の --bg と見分けにくいので --muted）、
  * inset は Bot の吹き出しの中のコードの地（ライトは白、ダークは --surface）。
+ * owner・agent は前の --bg（#0b0d14・#f5f7fa）を元に決めた値。古い殻だけが使い、値は変えない。
  * --turn-surface（流れの列のあなたの番の項目の地。docs/plan/web-ui-deck.md §4.5）は --warning を 12% だけ --surface に混ぜた実色（半透明にしない）。
  * この面の上で --warning は線だけに使い、字にしない（字の比は test/web-components.test.ts が計算して見る）
- * --bench（台。流れの列の画面の地。docs/plan/web-ui-deck.md §4.5）は板（--surface）より一段暗い色。台の上に直に置くのは板だけで、字・--muted・--turn-surface を直に置かない
+ * --bg（地。流れの列の画面の台も同じ色。docs/plan/web-ui-deck.md §4.5）は板（--surface）より一段暗い色。
+ * 地の上に直に置く面は板（--surface）だけ。--muted・--turn-surface を直に置かない（ライトで 1.02・1.00）。字は置いてよい（比は test/web-components.test.ts が計算して見る）
  */
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #0b0d14;
+  --bg: #05060a;
   --surface: #11141c;
   --muted: #1a1e28;
   --border: #2a3040;
@@ -84,12 +86,11 @@
   --bubble-agent: #1a1e28;
   --bubble-inset: #11141c;
   --turn-surface: #2c2721;
-  --bench: #05060a;
 }
 
 :root[data-theme="light"] {
   color-scheme: light;
-  --bg: #f5f7fa;
+  --bg: #e9edf2;
   --surface: #ffffff;
   --muted: #eceff4;
   --border: #d7dce6;
@@ -108,12 +109,11 @@
   --bubble-agent: #e4e8ef;
   --bubble-inset: #ffffff;
   --turn-surface: #f4ebe1;
-  --bench: #e9edf2;
 }
 
 :root:not([data-theme]) {
   color-scheme: light;
-  --bg: #f5f7fa;
+  --bg: #e9edf2;
   --surface: #ffffff;
   --muted: #eceff4;
   --border: #d7dce6;
@@ -132,13 +132,12 @@
   --bubble-agent: #e4e8ef;
   --bubble-inset: #ffffff;
   --turn-surface: #f4ebe1;
-  --bench: #e9edf2;
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
     color-scheme: dark;
-    --bg: #0b0d14;
+    --bg: #05060a;
     --surface: #11141c;
     --muted: #1a1e28;
     --border: #2a3040;
@@ -157,8 +156,7 @@
     --bubble-agent: #1a1e28;
     --bubble-inset: #11141c;
     --turn-surface: #2c2721;
-    --bench: #05060a;
-  }
+    }
 }
 
 /* 部品（c-*）の寸法。docs/plan/web-ui-components.md §7.2 */
