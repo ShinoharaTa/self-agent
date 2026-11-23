@@ -3,7 +3,7 @@
 .c-talk {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-4);
   box-sizing: border-box;
   max-width: var(--c-talk-max);
   margin-inline: auto;
@@ -25,13 +25,7 @@
   align-self: flex-start;
   gap: var(--space-1);
   min-width: 0;
-  max-width: 86%;
-}
-
-.c-msg[data-who="owner"] {
-  align-items: flex-end;
-  align-self: flex-end;
-  max-width: 80%;
+  max-width: 100%;
 }
 
 .c-msg-name {
@@ -43,17 +37,16 @@
   box-sizing: border-box;
   min-width: 0;
   max-width: 100%;
-  padding: var(--c-bubble-pad-y) var(--c-bubble-pad-x);
-  background: var(--bubble-agent);
-  border-radius: var(--c-bubble-r) var(--c-bubble-r) var(--c-bubble-r) var(--c-bubble-tail);
   overflow-wrap: anywhere;
   user-select: text;
   -webkit-user-select: text;
 }
 
+/* 返事は地なしの文。自分の発言だけ 1 段浮いた面（左寄せ・幅は文なり）。違いはこの規則だけ */
 .c-msg[data-who="owner"] > .c-bubble {
-  background: var(--bubble-owner);
-  border-radius: var(--c-bubble-r) var(--c-bubble-r) var(--c-bubble-tail) var(--c-bubble-r);
+  padding: var(--c-bubble-pad-y) var(--c-bubble-pad-x);
+  background: var(--muted);
+  border-radius: var(--c-card-r);
 }
 
 .c-md {
@@ -182,7 +175,7 @@
   text-overflow: ellipsis;
 }
 
-/* 吹き出しの足の結果の文は、手順を開いている間だけ省かずに折り返す（閉じた形は 1 行のまま） */
+/* 発言の足の結果の文は、手順を開いている間だけ省かずに折り返す（閉じた形は 1 行のまま） */
 .c-msg-foot > .c-steps-toggle[aria-expanded="true"] {
   white-space: normal;
   overflow-wrap: anywhere;
@@ -209,7 +202,7 @@
   overflow-wrap: anywhere;
 }
 
-/* 吹き出しの行の一番下の操作（［続ける］）。左寄せ。上の結果の文の当たりと重ならない間 */
+/* 発言の行の一番下の操作（［続ける］）。左寄せ。上の結果の文の当たりと重ならない間 */
 .c-msg-act {
   display: flex;
   margin-top: var(--space-3);
@@ -222,23 +215,8 @@
   align-self: flex-start;
   gap: var(--space-1);
   min-width: 0;
-  max-width: 86%;
+  max-width: 100%;
   overflow-wrap: anywhere;
-}
-
-/* 広い幅の上限は .c-msg と .c-run の既定の後ろに置く（前に置くと既定の 86% に負ける） */
-@media (min-width: 640px) {
-  .c-msg {
-    max-width: 78%;
-  }
-
-  .c-msg[data-who="owner"] {
-    max-width: 72%;
-  }
-
-  .c-run {
-    max-width: 78%;
-  }
 }
 
 .c-run-line {
@@ -338,7 +316,7 @@
   background: var(--border);
 }
 
-/* ===== 札（返事の <#ID>。返事のすぐ後ろの行。吹き出しの最大幅の外で、会話の列いっぱい。地は付けない） ===== */
+/* ===== 札（返事の <#ID>。返事のすぐ後ろの行。会話の列いっぱい。地は付けない） ===== */
 
 /* 札の間隔は、sm のボタンの当たり（上下に 4 ずつ広げて 44）が隣の札のボタンと重ならない幅（線 1 + 間隔 8 + 線 1 = 10） */
 .c-refs {

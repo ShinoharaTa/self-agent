@@ -2463,6 +2463,49 @@ test("web components: 会話の根（.c-talk）は自分の字と色を持つ（
   }
 });
 
+/** c-talk.css の at の外の、セレクタが 1 つだけの規則（宛てた規則が無ければ落とす） */
+function talkRule(selector: string): { decls: string[]; props: string[] }[] {
+  const rules = parseCss(read("c-talk.css")).filter((r) => r.at.length === 0 && r.selectors.length === 1 && r.selectors[0] === selector);
+  assert.ok(rules.length > 0, `c-talk.css に ${selector} の規則が無い`);
+  return rules.map((r) => {
+    const decls = r.body.split(";").map((d) => d.trim()).filter((d) => d !== "");
+    return { decls, props: decls.map((d) => d.split(":")[0]!.trim()) };
+  });
+}
+
+test("web components: 会話の行は吹き出しでない（docs/plan/web-ui-deck.md の D4）。返事の本文の箱は地・余白・角を書かず、自分の発言だけ --muted の面（余白 --c-bubble-pad-y/x・角 --c-card-r）。行は左寄せで列いっぱい、行の間は --space-4", () => {
+  // 返事の本文の箱（.c-bubble）は地なし・余白 0・角 0。字の選択と折り返しは残す
+  const bubble = talkRule(".c-bubble");
+  for (const r of bubble) for (const p of r.props) assert.ok(!["background", "background-color", "padding", "border-radius"].includes(p), `.c-bubble の ${p}`);
+  for (const decl of ["user-select: text", "overflow-wrap: anywhere"]) assert.ok(bubble.some((r) => r.decls.includes(decl)), decl);
+  // 自分の発言の違いは 1 つの規則だけ
+  const owner = talkRule('.c-msg[data-who="owner"] > .c-bubble');
+  for (const decl of ["padding: var(--c-bubble-pad-y) var(--c-bubble-pad-x)", "background: var(--muted)", "border-radius: var(--c-card-r)"]) assert.ok(owner.some((r) => r.decls.includes(decl)), decl);
+  const rules = parseCss(read("c-talk.css"));
+  assert.ok(!rules.some((r) => r.selectors.includes('.c-msg[data-who="owner"]')), "自分の行の寄せと幅の規則");
+  // 右寄せをしない
+  assert.doesNotMatch(stripCssComments(read("c-talk.css")), /flex-end/);
+  // 行（.c-msg）と待ちの行（.c-run）は列いっぱい。広い幅でも % の上書きを戻さない
+  for (const selector of [".c-msg", ".c-run"]) assert.ok(talkRule(selector).some((r) => r.decls.includes("max-width: 100%")), `${selector} の max-width`);
+  for (const r of rules.filter((x) => x.at.some((at) => at.startsWith("@media")))) {
+    for (const selector of r.selectors) assert.ok(!/^\.c-(?:msg|run)(?![a-z-])/.test(selector), `@media の中の ${selector}`);
+  }
+  // 行の間（吹き出しの輪郭の代わりに余白で切る）
+  assert.ok(talkRule(".c-talk").some((r) => r.decls.includes("gap: var(--space-4)")), ".c-talk の gap");
+});
+
+test("web components: 会話の字は板（--surface）の上で 4.5 以上（返事は地なしの文。名前・時刻・結果の文・リンクも）", () => {
+  // --muted の上の --text（自分の発言の面とコードの地）は入力欄（.c-input）の検査が見る
+  const blocks = parseCss(read("tokens.css")).filter((r) => r.body.includes("--surface:") && r.body.includes("--text-muted:"));
+  assert.equal(blocks.length, 4);
+  for (const block of blocks) {
+    const v = new Map([...block.body.matchAll(/(--[a-z0-9-]+):\s*(#[0-9a-f]{6})\b/g)].map((m) => [m[1] ?? "", m[2] ?? ""]));
+    for (const name of ["--text", "--text-secondary", "--text-muted", "--accent", "--warning", "--danger"]) {
+      assert.ok(contrast(v.get(name)!, v.get("--surface")!) >= 4.5, `${block.selectors.join(",")} ${name} ${contrast(v.get(name)!, v.get("--surface")!)}`);
+    }
+  }
+});
+
 test("web components: TalkTimeline に rows を渡すと、直下の 1 つ目はその物そのもので model.items を見ない", () => {
   const { on } = talkRec();
   const rows = html`<${talk.TalkRows} key="rows" older=${false} items=${[{ kind: "divider", key: "9", text: "渡した行" }]} on=${on} />`;
