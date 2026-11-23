@@ -175,6 +175,8 @@ function newShellNames(vp: Viewport, theme: Theme, full: boolean): string[] {
     ...(vp !== "tablet" && theme === "dark" ? ["a-deck-done"] : []),
     // 列のリマインドの［次を飛ばす］［止める］（#472 の PR-1。ダークの PC だけ）: ［止める］の確認が出た所
     ...(vp === "pc" && theme === "dark" ? ["a-deck-rem"] : []),
+    // 席だけの幅（幅 700 で席を開いた。D6。ダークの PC だけ）: 丸が無く、帯に［右腕］が出た所
+    ...(vp === "pc" && theme === "dark" ? ["a-deck-solo"] : []),
     "b-chat-top",
     "b-chat-middle",
     "b-chat-bottom",
@@ -324,7 +326,7 @@ const ACCENT_BIG_MAX = 1;
 /**
  * accent の塗りの量（ブラウザの中で動く。page.evaluate に渡すので外の変数を使わない）。見えている要素（上に重なった物の下は除く）のうち、
  * 地（background-color）が --accent の物の画面の中の面積の和が areaMax 以下、44px 角以上の物が bigMax 以下。足りない物の文を返す。
- * 測り方の空振りの守り: 見えている未読の点・accent の数の印・下のバーの右腕は塗りとして数えられている。min 個以上を数えている
+ * 測り方の空振りの守り: 見えている未読の点・accent の数の印・下のバーの右腕・右腕の丸の accent の顔は塗りとして数えられている。min 個以上を数えている
  */
 function accentProblems({ label, areaMax, bigMax, min = 0 }: { label: string; areaMax: number; bigMax: number; min?: number }): string[] {
   const out: string[] = [];
@@ -365,7 +367,7 @@ function accentProblems({ label, areaMax, bigMax, min = 0 }: { label: string; ar
   if (share > areaMax) out.push(`accent の塗り（${label}）: 面積が画面の ${(share * 100).toFixed(2)}%（${(areaMax * 100).toFixed(0)}% 以下のはず）`);
   if (big.length > bigMax) out.push(`accent の塗り（${label}）: 44px 角以上が ${big.length} 個（${bigMax} 個以下のはず）: ${big.join("・")}`);
   // 空振りの守り: accent で塗ると決まっている物が見えていれば、上の数え方で拾えている
-  for (const el of document.querySelectorAll<HTMLElement>('.c-mark[data-state="unread"], .c-badge[data-tone="accent"], .c-bottom-hand')) {
+  for (const el of document.querySelectorAll<HTMLElement>('.c-mark[data-state="unread"], .c-badge[data-tone="accent"], .c-bottom-hand, .c-orb[data-tone="accent"]')) {
     if (seen(el) !== null && !counted.has(el)) out.push(`accent の塗り（${label}）: ${el.tagName.toLowerCase()}.${String(el.className).trim().split(/\s+/)[0] ?? ""} が塗りとして数えられていない（地 ${getComputedStyle(el).backgroundColor}。--accent ${accent} のはず）`);
   }
   if (counted.size < min) out.push(`accent の塗り（${label}）: 数えた塗りが ${counted.size} 個（${min} 個以上のはず。測り方が空振りしている）`);
@@ -1449,10 +1451,18 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
 
   /** スマホの下のバーの右腕のボタン（流れの列は列の下のバー #c-foot-root。D2） */
   const BAR_HAND = '#c-foot-root button[data-act="hand"]';
+  /** 広い幅の流れの列の右下の右腕の丸（D6） */
+  const ORB = '#c-orb-root button.c-orb[data-act="hand"]';
 
-  /** 右腕を開くボタン（スマホの流れの列は下のバーの右腕、広い幅の流れの列は帯の［右腕］、ほかは畳んだ帯の #v3-hand-show） */
+  /** 右腕を開くボタン（スマホの流れの列は下のバーの右腕、広い幅の流れの列は右下の丸（席だけの幅で丸が無ければ帯の［右腕］。D6）、ほかは畳んだ帯の #v3-hand-show） */
   const handShow = async (page: Page): Promise<string> =>
-    (await deckOn(page)) ? ((await page.$('#v3[data-seat="full"]')) !== null ? BAR_HAND : bandButton("hand")) : "#v3-hand-show";
+    (await deckOn(page))
+      ? (await page.$('#v3[data-seat="full"]')) !== null
+        ? BAR_HAND
+        : (await page.$(ORB)) !== null
+          ? ORB
+          : bandButton("hand")
+      : "#v3-hand-show";
 
   /** 一覧を読み直し、流れの列なら「探す」の板を開いた形にする（一覧の検査は板の中で走らせる） */
   async function loadList(page: Page): Promise<void> {
@@ -2302,10 +2312,10 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
    */
   async function checkBarDeck(page: Page, vp: Viewport, p: string): Promise<string[]> {
     const lines: string[] = [];
-    // スマホ（D2）の帯は［右腕］を出さない（口は下のバー）
+    // スマホ（D2）の帯は［右腕］を出さない（口は下のバー）。広い幅も列だけの間は出さない（口は右下の丸。D6）
     const phone = vp === "phone";
-    const bandActs = phone ? ["find", "start", "more"] : ["find", "hand", "start", "more"];
-    const form = await page.evaluate(() => {
+    const bandActs = ["find", "start", "more"];
+    const form = await page.evaluate((orbSel: string) => {
       const root = document.querySelector("#c-bottom-root");
       const band = document.querySelector("#c-band-root > .c-band");
       return {
@@ -2313,12 +2323,17 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         band: band !== null,
         ids: band === null ? 0 : band.querySelectorAll("[id]").length,
         acts: band === null ? [] : [...band.querySelectorAll(".c-band-ops [data-act]")].map((el) => el.getAttribute("data-act")),
+        orbs: document.querySelectorAll(orbSel).length,
+        orbIds: document.querySelectorAll("#c-orb-root [id]").length,
       };
-    });
+    }, ORB);
     if (form.kids !== 0) lines.push(`バー: 流れの列で #c-bottom-root の子が ${form.kids}（0 のはず）`);
     if (!form.band) lines.push("バー: 上の帯（.c-band）が無い");
     if (form.ids !== 0) lines.push(`バー: 上の帯の中に id の付いた要素が ${form.ids} 個`);
-    if (JSON.stringify(form.acts) !== JSON.stringify(bandActs)) lines.push(`バー: 上の帯のボタンが ${phone ? "探す・始める・ほか" : "探す・右腕・始める・ほか"} でない（${form.acts.join("・")}）`);
+    if (JSON.stringify(form.acts) !== JSON.stringify(bandActs)) lines.push(`バー: 上の帯のボタンが 探す・始める・ほか でない（${form.acts.join("・")}）`);
+    // 右腕の丸はスマホに無く、広い幅に 1 つ（中に id を持たない）
+    if (form.orbs !== (phone ? 0 : 1)) lines.push(`バー: 右腕の丸が ${form.orbs} 個（${phone ? 0 : 1} 個のはず）`);
+    if (form.orbIds !== 0) lines.push(`バー: 右腕の丸の中に id の付いた要素が ${form.orbIds} 個`);
     // スマホの列の下のバー（板が開いていれば先に閉じる）
     if (phone) {
       if ((await page.$('#v3[data-find="open"]')) !== null) {
@@ -2593,6 +2608,12 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
 
   /** 焦点が見出しの data-act のボタンか */
   const activeIs = (page: Page, selector: string): Promise<boolean> => page.evaluate((sel: string) => document.activeElement !== null && document.activeElement.matches(sel), selector);
+  /** 焦点の在る要素の短い名前（検査の文に添える。字・id は出さない） */
+  const activeTag = (page: Page): Promise<string> =>
+    page.evaluate(() => {
+      const el = document.activeElement;
+      return el === null ? "無し" : `${el.tagName.toLowerCase()}.${String(el.className).trim().split(/\s+/)[0] ?? ""}`;
+    });
   const TOP_MENU = '#c-top-root [data-act="menu"] button';
   const TOP_BACK = '#c-top-root [data-act="back"] button';
   const TOP_HAND = '#c-top-root button[data-act="hand"]';
@@ -2779,9 +2800,9 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       if (!(form.width < form.min)) lines.push(`本番の見出し: タブレットの列 2 の幅 ${form.width} がしきい値 ${form.min} 未満でない`);
     }
     if (vp === "pc") {
-      // 流れの列は右腕を重ねる形だけ。帯の［右腕］で重ねて開いた形から見る（列の形は無い）
+      // 流れの列は右腕を重ねる形だけ。右下の丸で重ねて開いた形から見る（列の形は無い）
       if (await deckOn(page)) {
-        await page.click(bandButton("hand"));
+        await page.click(await handShow(page));
         await page.waitForSelector('#v3[data-hand="open"][data-hand-mode="over"]', { timeout: 5000 });
         await settled(page);
       }
@@ -2862,7 +2883,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         if (!(await topForm(page)).compact) lines.push("本番の見出し: 重ねた右腕を畳んだ後に compact でない");
         lines.push(...(await checkRule(page, tag, "右腕を畳んだ後")));
       } else {
-        // 流れの列では pcPlaceLines の後は畳んでいるので、帯の［右腕］で重ねて開いて見出しを見る
+        // 流れの列では pcPlaceLines の後は畳んでいるので、右下の丸で重ねて開いて見出しを見る
         const reopened = (await page.getAttribute("#v3", "data-hand")) !== "open";
         if (reopened) {
           await page.click(showSel);
@@ -4766,7 +4787,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
 
   /**
    * 流れの列の検査（D1）: 見える列の数が data-deck と c-deck.js の deckFit と合う・列の幅は 420 以下・席の幅は deckFit と同じ・
-   * 列と項目と帯で字が横にはみ出ない・番の項目の地は --turn-surface で左の線は --warning・開いている番の項目（D3）の地は --turn-surface で左の線は --accent・帯のボタンは 4 つ（data-act）。足りない物の文
+   * 列と項目と帯で字が横にはみ出ない・番の項目の地は --turn-surface で左の線は --warning・開いている番の項目（D3）の地は --turn-surface で左の線は --accent・
+   * 右腕の丸（D6）の数・箱・場所・顔と席の入力欄に重ならない事・帯のボタン（丸が在れば 3 つ。data-act）。足りない物の文
    */
   /**
    * スマホの流れの列（D2。ダークのスマホの段 deck の続き。スレッドを開いた所から）: スレッドの間は帯・列・下のバーが見えない・戻ると列で焦点は押した項目（UI-7）・
@@ -4864,9 +4886,60 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     return lines;
   }
 
+  /**
+   * 広い幅の列だけの画面の右腕の丸（D6。段 deck の続き。a-deck を撮った後で、絵に残る物は変えない）: 右端の見える列を一番下まで送ると最後の項目の下端が丸の上端より上
+   * （送りは元に戻す）・知らせを 1 つ出すと丸の箱と重ならない（消して戻す）。足りない物の文
+   */
+  async function orbListLines(page: Page): Promise<string[]> {
+    const lines: string[] = [];
+    const say = (text: string): void => void lines.push(`右腕の丸（列）: ${text}`);
+    const tail = await page.evaluate((orbSel: string) => {
+      const orb = document.querySelector(orbSel)?.getBoundingClientRect();
+      const deck = document.querySelector("#c-deck-root .c-deck")?.getBoundingClientRect();
+      if (orb === undefined || deck === undefined) return null;
+      const shown = [...document.querySelectorAll<HTMLElement>("#c-deck-root .c-deck > .c-col")].filter((c) => {
+        const r = c.getBoundingClientRect();
+        return r.width > 0 && r.left >= deck.left - 0.5 && r.right <= deck.right + 0.5;
+      });
+      const col = shown.at(-1);
+      const body = col?.querySelector<HTMLElement>(".c-col-body");
+      if (col === undefined || body === undefined || body === null) return null;
+      const before = body.scrollTop;
+      body.scrollTop = body.scrollHeight;
+      const items = [...body.querySelectorAll<HTMLElement>(".c-item")];
+      const last = items.at(-1)?.getBoundingClientRect() ?? null;
+      body.scrollTop = before;
+      return { col: col.dataset.col ?? "", last: last === null ? null : last.bottom, orbTop: orb.top };
+    }, ORB);
+    if (tail === null) say("丸か右端の列を測れない");
+    else if (tail.last === null) say(`右端の列（${tail.col}）に項目が無い`);
+    else if (!(tail.last < tail.orbTop)) say(`右端の列（${tail.col}）を一番下まで送った最後の項目の下端 ${tail.last.toFixed(1)} が丸の上端 ${tail.orbTop.toFixed(1)} より上でない`);
+    // 知らせ（トースト）と重ならない
+    const ITEM = "#c-notice-root .c-toast-item";
+    await page.evaluate((text: string) => (window as unknown as { SA: { ui: { toast: (t: string) => void } } }).SA.ui.toast(text), "送るのをやめました");
+    await page.waitForSelector(ITEM, { timeout: 5000 }).catch(() => undefined);
+    const overlap = await page.evaluate(
+      ({ orbSel, item }: { orbSel: string; item: string }) => {
+        const r = document.querySelector(orbSel)?.getBoundingClientRect();
+        const toasts = [...document.querySelectorAll(item)].map((el) => el.getBoundingClientRect());
+        if (r === undefined || toasts.length === 0) return null;
+        return toasts.some((b) => r.left < b.right && b.left < r.right && r.top < b.bottom && b.top < r.bottom);
+      },
+      { orbSel: ORB, item: ITEM },
+    );
+    if (overlap === null) say("丸か知らせが無い");
+    else if (overlap) say("知らせの箱が丸の箱と重なる");
+    await page.evaluate((item: string) => {
+      for (const b of document.querySelectorAll<HTMLButtonElement>(item + ' button[aria-label="閉じる"]')) b.click();
+    }, ITEM);
+    await page.waitForFunction((item: string) => document.querySelector(item) === null, ITEM, { timeout: 5000 }).catch(() => say("知らせが消えない"));
+    await settled(page);
+    return lines;
+  }
+
   async function deckLines(page: Page, vp: Viewport, label: string): Promise<string[]> {
     return page.evaluate(
-      ({ label, width, phone }: { label: string; width: number; phone: boolean }) => {
+      ({ label, width, phone, orbSel }: { label: string; width: number; phone: boolean; orbSel: string }) => {
         const out: string[] = [];
         const say = (text: string): void => void out.push(`流れの列（${label}・幅 ${width}）: ${text}`);
         const v3 = document.querySelector<HTMLElement>("#v3");
@@ -4935,13 +5008,45 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           if (cs.backgroundColor !== turnSurface) say(`開いている番の項目の地 ${cs.backgroundColor}（--turn-surface ${turnSurface} のはず）`);
           if (cs.borderLeftColor !== accent || cs.borderLeftWidth !== "3px") say(`開いている番の項目の左の線 ${cs.borderLeftWidth} ${cs.borderLeftColor}（3px ${accent} のはず）`);
         }
-        // 帯のボタン
+        // 右腕の丸（D6）: スマホと席だけの幅（data-deck 0）には無く、ほかは 1 つ。56 の円。列だけの間は画面の右下（右・下から 16）で accent の顔、
+        // 席が開いている間は席のすぐ左の下（席の左端から 8 + 16・下から 16）で静かな顔、席の入力欄・［送る］と重ならない
+        const orbs = [...document.querySelectorAll<HTMLElement>(orbSel)];
+        const orbWant = phone || want === 0 ? 0 : 1;
+        if (orbs.length !== orbWant) say(`右腕の丸が ${orbs.length} 個（${orbWant} 個のはず）`);
+        const orb = orbs[0];
+        if (orbWant === 1 && orb !== undefined) {
+          const r = orb.getBoundingClientRect();
+          const near = (a: number, b: number): boolean => Math.abs(a - b) <= 0.5;
+          if (!near(r.width, 56) || !near(r.height, 56)) say(`右腕の丸の箱 ${r.width.toFixed(1)}x${r.height.toFixed(1)}（56x56 のはず）`);
+          if (!near(window.innerHeight - r.bottom, 16)) say(`右腕の丸の下端から画面の下端まで ${(window.innerHeight - r.bottom).toFixed(1)}（16 のはず）`);
+          const tone = orb.getAttribute("data-tone");
+          if (tone !== (seatOpen ? "quiet" : "accent")) say(`右腕の丸の顔が ${String(tone)}（${seatOpen ? "quiet" : "accent"} のはず）`);
+          if (!seatOpen) {
+            if (!near(window.innerWidth - r.right, 16)) say(`右腕の丸の右端から画面の右端まで ${(window.innerWidth - r.right).toFixed(1)}（16 のはず）`);
+          } else {
+            const seatBox = document.querySelector("#v3-main")?.getBoundingClientRect();
+            if (seatBox === undefined) say("席（#v3-main）が無い");
+            else {
+              if (!(r.right < seatBox.left)) say(`右腕の丸の右端 ${r.right.toFixed(1)} が席の左端 ${seatBox.left.toFixed(1)} より左でない`);
+              if (!near(seatBox.left - r.right, 24)) say(`右腕の丸の右端から席の左端まで ${(seatBox.left - r.right).toFixed(1)}（8 + 16 のはず）`);
+            }
+            for (const sel of ["#v3-main .c-composer", "#v3-main .c-composer-input", "#v3-main .c-composer button"]) {
+              for (const el of document.querySelectorAll(sel)) {
+                const b = el.getBoundingClientRect();
+                if (b.width === 0 || b.height === 0) continue;
+                if (r.left < b.right && b.left < r.right && r.top < b.bottom && b.top < r.bottom) say(`右腕の丸の箱が ${sel} の箱と重なる`);
+              }
+            }
+          }
+        }
+        // 帯のボタン（丸が在る間は［右腕］を出さない。スマホは丸が無くても出さない）
         const acts = [...document.querySelectorAll("#c-band-root .c-band-ops [data-act]")].map((el) => el.getAttribute("data-act"));
-        const wantActs = phone ? ["find", "start", "more"] : ["find", "hand", "start", "more"];
-        if (JSON.stringify(acts) !== JSON.stringify(wantActs)) say(`帯のボタンが ${acts.join("・")}（${phone ? "探す・始める・ほか" : "探す・右腕・始める・ほか"} のはず）`);
+        const withHand = !phone && orbs.length === 0;
+        const wantActs = withHand ? ["find", "hand", "start", "more"] : ["find", "start", "more"];
+        if (JSON.stringify(acts) !== JSON.stringify(wantActs)) say(`帯のボタンが ${acts.join("・")}（${withHand ? "探す・右腕・始める・ほか" : "探す・始める・ほか"} のはず）`);
         return out;
       },
-      { label, width: VIEWPORTS[vp].viewport.width, phone: vp === "phone" },
+      { label, width: VIEWPORTS[vp].viewport.width, phone: vp === "phone", orbSel: ORB },
     );
   }
 
@@ -5045,11 +5150,13 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           await page.waitForSelector("#v3[data-deck] #c-deck-root .c-deck .c-col", { timeout: 5000 });
           await settled(page);
           const problems: string[] = [...(await deckLines(page, vp, "列"))];
-          // スマホの列は下のバーの右腕が accent の塗り（1 つは数える）
-          problems.push(...(await page.evaluate(accentProblems, { label: "列", areaMax: ACCENT_AREA_MAX, bigMax: ACCENT_BIG_MAX, min: vp === "phone" ? 1 : 0 })));
+          // スマホの列は下のバーの右腕、広い幅の列は右腕の丸（D6）が accent の塗り（1 つは数える）
+          problems.push(...(await page.evaluate(accentProblems, { label: "列", areaMax: ACCENT_AREA_MAX, bigMax: ACCENT_BIG_MAX, min: 1 })));
           // スマホの帯の題は今の列（あなたの番）の名前と数で、帯のボタンに重ならない
           if (vp === "phone") problems.push(...bandTitleProblems(await page.evaluate(bandTitleState), `スマホの帯（${theme}）`).map((l) => `流れの列: ${l}`));
           await shot(page, `${p}-a-deck`);
+          // 広い幅の右腕の丸（D6）: 列の最後の項目と知らせに重ならない
+          if (vp !== "phone") problems.push(...(await orbListLines(page)));
           const opener = page.locator('#c-deck-root .c-col[data-col="turn"] .c-item[data-turn="true"] button.c-item-main').first();
           const openerBox = await opener.boundingBox();
           await opener.click();
@@ -5507,17 +5614,22 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       const handName = `${p}-c-hand-over`;
       await step(`${p} c`, vp === "phone" ? [handName] : [handName, `${p}-c-hand-with-chat`], async () => {
         await load(page, "/");
+        const orbLines: string[] = [];
         if (vp === "phone") {
           await page.click(BAR_HAND);
         } else {
           const show = await handShow(page);
+          // 広い幅の流れの列の口は右下の丸（D6）
+          if ((await deckOn(page)) && show !== ORB) orbLines.push(`右腕の丸: 列だけの画面の右腕の口が ${show}（丸のはず）`);
           const expanded = await page.getAttribute(show, "aria-expanded");
           if (expanded !== "true") await page.click(show);
         }
         await settled(page);
+        // 丸で開いた枠の焦点は枠の中（最初に開いた枠は中身を読み込む前なので、入力欄か［畳む］。openHand の今の決まり。読み込んだ後に開いた入力欄は下の 2 回目で見る）
+        if (vp !== "phone" && (await deckOn(page)) && !(await activeIs(page, "#v3-hand *"))) orbLines.push(`右腕の丸: 丸で開いた枠の焦点が枠の中に無い（${await activeTag(page)}）`);
         await shot(page, handName);
         // 開いた右腕の中は部品（最後に札の［開く］を押す）
-        const problems = await handPartsLines(page, vp, vp === "phone");
+        const problems = [...orbLines, ...(await handPartsLines(page, vp, vp === "phone"))];
         // 右腕の中（#v3-hand-ed）の地は、流れの列の形では板（--surface。D3 の PR-1）、落ち先の形では --bg
         problems.push(
           ...(await page.evaluate(() => {
@@ -5540,8 +5652,81 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           await page.waitForSelector('#ed .c-msg[data-who="agent"]', { timeout: 5000 });
           await settled(page);
           await shot(page, `${p}-c-hand-with-chat`);
+          // 右腕の丸（D6）: 席が開いている間も丸で開き、Esc で閉じると焦点は丸に戻る。2 回目（中身を読み込んだ後）に開いた枠の焦点は入力欄
+          if (await deckOn(page)) {
+            const after: string[] = [];
+            for (const round of [1, 2]) {
+              await page.click(ORB);
+              await page.waitForSelector('#v3[data-hand="open"]', { timeout: 5000 });
+              await page.waitForSelector("#v3-hand-ed textarea", { timeout: 5000 });
+              await settled(page);
+              const inside = round === 1 ? "#v3-hand *" : "#v3-hand-ed textarea";
+              if (!(await activeIs(page, inside))) after.push(`右腕の丸: 席が開いている間に丸で開いた枠（${round} 回目）の焦点が${round === 1 ? "枠の中" : "入力欄"}に無い（${await activeTag(page)}）`);
+              if ((await page.getAttribute(ORB, "aria-expanded")) !== "true") after.push(`右腕の丸: 枠が開いているのに aria-expanded が true でない（${round} 回目）`);
+              await page.keyboard.press("Escape");
+              await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
+              await settled(page);
+              if (!(await activeIs(page, ORB))) after.push(`右腕の丸: Esc で枠を閉じた後の焦点が丸に無い（${round} 回目。${await activeTag(page)}）`);
+            }
+            for (const line of after) logLines.push(`[v3-${p}] ${line}`);
+            if (after.length > 0) throw new Error(`右腕の丸の検査で ${after.length} 件`);
+          }
         }
       });
+      // 席だけの幅（幅 700 で席を開いた。D6。ダークの PC だけ）: 丸は無く帯に［右腕］が 1 つで、押すと枠（焦点は入力欄。Esc で帯の［右腕］へ）。
+      // 席を閉じると丸が 1 つ・帯の［右腕］は 0。右腕を開くので、右腕を開く段 c の後に置く。幅は段の終わりで戻す
+      if (vp === "pc" && theme === "dark") {
+        await step(`${p} solo`, [`${p}-a-deck-solo`], async () => {
+          const problems: string[] = [];
+          const say = (text: string): void => void problems.push(`席だけの幅（700）: ${text}`);
+          const count = (): Promise<{ orbs: number; hands: number; tone: string | null; deck: string | null }> =>
+            page.evaluate(
+              ({ orbSel, handSel }: { orbSel: string; handSel: string }) => ({
+                orbs: document.querySelectorAll(orbSel).length,
+                hands: document.querySelectorAll(handSel).length,
+                tone: document.querySelector(orbSel)?.getAttribute("data-tone") ?? null,
+                deck: document.querySelector("#v3")?.getAttribute("data-deck") ?? null,
+              }),
+              { orbSel: ORB, handSel: bandButton("hand") },
+            );
+          await page.setViewportSize({ width: 700, height: VIEWPORTS.pc.viewport.height });
+          try {
+            await load(page, "/");
+            await page.waitForSelector("#v3[data-deck] #c-deck-root .c-deck .c-col", { timeout: 5000 });
+            await settled(page);
+            const list = await count();
+            if (list.orbs !== 1 || list.hands !== 0 || list.tone !== "accent") say(`列だけの間の丸が ${list.orbs} 個（顔 ${String(list.tone)}）・帯の［右腕］が ${list.hands} 個（丸 1 つ accent・帯 0 のはず）`);
+            await page.locator('#c-deck-root .c-col[data-col="turn"] .c-item[data-turn="true"] button.c-item-main').first().click();
+            await page.waitForSelector('#v3[data-view="body"] #ed textarea', { timeout: 5000 });
+            await settled(page);
+            const seat = await count();
+            if (seat.deck !== "0") say(`席を開いた data-deck が ${String(seat.deck)}（0 のはず）`);
+            if (seat.orbs !== 0 || seat.hands !== 1) say(`席を開いた間の丸が ${seat.orbs} 個・帯の［右腕］が ${seat.hands} 個（丸 0・帯 1 のはず）`);
+            problems.push(...(await page.evaluate(accentProblems, { label: "席だけの幅", areaMax: ACCENT_AREA_MAX, bigMax: ACCENT_BIG_MAX })));
+            await shot(page, `${p}-a-deck-solo`);
+            // 帯の［右腕］で枠が開き、Esc で閉じると焦点は帯の［右腕］
+            await page.click(bandButton("hand"));
+            await page.waitForSelector('#v3[data-hand="open"]', { timeout: 5000 });
+            await settled(page);
+            // 最初に開いた枠は中身を読み込む前なので、焦点は入力欄か［畳む］（openHand の今の決まり。読み込んだ後に開くと入力欄。段 c の 2 回目で見る）
+            if (!(await activeIs(page, "#v3-hand *"))) say(`帯の［右腕］で開いた枠の焦点が枠の中に無い（${await activeTag(page)}）`);
+            await page.keyboard.press("Escape");
+            await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
+            await settled(page);
+            if (!(await activeIs(page, bandButton("hand")))) say(`枠を閉じた後の焦点が帯の［右腕］に無い（${await activeTag(page)}）`);
+            // 席を閉じると丸に戻る
+            await page.evaluate(() => history.back());
+            await page.waitForSelector('#v3[data-view="list"]', { timeout: 5000 });
+            await settled(page);
+            const back = await count();
+            if (back.orbs !== 1 || back.hands !== 0 || back.tone !== "accent") say(`席を閉じた後の丸が ${back.orbs} 個（顔 ${String(back.tone)}）・帯の［右腕］が ${back.hands} 個（丸 1 つ accent・帯 0 のはず）`);
+          } finally {
+            await page.setViewportSize(VIEWPORTS.pc.viewport);
+          }
+          for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
+          if (problems.length > 0) throw new Error(`席だけの幅の検査で ${problems.length} 件`);
+        });
+      }
       await step(`${p} e`, [`${p}-e-start-dialog`], async () => {
         await load(page, "/");
         // 流れの列は帯の［＋ 始める］から、ほかは群の見出しの [+] から
@@ -5943,6 +6128,16 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         if (band.querySelector('[data-act="start"] .c-iconbtn')?.getAttribute("aria-label") !== "始める") out.push("band-phone: ［始める］が名前「始める」の IconButton でない");
         const name = band.querySelector(".c-band-name");
         if (name === null || (name.textContent ?? "") !== "self-agent" || cut(name)) out.push("band-phone: 「self-agent」が省かれているか無い");
+      }
+      // 丸を描けた広い幅の帯（D6）: ［右腕］が無く、探す・始める（字つき）・ほか
+      const noHand = document.querySelector('[data-demo="band-no-hand"] .c-band');
+      if (noHand === null) out.push("band-no-hand: 帯が無い");
+      else {
+        const acts = [...noHand.querySelectorAll("[data-act]")].map((el) => el.getAttribute("data-act"));
+        if (acts.join(",") !== "status,find,start,more") out.push(`band-no-hand: ボタン ${acts.join(",")}（status,find,start,more のはず）`);
+        if (noHand.querySelector(".c-band-hand") !== null) out.push("band-no-hand: 右腕が在る");
+        const labels = [...noHand.querySelectorAll(".c-btn-label")].map((el) => (el.textContent ?? "").trim());
+        if (labels.join(",") !== "探す,始める") out.push(`band-no-hand: 字つきのボタン ${labels.join(",")}（探す,始める のはず）`);
       }
       // 題つきのスマホの帯: 列の名前と数（あなたの番 は Badge・タスクは数・通知は 0 なので数なし）。題は省かれず、帯のボタンに重ならない
       const titled: ReadonlyArray<[string, string, string, string]> = [
