@@ -18,13 +18,13 @@ const C_TOKENS = [
   "top-full-min", "top-place-min", "talk-max", "bubble-pad-y", "bubble-pad-x", "card-max", "check", "deck-band-h", "deck-col-max", "deck-line",
 ].map((n) => `--c-${n}`);
 
-/** c-*.css が var() で使ってよい --c-* 以外の変数（base.css の目盛り・tokens.css の色・動き・重なり・字） */
+/** c-*.css が var() で使ってよい --c-* 以外の変数（base.css の目盛り・tokens.css の色・動き・重なり・字）。--bubble-* は古い殻（app.css）だけの色で、部品は使わない */
 const ALLOWED_VARS: ReadonlySet<string> = new Set([
   ...[1, 2, 3, 4, 5, 6, 7, 8].map((n) => `space-${n}`),
   "font-xs", "font-sm", "font-base", "leading-normal", "leading-tight", "weight-normal", "weight-medium", "weight-semibold",
   "radius-sm", "radius-md", "radius-lg", "radius-full", "border-width", "ring-width", "dialog-max", "container-max",
   "bg", "surface", "muted", "border", "text", "text-secondary", "text-muted", "primary", "primary-text", "accent", "danger", "success", "warning", "backdrop", "shadow-sm",
-  "dur-micro", "dur-short", "dur-long", "ease-out", "z-toast", "font-mono", "bubble-owner", "bubble-agent", "bubble-inset", "turn-surface", "bench",
+  "dur-micro", "dur-short", "dur-long", "ease-out", "z-toast", "font-mono", "turn-surface", "bench",
 ].map((n) => `--${n}`));
 
 /** ファイルごとのセレクタの頭（c-gallery.css は test/web-vendor.test.ts がもっと狭く見ている） */
@@ -512,7 +512,8 @@ test("web components: 見張りの関数は悪い見本を落とす", () => {
   assert.ok(cssProblems("c-shell.css", ".c-topbar{color:var(--text)}").some((p) => p.includes("このファイルの頭")));
   assert.deepEqual(cssProblems("c-shell.css", ".c-top-title{margin:0}"), []);
   assert.ok(cssProblems("c-talk.css", ".c-turnline{margin:0}").some((p) => p.includes("このファイルの頭")));
-  assert.deepEqual(cssProblems("c-talk.css", ".c-bubble{background:var(--bubble-agent)}"), []);
+  assert.deepEqual(cssProblems("c-talk.css", ".c-bubble{background:var(--muted)}"), []);
+  for (const name of ["--bubble-agent", "--bubble-owner", "--bubble-inset"]) assert.ok(cssProblems("c-talk.css", `.c-bubble{background:var(${name})}`).some((p) => p.includes(`許可リストに無い変数 ${name}`)), name);
   // 見出しの題が base.css の h1 の宣言を書き直していない見本
   assert.deepEqual(h1Problems(".c-top-title{margin:0;font-size:var(--font-base)} @media (x){.c-top-title{line-height:1}}"), ["font-weight", "line-height"]);
   assert.deepEqual(h1Problems(".c-top-title{margin:0;font-weight:1;line-height:1;font-size:1}"), []);
