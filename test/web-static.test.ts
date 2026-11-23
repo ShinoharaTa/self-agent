@@ -2754,10 +2754,23 @@ test("web static: 新しい殻のライトのステータスバーの帯は古�
   const grounds = rules.filter((r) => /^\.v3(?::is\(.*\))?$/.test(r.sel) && /(?:^|;)\s*background\s*:/.test(r.body));
   assert.equal(grounds.length, 3);
   for (const r of grounds) assert.match(r.body, /(?:^|;)\s*background\s*:[^;]*\bvar\(--bg\);/, r.sel);
-  // 殻そのもの（.v3[data-deck]。:is(...) 付きも）の規則は background を書かない（書くと、その条件でだけ台が地と別の色になる）
-  const decks = rules.filter((r) => /^\.v3\[data-deck\](?::is\(.*\))?$/.test(r.sel));
-  assert.ok(decks.length >= 1);
-  for (const r of decks) assert.doesNotMatch(r.body, /(?:^|;)\s*background(?:-color)?\s*:/, r.sel);
+  // 殻そのものに当たる規則（.v3 に属性・クラス・:is(...) が付いた物。子孫に宛てた物は別）は、上の 3 つのほか background・background-color・background-image を
+  // 書かない（書くと、その条件でだけ台が地と別の色になる。data-deck・data-seat・data-view・テーマの :is のどれでも）
+  const flatSel = (sel: string): string => {
+    let out = sel;
+    for (let prev = ""; prev !== out; ) {
+      prev = out;
+      out = out.replace(/\([^()]*\)/g, "");
+    }
+    return out;
+  };
+  const isShell = (part: string): boolean => /^\.v3(?![-\w])[^\s>+~]*$/.test(flatSel(part.trim()));
+  const partsOf = (sel: string): string[] => sel.split(/,(?![^()]*\))/);
+  const shells = rules.filter((r) => partsOf(r.sel).some(isShell));
+  assert.ok(shells.some((r) => r.sel === ".v3[data-deck]"));
+  assert.ok(shells.some((r) => r.sel.startsWith(".v3[data-deck][data-seat=")));
+  const paints = shells.filter((r) => /(?:^|;)\s*background(?:-color|-image)?\s*:/.test(r.body));
+  assert.deepEqual(paints.map((r) => r.sel).sort(), grounds.map((r) => r.sel).sort());
   assert.ok(at < css.indexOf("@media (max-width: 639px)"));
   assert.ok(!block.includes("dark"));
   // 古い殻（app.css の .wb-titlebar）と同じ値
@@ -11529,7 +11542,7 @@ test("web static: 流れの列の台は地と同じ色（.v3[data-deck] は back
   const bodies = (sel: string): string[] =>
     [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter((m) => m[1]!.trim().replace(/\s+/g, " ") === sel).map((m) => m[2]!.trim());
   assert.ok(bodies(".v3[data-deck]").length >= 1, ".v3[data-deck]");
-  for (const b of bodies(".v3[data-deck]")) assert.doesNotMatch(b, /(?:^|;)\s*background(?:-color)?\s*:/, ".v3[data-deck]");
+  for (const b of bodies(".v3[data-deck]")) assert.doesNotMatch(b, /(?:^|;)\s*background(?:-color|-image)?\s*:/, ".v3[data-deck]");
   assert.ok(!read("shell.css").includes("--bench"), "shell.css に --bench が在る");
   assert.ok(bodies(".v3[data-deck] .v3-main").some((b) => /(?:^|;)\s*background: var\(--surface\);/.test(b)), ".v3[data-deck] .v3-main");
   assert.ok(bodies(".v3[data-deck] .ed").some((b) => /(?:^|;)\s*background: var\(--surface\);/.test(b)), ".v3[data-deck] .ed");
