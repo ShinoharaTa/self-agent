@@ -9,6 +9,7 @@
 // 端末のセッションの札（H3）は SA.term.draw(root, raw) で描き（raw は c-term.js の termView に渡す生の状態と on）、SA.term.drop(root) で外す
 // 流れの列と上の帯（D1）は flows.js が SA.deck.draw(state)・shell.js が SA.deck.drawBand(state) で押し込む。幅の計算（SA.deck.fit）は c-deck.js の deckFit
 // スマホの流れの列の下のバー（D2）は #c-foot-root が在るときだけ SA.deck.drawBar(bar)・SA.deck.page(id)・SA.deck.focusBar(act)（指で送った列は bar.on.paged(id) で知らせる）
+// スマホの上の帯の題（今いる列の名前と数）は drawBand の state.page の列を最後に描けた列のモデルから引き、列を描き直して題が変われば帯も描き直す
 import { html, render } from "./c-lib.js";
 import { TopicList, listKey, listModel } from "./c-list.js";
 import { BottomBar, TopBar } from "./c-shell.js";
@@ -394,6 +395,8 @@ if (deckRoot && bandRoot) {
   let lastModel = null;
   /** 最後に渡された下のバー（null は描いていない） */
   let lastBar = null;
+  /** 最後に描けた上の帯の state（null は描いていない） */
+  let lastBand = null;
   /** 横送りで今いる列の id（指で送ったときだけ知らせる。SA.deck.page は先にここを書く） */
   let pagedAt = null;
 
@@ -462,6 +465,7 @@ if (deckRoot && bandRoot) {
     const kind = col === "tasks" && holder ? holder.dataset.kind : undefined;
     const keysBefore = colKeys(col, kind);
     const turnsBefore = turnCount();
+    const titleBefore = bandTitleKey();
     try {
       const model = deckModel(state);
       render(html`<${Deck} model=${model} on=${state.on} />`, deckRoot);
@@ -473,6 +477,8 @@ if (deckRoot && bandRoot) {
     }
     // 下のバーの番の数は列の見出しと同じ数
     if (lastBar !== null && turnCount() !== turnsBefore) drawBar(lastBar);
+    // スマホの帯の題（今いる列の名前と数）は列と同じ数
+    if (lastBand !== null && bandTitleKey() !== titleBefore) drawBand(lastBand);
     if (inside && !document.contains(before)) {
       const keysAfter = colKeys(col, kind);
       const next = key === null || keysAfter.includes(key) ? null : focusAfter(keysBefore, keysAfter, key);
@@ -485,13 +491,17 @@ if (deckRoot && bandRoot) {
     return true;
   };
 
-  /** 上の帯を描く。state は { variant, conn, hand, controls, on }（variant は phone か、ほかは今の形）。描けなければ false */
+  /** 上の帯を描く。state は { variant, conn, hand, controls, page, on }（variant は phone か、ほかは今の形。page は今いる列の id か undefined）。描けなければ false */
   const drawBand = (state) => {
     const before = document.activeElement;
     const inside = !!before && bandRoot.contains(before);
     const act = inside && before.closest("[data-act]") ? before.closest("[data-act]").getAttribute("data-act") : null;
     try {
-      render(html`<${DeckBand} variant=${state.variant} conn=${state.conn} hand=${state.hand} controls=${state.controls} on=${state.on} />`, bandRoot);
+      render(
+        html`<${DeckBand} variant=${state.variant} conn=${state.conn} hand=${state.hand} controls=${state.controls} title=${bandTitle(state)} on=${state.on} />`,
+        bandRoot,
+      );
+      lastBand = state;
     } catch (error) {
       console.error("[web] band draw failed", error instanceof Error ? error.name : "");
       return false;
@@ -499,6 +509,19 @@ if (deckRoot && bandRoot) {
     if (inside && !document.contains(before) && !(act !== null && focusBand(act))) focusBand("find");
     return true;
   };
+
+  /** スマホの帯の題: state.page の列（最後に描けたモデルの列。まだ無ければ空の state の列）の名前と数。phone でない・page が無い・その列が無ければ null */
+  function bandTitle(state) {
+    if (state.variant !== "phone" || typeof state.page !== "string") return null;
+    const c = (lastModel || deckModel({ cols: 1 })).columns.find((col) => col.id === state.page);
+    return c ? { name: c.name, count: c.count, tone: c.tone } : null;
+  }
+
+  /** 最後に描けた帯の題を比べる字（phone で題が在るときだけ。ほかは null） */
+  function bandTitleKey() {
+    const t = lastBand !== null && lastBand.variant === "phone" ? bandTitle(lastBand) : null;
+    return t === null ? null : [t.name, t.count, t.tone].join("\u0000");
+  }
 
   /** 最後に描けた列の番の数（まだ描いていなければ null） */
   function turnCount() {
