@@ -32,7 +32,7 @@
 
   /** 読み直しの最短の間（schedule） */
   const MIN_GAP_MS = 2000;
-  /** polling: あなたの番か作業中があれば 10 秒、無ければ 60 秒 */
+  /** polling: 待っている番（許可・質問・判断待ち・確認）か作業中があれば 10 秒、無ければ 60 秒。上限・失敗で止まった番はオーナーが動くまで変わらないので急がない */
   const BUSY_MS = 10000;
   const IDLE_MS = 60000;
 
@@ -105,7 +105,7 @@
     clearTimeout(timer);
     timer = null;
     if (document.visibilityState === "visible" && !SA.poll.stopped()) {
-      timer = setTimeout(load, counts().turns > 0 || counts().running > 0 ? BUSY_MS : IDLE_MS);
+      timer = setTimeout(load, counts().turns > stoppedTurns() || counts().running > 0 ? BUSY_MS : IDLE_MS);
     }
   }
 
@@ -124,6 +124,12 @@
 
   function counts() {
     return { turns: data ? data.turns : 0, running: data ? data.topics.filter((t) => t !== null && typeof t === "object" && t.mark === "running").length : 0 };
+  }
+
+  /** 上限・失敗で止まった番の話題の数（counts().turns に含まれる。polling を急がせない分） */
+  function stoppedTurns() {
+    if (!data) return 0;
+    return data.topics.filter((t) => t !== null && typeof t === "object" && t.mark === "turn" && !!t.turn && (t.turn.kind === "max_turns" || t.turn.kind === "failed")).length;
   }
 
   // ===== 行を開く =====

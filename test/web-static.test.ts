@@ -2796,13 +2796,16 @@ test("web static: shell.css に色の値が無い", () => {
   assert.doesNotMatch(css, /rgba?\(|hsla?\(/);
 });
 
-test("web static: 話題の polling は あなたの番か作業中があれば 10 秒、無ければ 60 秒、隠れている間は予約しない", () => {
+test("web static: 話題の polling は 待っている番か作業中があれば 10 秒、無ければ 60 秒（上限・失敗で止まった番は急がない）、隠れている間は予約しない", () => {
   const js = read("topics.js");
   assert.match(js, /const BUSY_MS = 10000;/);
   assert.match(js, /const IDLE_MS = 60000;/);
   const arm = fnSource(js, "arm");
   assert.match(arm, /clearTimeout\(timer\);/);
-  assert.match(arm, /if \(document\.visibilityState === "visible" && !SA\.poll\.stopped\(\)\) \{\n\s*timer = setTimeout\(load, counts\(\)\.turns > 0 \|\| counts\(\)\.running > 0 \? BUSY_MS : IDLE_MS\);/);
+  assert.match(arm, /if \(document\.visibilityState === "visible" && !SA\.poll\.stopped\(\)\) \{\n\s*timer = setTimeout\(load, counts\(\)\.turns > stoppedTurns\(\) \|\| counts\(\)\.running > 0 \? BUSY_MS : IDLE_MS\);/);
+  // 上限・失敗で止まった番（オーナーが動くまで変わらない）は急ぐ数から引く
+  const stoppedTurns = fnSource(js, "stoppedTurns");
+  assert.match(stoppedTurns, /t\.mark === "turn" && !!t\.turn && \(t\.turn\.kind === "max_turns" \|\| t\.turn\.kind === "failed"\)/);
   assert.match(fnSource(js, "load"), /arm\(\);/);
   // 見えたら読み直し、隠れたら予約を消す
   assert.match(js, /document\.addEventListener\("visibilitychange", \(\) => \{\n\s*if \(document\.visibilityState === "visible"\) schedule\(\);\n\s*else \{\n\s*clearTimeout\(timer\);/);
