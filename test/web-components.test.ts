@@ -16,7 +16,7 @@ const C_TOKENS = [
   "tap", "bar-h", "bottom-h", "row-h", "gutter", "list-w", "hand-w", "card-r", "btn-sm-h", "round-r",
   "icon", "icon-sm", "mark", "mark-ring", "badge-h", "badge-pad", "seg-h", "seg-pad", "toast-w", "spin", "font-body", "row-indent", "list-gap",
   "top-full-min", "top-place-min", "talk-max", "bubble-pad-y", "bubble-pad-x", "card-max", "check", "deck-band-h", "deck-col-max", "deck-line",
-  "deck-seat-in",
+  "deck-seat-in", "orb",
 ].map((n) => `--c-${n}`);
 
 /** c-*.css が var() で使ってよい --c-* 以外の変数（base.css の目盛り・tokens.css の色・動き・重なり・字）。--bubble-* は古い殻（app.css）だけの色で、部品は使わない */
@@ -33,7 +33,7 @@ const SELECTOR_HEAD: Record<string, RegExp> = {
   "c-atoms.css": /^\.c-(?:icon|btn|iconbtn|badge|mark|seg|field|input|empty|loading)(?![a-z])/,
   "c-sheet.css": /^\.c-(?:sheet|confirm|toast)(?![a-z])/,
   "c-list.css": /^\.c-(?:list|turns|turn|group|rows|row|fold)(?![a-z])/,
-  "c-shell.css": /^\.c-(?:bottom|top)(?![a-z])/,
+  "c-shell.css": /^\.c-(?:bottom|top|orb)(?![a-z])/,
   "c-talk.css": /^\.c-(?:talk|msg|bubble|md|steps|run|notice|divider|refs|ref)(?![a-z])/,
   "c-composer.css": /^\.c-composer(?![a-z])/,
   "c-cards.css": /^\.c-(?:cards|card|note|status)(?![a-z])/,
@@ -1858,6 +1858,56 @@ test("web components: TopBar は view が none・知らない値で null。c-she
   // 描いた木にも id が無い
   const ids = (t: Tree): string[] => (typeof t === "string" ? [] : [...(t.props.id === undefined ? [] : [String(t.props.id)]), ...t.children.flatMap(ids)]);
   for (const props of [topProps({ controls: "v3-hand" }), topProps({ variant: "wide", views: { value: "pane" } })]) assert.deepEqual(ids(one(html`<${shell.TopBar} ...${props} on=${on} />`)), []);
+});
+
+// ===== 右腕の丸（HandOrb。c-shell.js。#463 の D6） =====
+
+test("web components: HandOrb は button.c-orb（data-act=hand・data-tone は accent か quiet）で、中は bot のアイコン 1 つと印だけ（字・id なし）。名前は handLabel、aria-controls・aria-expanded、押すと on.hand にそのボタン", () => {
+  const calls: unknown[][] = [];
+  const on = { hand: (opener: unknown) => void calls.push(["hand", opener]) };
+  const ids = (t: Tree): string[] => (typeof t === "string" ? [] : [...(t.props.id === undefined ? [] : [String(t.props.id)]), ...t.children.flatMap(ids)]);
+  for (const [tone, face] of [["accent", "accent"], ["quiet", "quiet"], ["x", "quiet"], [undefined, "quiet"], [null, "quiet"]] as const) {
+    for (const mark of ["turn", "unread", null, undefined, "running", "x"]) {
+      const orb = one(html`<${shell.HandOrb} mark=${mark} tone=${tone} open=${false} controls="v3-hand" on=${on} />`);
+      const what = `${String(tone)} ${String(mark)}`;
+      assert.equal(orb.type, "button", what);
+      assert.equal(orb.props.class, "c-orb", what);
+      assert.deepEqual([orb.props.type, orb.props["data-act"], orb.props["data-tone"]], ["button", "hand", face], what);
+      const label = shell.handLabel(mark === "turn" || mark === "unread" ? mark : null);
+      assert.deepEqual([orb.props["aria-label"], orb.props.title], [label, label], what);
+      assert.deepEqual([orb.props["aria-controls"], orb.props["aria-expanded"]], ["v3-hand", "false"], what);
+      const icons = find(orb, "c-icon");
+      assert.equal(icons.length, 1, what);
+      assert.match(String(((icons[0] as El).children[0] as El).props.href), /#bot$/, what);
+      assert.equal(textOf(orb), "", what);
+      assert.deepEqual(ids(orb), [], what);
+      // 印: 静かな顔は K2 の Mark、accent の顔は自前の点。どちらも置き場所（.c-orb-mark）の中に 1 つ。無い・知らない値は 0
+      const marks = find(orb, "c-mark");
+      const dots = find(orb, "c-orb-dot");
+      const places = find(orb, "c-orb-mark");
+      if (mark === "turn" || mark === "unread") {
+        assert.equal(places.length, 1, what);
+        const placed = face === "accent" ? dots : marks;
+        assert.deepEqual([marks.length, dots.length], face === "accent" ? [0, 1] : [1, 0], what);
+        assert.deepEqual([placed[0]?.props["data-state"], placed[0]?.props["aria-hidden"]], [mark, "true"], what);
+        assert.equal(find(places[0] as El, face === "accent" ? "c-orb-dot" : "c-mark").length, 1, what);
+      } else {
+        assert.deepEqual([places.length, marks.length, dots.length], [0, 0, 0], what);
+      }
+    }
+  }
+  // open が真なら aria-expanded は true。controls が空・無しなら aria-controls を出さない
+  const opened = one(html`<${shell.HandOrb} mark=${null} tone="accent" open=${true} controls="v3-hand" on=${on} />`);
+  assert.equal(opened.props["aria-expanded"], "true");
+  for (const controls of ["", undefined, null]) {
+    const bare = one(html`<${shell.HandOrb} mark=${null} tone="accent" open=${false} controls=${controls} on=${on} />`);
+    assert.equal(bare.props["aria-controls"], undefined, String(controls));
+  }
+  // 押すと押したボタンを渡す
+  const target = { scrollIntoView: () => undefined };
+  (opened.props.onClick as (e: unknown) => void)({ currentTarget: target });
+  assert.deepEqual(calls, [["hand", target]]);
+  assert.match(stripJsComments(read("c-shell.js")), /export function HandOrb\(/);
 });
 
 // ===== 会話の行（c-talk.js。docs/plan/web-ui-components.md §6 の K4） =====
@@ -4769,7 +4819,7 @@ test("web components: c-deck.css の開いていて番の項目は、地が番�
   assert.ok(open >= 0 && hover > open, `${open} ${hover}`);
 });
 
-test("web components: 新しい殻の CSS（shell.css と c-*.css。c-gallery.css を除く）で accent の塗りを書くのは、accent のボタン・accent の数の印・未読の点 3 つ・下のバーの右腕だけ", () => {
+test("web components: 新しい殻の CSS（shell.css と c-*.css。c-gallery.css を除く）で accent の塗りを書くのは、accent のボタン・accent の数の印・未読の点 3 つ・下のバーの右腕・右腕の丸（accent の顔）だけ", () => {
   const files = ["shell.css", ...CSS_FILES.filter((n) => n !== "c-gallery.css")];
   const painted = new Set<string>();
   for (const name of files) {
@@ -4779,8 +4829,38 @@ test("web components: 新しい殻の CSS（shell.css と c-*.css。c-gallery.cs
     }
   }
   assert.deepEqual([...painted].sort(), [
-    '.c-btn[data-kind="accent"]', '.c-badge[data-tone="accent"]', '.c-mark[data-state="unread"]', '.c-band-hand-mark[data-state="unread"]', '.c-top-hand-mark[data-state="unread"]', ".c-bottom-hand",
+    '.c-btn[data-kind="accent"]', '.c-badge[data-tone="accent"]', '.c-mark[data-state="unread"]', '.c-band-hand-mark[data-state="unread"]', '.c-top-hand-mark[data-state="unread"]', ".c-bottom-hand", '.c-orb[data-tone="accent"]',
   ].sort());
+});
+
+test("web components: 右腕の丸（c-shell.css の .c-orb）は幅・高さ var(--c-orb)（tokens.css で 56px）の円。静かな顔は --surface と 1px の輪郭、accent の顔は --accent・border: 0・--primary-text。影・gradient を書かず、opacity は乗った時だけ。印は格子の右上", () => {
+  assert.match(read("tokens.css"), /--c-orb: 56px;/);
+  const rules = parseCss(read("c-shell.css"));
+  const orbRules = rules.filter((r) => r.selectors.some((s) => /^\.c-orb(?![a-z])/.test(s)));
+  assert.ok(orbRules.length > 0);
+  const declsOf = (sel: string, at: string[] = []): string[] =>
+    rules.filter((r) => r.selectors.includes(sel) && r.at.join("|") === at.join("|")).flatMap((r) => r.body.split(";").map((d) => d.trim()).filter((d) => d !== ""));
+  const base = declsOf(".c-orb");
+  for (const decl of [
+    "display: grid", "box-sizing: border-box", "width: var(--c-orb)", "height: var(--c-orb)", "border: var(--border-width) solid var(--border)",
+    "border-radius: var(--radius-full)", "background: var(--surface)", "color: var(--text)",
+  ]) assert.ok(base.includes(decl), decl);
+  assert.deepEqual(declsOf('.c-orb[data-tone="accent"]'), ["border: 0", "background: var(--accent)", "color: var(--primary-text)"]);
+  // アイコンと印は同じ升に重ね、印は右上
+  assert.deepEqual(declsOf(".c-orb > *"), ["grid-area: 1 / 1"]);
+  const place = declsOf(".c-orb-mark");
+  assert.ok(place.includes("align-self: start") && place.includes("justify-self: end"), place.join("; "));
+  // 押した・乗った（下のバーの右腕と同じ宣言）
+  assert.deepEqual(declsOf(".c-orb:active"), ["transform: scale(0.97)"]);
+  assert.deepEqual(declsOf(".c-orb:hover", [`@media ${FINE}`]), ["opacity: 0.9"]);
+  for (const r of orbRules) {
+    const decls = r.body.split(";").map((d) => d.trim()).filter((d) => d !== "");
+    const sel = r.selectors.join(",");
+    // 影は accent の顔の番の点の輪（下のバーと同じ）だけ
+    if (sel !== '.c-orb-dot[data-state="turn"]') assert.ok(!decls.some((d) => /^box-shadow\s*:/.test(d)), sel);
+    assert.ok(!decls.some((d) => /gradient\(|backdrop-filter|^filter\s*:/.test(d)), sel);
+    if (sel !== ".c-orb:hover") assert.ok(!decls.some((d) => /^opacity\s*:/.test(d)), sel);
+  }
 });
 
 test("web components: 見出し（c-shell.css の .c-top・c-hand.css の .c-hand-head）と下のバーと入力欄の帯は区切りの線を書かない。残る線は押す所の輪郭と欄の枠だけ", () => {
@@ -4790,12 +4870,15 @@ test("web components: 見出し（c-shell.css の .c-top・c-hand.css の .c-han
     );
   // c-hand.css は border・box-shadow を書かない
   for (const { sel, decl, prop } of declsOf("c-hand.css")) assert.ok(!prop.startsWith("border") && prop !== "box-shadow", `c-hand.css ${sel}: ${decl}`);
-  // c-shell.css の box-shadow は右腕の番の印の輪（区切りでない）だけ。border（border-radius と border: 0 を除く）は場所・モードのボタンと見出しの［右腕］だけ
+  // c-shell.css の box-shadow は右腕の番の印の輪（区切りでない。下のバーと丸の accent の顔）だけ。border（border-radius と border: 0 を除く）は場所・モードのボタンと見出しの［右腕］と右腕の丸（静かな顔）の輪郭だけ
   const shell = declsOf("c-shell.css");
-  assert.deepEqual(shell.filter((d) => d.prop === "box-shadow").map((d) => `${d.sel}: ${d.decl}`), ['.c-bottom-hand-mark[data-state="turn"]: box-shadow: 0 0 0 var(--c-mark-ring) var(--primary-text)']);
+  assert.deepEqual(shell.filter((d) => d.prop === "box-shadow").map((d) => `${d.sel}: ${d.decl}`), [
+    '.c-bottom-hand-mark[data-state="turn"]: box-shadow: 0 0 0 var(--c-mark-ring) var(--primary-text)',
+    '.c-orb-dot[data-state="turn"]: box-shadow: 0 0 0 var(--c-mark-ring) var(--primary-text)',
+  ]);
   assert.deepEqual(
     shell.filter((d) => d.prop.startsWith("border") && d.prop !== "border-radius" && d.decl !== "border: 0").map((d) => d.sel),
-    [".c-top-place, .c-top-mode", ".c-top-hand"],
+    [".c-top-place, .c-top-mode", ".c-top-hand", ".c-orb"],
   );
   // c-composer.css の border は欄と写しの共通の規則の border・border-radius と、写しの border-color だけ
   assert.deepEqual(

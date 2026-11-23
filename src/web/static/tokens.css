@@ -195,6 +195,7 @@
   --c-deck-col-max: 420px;
   --c-deck-line: 3px;
   --c-deck-seat-in: 16px;
+  --c-orb: 56px;
 }
 
 @media (min-width: 640px) and (hover: hover) and (pointer: fine) {
