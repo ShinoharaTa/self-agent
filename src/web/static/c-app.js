@@ -605,7 +605,7 @@ if (deckRoot && bandRoot) {
 
   /**
    * 右腕の丸を描く（D6。広い幅の流れの列の右下）。state は { mark, tone, open, controls, on: { hand(opener) } } か null（空にする）。
-   * 描けた（null で空にできた）なら true、入れ物が無い・描くのに失敗したら false（shell.js は帯の［右腕］を出す）。
+   * 描けた（null で空にできた）なら true、入れ物が無い・描くのに失敗したら（空にしてから）false（shell.js は帯の［右腕］を出す）。
    * 描き直しで丸の焦点が消えたら（null で空にした）、帯の［探す］へ
    */
   const drawOrb = (state) => {
@@ -616,6 +616,12 @@ if (deckRoot && bandRoot) {
       render(state === null ? null : html`<${HandOrb} mark=${state.mark} tone=${state.tone} open=${state.open} controls=${state.controls} on=${state.on} />`, orbRoot);
     } catch (error) {
       console.error("[web] orb draw failed", error instanceof Error ? error.name : "");
+      // 前に描けた丸を残さない（帯の［右腕］と両方出さない）
+      try {
+        render(null, orbRoot);
+      } catch {
+        // 空にもできなければそのまま（帯の［右腕］は出る）
+      }
       return false;
     }
     if (inside && !document.contains(before) && !focusOrb()) focusBand("find");

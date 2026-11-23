@@ -4909,14 +4909,31 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       const body = col?.querySelector<HTMLElement>(".c-col-body");
       if (col === undefined || body === undefined || body === null) return null;
       const before = body.scrollTop;
-      body.scrollTop = body.scrollHeight;
-      const items = [...body.querySelectorAll<HTMLElement>(".c-item")];
-      const last = items.at(-1)?.getBoundingClientRect() ?? null;
-      body.scrollTop = before;
-      return { col: col.dataset.col ?? "", last: last === null ? null : last.bottom, orbTop: orb.top };
+      // 作り物のデータは列があふれない（送れない）ので、この検査の間だけ最後の項目の写しを列の末尾に足してあふれさせる（測ったら消す。絵には残らない）
+      const seed = [...body.querySelectorAll<HTMLElement>(".c-item")].at(-1);
+      const added: HTMLElement[] = [];
+      let last: number | null = null;
+      let over = false;
+      try {
+        if (seed !== undefined) {
+          while (body.scrollHeight <= body.clientHeight && added.length < 80) {
+            const copy = seed.cloneNode(true) as HTMLElement;
+            body.append(copy);
+            added.push(copy);
+          }
+        }
+        over = body.scrollHeight > body.clientHeight;
+        body.scrollTop = body.scrollHeight;
+        last = [...body.querySelectorAll<HTMLElement>(".c-item")].at(-1)?.getBoundingClientRect().bottom ?? null;
+      } finally {
+        for (const copy of added) copy.remove();
+        body.scrollTop = before;
+      }
+      return { col: col.dataset.col ?? "", last, over, orbTop: orb.top };
     }, ORB);
     if (tail === null) say("丸か右端の列を測れない");
     else if (tail.last === null) say(`右端の列（${tail.col}）に項目が無い`);
+    else if (!tail.over) say(`右端の列（${tail.col}）をあふれさせられない（最後の項目と丸の上下を確かめられない）`);
     else if (!(tail.last < tail.orbTop)) say(`右端の列（${tail.col}）を一番下まで送った最後の項目の下端 ${tail.last.toFixed(1)} が丸の上端 ${tail.orbTop.toFixed(1)} より上でない`);
     // 知らせ（トースト）と重ならない
     const ITEM = "#c-notice-root .c-toast-item";
