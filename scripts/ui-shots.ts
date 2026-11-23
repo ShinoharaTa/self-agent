@@ -937,15 +937,20 @@ function talkProblems({ demos, max, owner: ownerShape, need, fontSize, label }: 
   };
   const clear = (c: string): boolean => c === "transparent" || /^rgba\(.*,\s*0\)$/.test(c);
   const pads = (cs: CSSStyleDeclaration): number[] => [cs.paddingTop, cs.paddingRight, cs.paddingBottom, cs.paddingLeft].map((v) => parseFloat(v));
+  // 数えるのは検査している会話の中だけ（見本は会話の節の見本、本番は #ed の .c-talk。右腕やほかの節の行は数えない）
+  const inRoot = (el: Element): boolean => el.closest(demos === null ? "#ed .c-talk" : '[data-section="talk"] [data-demo]') !== null;
   const counts = { agent: 0, owner: 0, pre: 0 };
   for (const bubble of document.querySelectorAll('.c-msg[data-who="agent"] > .c-bubble')) {
-    counts.agent++;
+    if (inRoot(bubble)) counts.agent++;
     const cs = getComputedStyle(bubble);
     if (!clear(cs.backgroundColor)) say(`${nameOf(bubble)} の返事の本文の箱の地 ${cs.backgroundColor}。透明のはず`);
     if (pads(cs).some((v) => v !== 0)) say(`${nameOf(bubble)} の返事の本文の箱の余白 ${pads(cs).join("・")}。0 のはず`);
+    const borders = [cs.borderTopWidth, cs.borderRightWidth, cs.borderBottomWidth, cs.borderLeftWidth];
+    if (borders.some((v) => parseFloat(v) !== 0)) say(`${nameOf(bubble)} の返事の本文の箱の枠 ${borders.join("・")}。0 のはず`);
+    if (cs.boxShadow !== "none") say(`${nameOf(bubble)} の返事の本文の箱の影 ${cs.boxShadow}。none のはず`);
   }
   for (const bubble of document.querySelectorAll('.c-msg[data-who="owner"] > .c-bubble')) {
-    counts.owner++;
+    if (inRoot(bubble)) counts.owner++;
     const cs = getComputedStyle(bubble);
     const ground = colorOf(bubble, ownerShape.ground);
     if (cs.backgroundColor !== ground) say(`${nameOf(bubble)} の自分の発言の地 ${cs.backgroundColor}。${ownerShape.ground}（${ground}）のはず`);
@@ -963,7 +968,7 @@ function talkProblems({ demos, max, owner: ownerShape, need, fontSize, label }: 
     const line = colorOf(el, "var(--border)");
     if (cs.backgroundColor !== muted) say(`${nameOf(el)} の${kind}の地 ${cs.backgroundColor}。--muted（${muted}）のはず`);
     if (!el.classList.contains("c-md-pre")) continue;
-    counts.pre++;
+    if (inRoot(el)) counts.pre++;
     for (const side of ["Top", "Right", "Bottom", "Left"] as const) {
       if (cs[`border${side}Width`] !== "1px" || cs[`border${side}Color`] !== line) say(`${nameOf(el)} のコードの段の ${side} の枠 ${cs[`border${side}Width`]} ${cs[`border${side}Color`]}。1px の --border（${line}）のはず`);
     }
@@ -3403,7 +3408,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         const inner = talk === null || tcs === null ? 0 : talk.clientWidth - parseFloat(tcs.paddingLeft) - parseFloat(tcs.paddingRight);
         return {
           rowW: last.getBoundingClientRect().width,
-          limit: inner * 1,
+          limit: inner,
           footH: foot.getBoundingClientRect().height,
           labelH: lb.height,
           lh: parseFloat(getComputedStyle(label).lineHeight),
@@ -5625,14 +5630,20 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         probe.remove();
         const ts = talkEl === null ? null : getComputedStyle(talkEl);
         const left = talkEl === null || ts === null ? 0 : talkEl.getBoundingClientRect().left + parseFloat(ts.paddingLeft);
+        const pads = (el: Element): string => {
+          const cs = getComputedStyle(el);
+          return [cs.paddingTop, cs.paddingRight, cs.paddingBottom, cs.paddingLeft].join(" ");
+        };
         for (const el of owners) {
           if (getComputedStyle(el).backgroundColor !== muted) out.push(`右腕: 自分の発言の地 ${getComputedStyle(el).backgroundColor}（--muted ${muted} のはず）`);
+          if (pads(el) !== "10px 14px 10px 14px") out.push(`右腕: 自分の発言の余白 ${pads(el)}（10px 14px 10px 14px のはず）`);
           const row = el.parentElement;
           if (row === null || Math.abs(row.getBoundingClientRect().left - left) > 0.5) out.push(`右腕: 自分の発言の左端 ${row?.getBoundingClientRect().left.toFixed(1) ?? "なし"}（会話の中身の左端 ${left.toFixed(1)} のはず）`);
         }
         for (const el of agents) {
           const c = getComputedStyle(el).backgroundColor;
           if (!(c === "transparent" || /^rgba\(.*,\s*0\)$/.test(c))) out.push(`右腕: 返事の本文の箱の地 ${c}（透明のはず）`);
+          if (pads(el) !== "0px 0px 0px 0px") out.push(`右腕: 返事の本文の箱の余白 ${pads(el)}（0 のはず）`);
         }
       }
       if ([...box.querySelectorAll(".c-bubble")].some((el) => (el.textContent ?? "").includes("<#"))) out.push("右腕: 返事の本文に <# が残っている");
