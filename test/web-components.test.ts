@@ -4517,6 +4517,28 @@ test("web components: c-deck.css は区切りの線（左の線と 0 の外し�
   assert.doesNotMatch(stripCssComments(read("c-deck.css")), /@keyframes|@media \(min-width|1340/);
 });
 
+test("web components: c-list.css は群・行の間に線を書かない（余白で分ける）。border は「あなたの番 n」のボタンの輪郭だけ、box-shadow は選んだ行の左 3px の accent だけ", () => {
+  const rules = parseCss(read("c-list.css")).filter((r) => !r.keyframe);
+  assert.ok(rules.length > 0);
+  const borders: string[] = [];
+  const shadows: string[] = [];
+  for (const rule of rules) {
+    for (const decl of rule.body.split(";").map((d) => d.trim()).filter((d) => d !== "")) {
+      const prop = decl.slice(0, decl.indexOf(":")).trim();
+      if (prop.startsWith("border") && prop !== "border-radius" && decl !== "border: 0") borders.push(`${rule.selectors.join(", ")}: ${decl}`);
+      if (prop === "box-shadow") shadows.push(`${rule.at.join(" ")}|${rule.selectors.join(", ")}: ${decl}`);
+    }
+  }
+  assert.deepEqual(borders, [".c-turns-jump: border: var(--border-width) solid var(--border)"]);
+  assert.deepEqual(shadows, ['|.c-row[aria-current="true"], .c-turn[aria-current="true"]: box-shadow: inset var(--c-deck-line) 0 0 var(--accent)']);
+  // 群の間は余白（スマホは --space-2、PC は --space-1）。PC の General の上も余白だけ
+  const declsOf = (sel: string, media: string | null): string[] =>
+    rules.filter((r) => r.selectors.length === 1 && r.selectors[0] === sel && (media === null ? r.at.length === 0 : r.at.some((at) => at.includes(media)))).flatMap((r) => r.body.split(";").map((d) => d.trim()).filter((d) => d !== ""));
+  assert.deepEqual(declsOf(".c-group", null), ["padding-bottom: var(--space-2)"]);
+  assert.deepEqual(declsOf(".c-group", FINE), ["padding-bottom: var(--space-1)"]);
+  assert.deepEqual(declsOf('.c-group[data-kind="general"]', FINE), ["margin-top: var(--space-4)"]);
+});
+
 test("web components: c-deck.css の開いていて番の項目は、地が番の面（--turn-surface）で、線は開いている項目の --accent のまま（規則は地だけ）", () => {
   const rules = parseCss(read("c-deck.css")).filter((r) => r.at.length === 0);
   const declsOf = (sel: string): string[] => rules.filter((r) => r.selectors.includes(sel)).flatMap((r) => r.body.split(";").map((d) => d.trim()).filter((d) => d !== ""));
