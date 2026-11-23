@@ -107,7 +107,7 @@ PC（1,280px〜。列 3 は畳める。幅が足りなければ列 3 → 列 1 �
               state, last: { id, at, kind }, movable: true | { reason }, link } ] }
 ```
 
-- **順番待ち・止まった・終わり方（#457 の L1a）**: 話題に `queued`（発言を積んだが、まだ始まっていない（handler が数える。/close・/renew・場所の付け替えの最中や返信の投稿中は入らない）。実行中・完了なら false。枠を取ってから実行中の印が付くまで（画像の取得の間）はどちらでもない）・`stopped`（最後の agent の行が `max_turns`・`failed`・`aborted` で、その後に owner の行が無く、`running`・`queued`・完了でない）・`ended`（最後の agent の行の outcome か null）・`tookMs`（その行の durationMs か null）・`byRightHand`（`sessions.origin` が `inbox`。#inbox の右腕と、足した人格の入口 #<NAME> の `session_open` で始めた話題）を足す。入口・Claude Code の行はどれも false・null。`mark`・並び・群の数は変えない。
+- **順番待ち・止まった・終わり方（#457 の L1a）**: 話題に `queued`（発言を積んだが、まだ始まっていない（handler が数える。/close・/renew・場所の付け替えの最中や返信の投稿中は入らない）。実行中・完了なら false。枠を取ってから実行中の印が付くまで（画像の取得の間）はどちらでもない）・`stopped`（最後の agent の行が `max_turns`・`failed`・`aborted` で、その後に owner の行も区切り（divider）の行も無く、`running`・`queued`・完了でない）・`ended`（最後の agent の行の outcome か null）・`tookMs`（その行の durationMs か null）・`byRightHand`（`sessions.origin` が `inbox`。#inbox の右腕と、足した人格の入口 #<NAME> の `session_open` で始めた話題）を足す。入口・Claude Code の行はどれも false・null。`mark`・並び・群の数は変えない。
 
 - **id**: Discord のチャンネルがあれば `ch:`、無い Claude Code のセッションは `cc:`。Claude Code のチャンネルは今も Web では `ch:` で開く（CC14）ので、取り込み（#341。チャンネルがその場でプロジェクトのセッションに変わる）の後も id は変わらない。（#428: 取り込むと `cc:` の行は消え、新しい話題の `ch:` の行ができる。H3 で直す）`cc:` の話題は、新しい殻では既定で札（列 2 のタブの名前は `term:<sessionId>`。`S.active` と hash は `cc:` のまま）
 - **場所の決め方**: セッションは `project_dir`（General の名前なら群 general）／軽いセッション（`project_dir` なし）は `place.dir = null` で群 general／Claude Code は cwd が workspace の直下の名前かその下ならそのプロジェクト（新しい純関数 `projectOf(cwd, workspace)` を `cc/labels.ts` に足す）、外なら群 other「ほかの場所」。#tasks と人格の入口は群 general の末尾に固定（`movable` は理由つきの不可）。右腕（#inbox）は一覧に出さない。
