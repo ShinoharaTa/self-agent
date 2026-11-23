@@ -48,7 +48,7 @@ export type Topic = {
   link: string | null;
   /** 順番待ち（発言を積んだが、まだ始まっていない（枠か、同じ話題の前のジョブを待っている））。実行中・完了なら false */
   queued: boolean;
-  /** 止まった（stoppedOf が真で、running・queued・done でない） */
+  /** 止まった（stoppedOf が真（後に区切り（divider）の行が無い）で、running・queued・done でない） */
   stopped: boolean;
   /** 最後の agent の行の終わり方。無ければ null */
   ended: HistoryOutcome | null;
@@ -109,6 +109,8 @@ export type TopicSeed = {
   lastAgent: TopicLastAgent;
   /** 最後の owner の行の id。無ければ null */
   lastOwnerId: number | null;
+  /** 最後の divider の行の id。無ければ null */
+  lastDividerId: number | null;
   byRightHand: boolean;
 };
 
@@ -203,9 +205,13 @@ export function markOf(turn: TopicTurn | null, running: boolean): TopicMark {
 /** 止まったと見る終わり方（上限で止まった・失敗・中断） */
 const STOPPED_OUTCOMES: ReadonlySet<HistoryOutcome> = new Set(["max_turns", "failed", "aborted"]);
 
-/** 止まった（最後の agent の行が上限・失敗・中断で終わり、その後に owner の行が無い）。running・queued・done は見ない */
-export function stoppedOf(lastAgent: TopicLastAgent, lastOwnerId: number | null): boolean {
+/**
+ * 止まった（最後の agent の行が上限・失敗・中断で終わり、その後に owner の行も区切り（divider）の行も無い）。
+ * running・queued・done は見ない
+ */
+export function stoppedOf(lastAgent: TopicLastAgent, lastOwnerId: number | null, lastDividerId: number | null): boolean {
   if (lastAgent === null || lastAgent.outcome === null || !STOPPED_OUTCOMES.has(lastAgent.outcome)) return false;
+  if (lastDividerId !== null && lastDividerId > lastAgent.id) return false;
   return lastOwnerId === null || lastOwnerId < lastAgent.id;
 }
 
@@ -249,7 +255,7 @@ function topicOf(seed: TopicSeed, generalDir: string | null): Topic {
     movable: seed.movable,
     link: seed.link,
     queued,
-    stopped: !seed.running && !queued && !done && stoppedOf(seed.lastAgent, seed.lastOwnerId),
+    stopped: !seed.running && !queued && !done && stoppedOf(seed.lastAgent, seed.lastOwnerId, seed.lastDividerId),
     ended: seed.lastAgent?.outcome ?? null,
     tookMs: seed.lastAgent?.durationMs ?? null,
     byRightHand: seed.byRightHand,

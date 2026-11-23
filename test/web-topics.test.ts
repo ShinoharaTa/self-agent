@@ -569,6 +569,17 @@ test("web topics: 右腕が始めた話題は byRightHand。最後の agent の�
   assert.equal(byId(await topics(server), "ch:206")!.stopped, false);
 });
 
+test("web topics: 上限で止まった後に区切り（divider）の行が来れば stopped は false。後に notice の行が在るだけなら true のまま", async (t) => {
+  const { server, topicSessions, history } = await setup(t);
+  topicSessions.create({ channelId: "206", guildId: GUILD, title: "区切り", categoryId: "c" });
+  history.add({ guildId: GUILD, channelId: "206", kind: "owner", source: "discord", text: "始め" });
+  history.add({ guildId: GUILD, channelId: "206", kind: "agent", source: "discord", text: "返事", outcome: "max_turns", durationMs: 120_000 });
+  history.add({ guildId: GUILD, channelId: "206", kind: "notice", source: "system", text: "上限" });
+  assert.equal(byId(await topics(server), "ch:206")!.stopped, true);
+  history.add({ guildId: GUILD, channelId: "206", kind: "divider", source: "system", text: "新しい会話" });
+  assert.equal(byId(await topics(server), "ch:206")!.stopped, false);
+});
+
 test("web topics: 右腕の最後の行が統括のまとめの notice（source system）のときだけ last.lead が true。ほかの notice・agent の行・system でない同じ文・話題の行には lead の鍵が無い", async (t) => {
   const { server, history } = await setup(t);
   const text = leadText([{ guildId: GUILD, channelId: "200", durationMs: 240_000, outcome: "done", byRightHand: false, pinged: false }], null);

@@ -157,8 +157,8 @@ test("HistoryStore.latestByChannel: そのサーバーのチャンネルごと�
   assert.deepEqual(
     store.latestByChannel("g"),
     new Map([
-      ["a", { id: lastA, at: at(1).toISOString(), kind: "agent", lastAgent: { id: lastA, at: at(1).toISOString(), outcome: null, durationMs: null }, lastOwnerId: lastA - 1 }],
-      ["b", { id: lastB, at: at(2).toISOString(), kind: "divider", lastAgent: null, lastOwnerId: null }],
+      ["a", { id: lastA, at: at(1).toISOString(), kind: "agent", lastAgent: { id: lastA, at: at(1).toISOString(), outcome: null, durationMs: null }, lastOwnerId: lastA - 1, lastDividerId: null }],
+      ["b", { id: lastB, at: at(2).toISOString(), kind: "divider", lastAgent: null, lastOwnerId: null, lastDividerId: lastB }],
     ]),
   );
   assert.deepEqual(store.latestByChannel("none"), new Map());
@@ -191,12 +191,32 @@ test("HistoryStore.latestByChannel: lastAgent は最後の agent の行（後に
     kind: "notice",
     lastAgent: { id: agentN, at: at(1).toISOString(), outcome: "max_turns", durationMs: 90_000 },
     lastOwnerId: agentN - 1,
+    lastDividerId: null,
   });
   assert.equal(latest.get("o")?.lastAgent?.id, agentO);
   assert.equal(latest.get("o")?.lastAgent?.outcome, "failed");
   assert.equal(latest.get("o")?.lastOwnerId, ownerO);
   assert.ok((latest.get("o")?.lastOwnerId ?? 0) > agentO);
   assert.equal(latest.size, 3);
+});
+
+test("HistoryStore.latestByChannel: lastDividerId は最後の divider の行（無ければ null。ほかのチャンネルの divider は拾わない）", (t) => {
+  const { store } = setup(t);
+  // divider が無いチャンネル
+  store.add({ guildId: "g", channelId: "none", kind: "agent", source: "discord", text: "1", outcome: "max_turns" });
+  // divider が 2 つ
+  store.add({ guildId: "g", channelId: "two", kind: "divider", source: "system", text: "2" });
+  store.add({ guildId: "g", channelId: "two", kind: "agent", source: "discord", text: "3", outcome: "failed" });
+  const newer = store.add({ guildId: "g", channelId: "two", kind: "divider", source: "system", text: "4" });
+  store.add({ guildId: "g", channelId: "two", kind: "notice", source: "system", text: "5" });
+  // ほかのチャンネル・ほかのサーバーの divider（none より後に書く）
+  store.add({ guildId: "g", channelId: "other", kind: "divider", source: "system", text: "6" });
+  store.add({ guildId: "other", channelId: "none", kind: "divider", source: "system", text: "7" });
+
+  const latest = store.latestByChannel("g");
+  assert.equal(latest.get("none")?.lastDividerId, null);
+  assert.equal(latest.get("two")?.lastDividerId, newer);
+  assert.ok((latest.get("other")?.lastDividerId ?? 0) > newer);
 });
 
 test("HistoryStore.prune: cutoff より前に書いた行だけを消し、消した数を返す", (t) => {

@@ -131,7 +131,7 @@ const CC_UNMOVABLE = { reason: "端末のセッションは場所を変えられ
 const PERSONA_UNMOVABLE = { reason: "足した人格の話題は場所を変えられません" };
 const DONE_UNMOVABLE = { reason: "完了した話題は場所を変えられません" };
 /** 入口・Claude Code のセッションの種の順番待ち・止まった・右腕の印（どれも見ない） */
-const NO_PROGRESS = { queued: false, lastAgent: null, lastOwnerId: null, byRightHand: false } as const;
+const NO_PROGRESS = { queued: false, lastAgent: null, lastOwnerId: null, lastDividerId: null, byRightHand: false } as const;
 
 /** latestByChannel の行 → 種の lastAgent（at は使わない） */
 function lastAgentOf(row: LatestHistory | undefined): TopicSeed["lastAgent"] {
@@ -364,6 +364,7 @@ export function createTopicCollector(deps: TopicRouteDeps): (at: number, done: s
             queued: queuedIds.has(channelId) && !runningIds.has(channelId),
             lastAgent: lastAgentOf(latest.get(channelId)),
             lastOwnerId: latest.get(channelId)?.lastOwnerId ?? null,
+            lastDividerId: latest.get(channelId)?.lastDividerId ?? null,
             // session_open で始めた話題は origin inbox（#inbox の右腕。足した人格の入口 #<NAME> からも同じ）
             byRightHand: item.origin === "inbox",
           });
