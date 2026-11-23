@@ -11473,6 +11473,40 @@ test("web static: shell.css の流れの列の規則は .v3[data-deck] 始まり
   assert.ok(end < css.indexOf("@media (max-width: 639px)"));
 });
 
+test("web static: 流れの列: 席が開くときの動きの印（#v3 の data-moves=\"on\"。D5 の PR-1）は最初の pointerdown か keydown の後だけ付き、外さない。操作の前に開いた席・読み込み（hash）で開いた席には付かない。書くのは shell.js の 1 か所で、2 つの受け口（capture・1 回）の中", async () => {
+  const sh = read("shell.js");
+  assert.equal((sh.match(/"data-moves"/g) ?? []).length, 1);
+  assert.match(fnSource(sh, "movesOn"), /\(\) \{\n {4}refs\.v3\.setAttribute\("data-moves", "on"\);\n {2}\}/);
+  assert.match(fnSource(sh, "init"), /\n {4}for \(const type of \["pointerdown", "keydown"\]\) document\.addEventListener\(type, movesOn, \{ capture: true, once: true \}\);\n/);
+  assert.equal((sh.match(/\bmovesOn\b/g) ?? []).length, 2);
+  const moves = (h: ReturnType<typeof loadShell>) => h.nodes.v3.getAttribute("data-moves");
+  const fire = (h: ReturnType<typeof loadShell>, type: string) => h.fireDoc(type, type === "keydown" ? keyEvent("Shift", h.document.body) : { target: h.document.body });
+  for (const [type, opts] of [["pointerdown", { width: 1440 }], ["keydown", { width: 1440 }], ["pointerdown", { phone: true, width: 390 }]] as const) {
+    const h = await loadDeck(opts);
+    const label = `${type}・${opts.width}`;
+    assert.equal(moves(h), null, label);
+    // 操作の前に開いた席には付かない
+    h.app.open("ch:1");
+    assert.equal(h.nodes.v3.getAttribute("data-view"), "body", label);
+    assert.equal(moves(h), null, label);
+    h.history.back();
+    assert.equal(h.nodes.v3.getAttribute("data-view"), "list", label);
+    fire(h, type);
+    assert.equal(moves(h), "on", label);
+    // 付けた後は開いても閉じても、もう一度操作しても外れない
+    h.app.open("ch:2");
+    assert.equal(h.nodes.v3.getAttribute("data-view"), "body", label);
+    assert.equal(moves(h), "on", label);
+    h.history.back();
+    fire(h, type === "keydown" ? "pointerdown" : "keydown");
+    assert.equal(moves(h), "on", label);
+  }
+  // 読み込み（hash）で開いた席には付かない
+  const r = await loadDeck({ width: 1440, hash: "#/ch/1" });
+  assert.equal(r.nodes.v3.getAttribute("data-view"), "body");
+  assert.equal(moves(r), null);
+});
+
 test("web static: 下のバーの入れ物（.v3-foot。D2）は素の display: none の並びのほかは、スマホの流れの列（data-seat=\"full\"）とキーボードの間の規則だけで、広い幅・落ち先では場所を取らない", () => {
   const css = read("shell.css").replace(/\/\*[\s\S]*?\*\//g, "");
   const sels = [...css.matchAll(/([^{}]+)\{/g)].map((m) => m[1]!.trim().replace(/\s+/g, " ")).filter((sel) => sel.includes("v3-foot"));
