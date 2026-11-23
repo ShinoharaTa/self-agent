@@ -2973,6 +2973,22 @@ test("web components: 入力欄の欄と写しは 1 つの規則で余白・枠�
   assert.doesNotMatch(src, /\b(?:animation|transition)(?:-[a-z-]+)?\s*:|@keyframes/);
 });
 
+test("web components: 入力欄（.c-input）の地は入力欄の欄と同じ --muted で、枠は残す。字と置き字は --muted の上で 4.5 以上", () => {
+  const rules = parseCss(read("c-atoms.css")).filter((r) => r.at.length === 0 && r.selectors.length === 1 && r.selectors[0] === ".c-input");
+  assert.equal(rules.length, 1);
+  const decls = rules[0]!.body.split(";").map((d) => d.trim()).filter((d) => d !== "");
+  assert.ok(decls.includes("background: var(--muted)"), rules[0]!.body);
+  assert.ok(decls.includes("border: var(--border-width) solid var(--border)"), rules[0]!.body);
+  assert.ok(decls.includes("color: var(--text)"), rules[0]!.body);
+  // ダーク・ライトの値で、--muted の上の字（--text）と置き字の目安（--text-muted）
+  const blocks = parseCss(read("tokens.css")).filter((r) => r.body.includes("--muted:") && r.body.includes("--text-muted:"));
+  assert.equal(blocks.length, 4);
+  for (const block of blocks) {
+    const v = new Map([...block.body.matchAll(/(--[a-z0-9-]+):\s*(#[0-9a-f]{6})\b/g)].map((m) => [m[1] ?? "", m[2] ?? ""]));
+    for (const name of ["--text", "--text-muted"]) assert.ok(contrast(v.get(name)!, v.get("--muted")!) >= 4.5, `${block.selectors.join(",")} ${name} ${contrast(v.get(name)!, v.get("--muted")!)}`);
+  }
+});
+
 // ===== カード（c-cards.js。docs/plan/web-ui-components.md §6 の K5） =====
 const cardsUrl = new URL("../src/web/static/c-cards.js", import.meta.url).href;
 const cards = (await import(cardsUrl)) as Record<string, Fn> & { PERMISSION_NOTE: string; SESSION_PERMISSION_NOTE: string; SESSION_QUESTION_NOTE: string };

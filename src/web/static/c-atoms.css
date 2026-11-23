@@ -357,14 +357,14 @@
   color: var(--danger);
 }
 
-/* input・textarea・select のどれにも同じクラス */
+/* input・textarea・select のどれにも同じクラス。地は入力欄（c-composer.css の欄）と同じ --muted、枠はそのまま（D3） */
 .c-input {
   width: 100%;
   min-height: var(--c-tap);
   padding: var(--space-2) var(--space-3);
   border: var(--border-width) solid var(--border);
   border-radius: var(--radius-md);
-  background: var(--bg);
+  background: var(--muted);
   color: var(--text);
   font-size: var(--c-font-body);
   line-height: var(--leading-normal);
