@@ -209,9 +209,9 @@
 | GroupHead | 同 | name、turnCount、running、onNew（群の開閉は作らない） | なし | 36px。[+] は 44 の当たり |
 | TopicRow | 同 | id（key）、title、mark、meta（状態の語 1 つ）、time、current | なし | スマホ 44・PC 36。題は 1 行で省く。副次行は持たない。付記（場所の名前など）は 640px 以上では出さない |
 | TalkTimeline | `c-talk.js` / `.css` | model（`talkModel(state, parse)` の結果: older・items・running。state の `openSteps` は key（行の id を文字列にした物）の Set。`continueKey`（［続ける］を出す返事の key か null）・`continueBusy`（待ちの形））、on（older・toggleSteps(key)・toggleRunSteps・stop・continue(key)） | なし（手順の開閉・スクロールは入口と古い JS が持つ） | 根 `div.c-talk` が自分の字と色を持つ。**置くのは TalkTimeline だけ**（Bubble・RunLine・Notice・Divider を単独で置かない）。［前の会話を読む］・行（key 付き）・実行中の行の順。カード・入力欄・空の文は入れない（K5） |
-| Bubble | 同 | who（owner・agent）、label（読み上げの話者）、name（上の名前か null）、blocks、time、state（sending か null）、foot、act（［続ける］を出す行だけ { busy }）、onToggle、onAct | なし | `article.c-msg`。角 `--c-bubble-r` と話者側の下だけ `--c-bubble-tail`。最大幅 スマホ 80/86%・PC 72/78%。**本文だけ**（D4）。blocks は owner が `plain`（解析しない）、agent が `parseBlocks` の paragraph・heading（見出しのタグにしない）・code・list（入れ子 1 段）。知らない type は段落として text を出すので、表・引用（#389）は `parseBlocks` に type を足し、Blocks に描き方を足す。**コードの段は `pre` だけ**（中に code のタグを作らず、横に送れる）。送っている途中は時刻の欄が「送っています…」。時刻は文だけ（リンクにしない） |
-| Steps（手順） | 同 | text、tone（muted・warning・danger）、toggles、open、onToggle | なし（開閉は外が持つ。押したら描き直す） | 吹き出しの**外**の下に小さく 1 行（`.c-msg-foot` の時刻の隣）。完了で手順 0 は出さない。手順 0 の止まった・失敗は押せない文。`details` を使わず、ボタン（`aria-expanded`）の後ろに一覧（StepList）。見た目 24px・当たりは `::after` で指 44・PC 36。**狭い幅で入りきらない結果の文は末尾を省いて 1 行に保つ**（時刻は省かない） |
-| RunLine（作業中の 1 行） | 同 | run（name・text・waiting・recent・all・stop）、on | なし | 吹き出しにしない。回る輪・経過の文・待ちの文・最後の 3 手順・4 件からの「すべての手順」・abortable のときの［中断］。文が 1 秒ごとに変わるので `aria-live`・`role="status"` を付けない（`aria-busy`） |
+| Bubble | 同 | who（owner・agent）、label（読み上げの話者）、name（上の名前か null）、blocks、time、state（sending か null）、foot、act（［続ける］を出す行だけ { busy }）、onToggle、onAct | なし | `article.c-msg`。D4（#463）から吹き出しにしない: 返事の本文の箱は地・余白・角なし、owner だけ `--muted` の面（余白 `--c-bubble-pad-y`/`-x`・角 `--c-card-r`）。どちらも左寄せで、最大幅は列いっぱい（前は角 `--c-bubble-r` と話者側の下だけ `--c-bubble-tail`、最大幅 スマホ 80/86%・PC 72/78%）。**本文だけ**（D4）。blocks は owner が `plain`（解析しない）、agent が `parseBlocks` の paragraph・heading（見出しのタグにしない）・code・list（入れ子 1 段）。知らない type は段落として text を出すので、表・引用（#389）は `parseBlocks` に type を足し、Blocks に描き方を足す。**コードの段は `pre` だけ**（中に code のタグを作らず、横に送れる）。送っている途中は時刻の欄が「送っています…」。時刻は文だけ（リンクにしない） |
+| Steps（手順） | 同 | text、tone（muted・warning・danger）、toggles、open、onToggle | なし（開閉は外が持つ。押したら描き直す） | 本文の箱の**外**の下に小さく 1 行（`.c-msg-foot` の時刻の隣）。完了で手順 0 は出さない。手順 0 の止まった・失敗は押せない文。`details` を使わず、ボタン（`aria-expanded`）の後ろに一覧（StepList）。見た目 24px・当たりは `::after` で指 44・PC 36。**狭い幅で入りきらない結果の文は末尾を省いて 1 行に保つ**（時刻は省かない） |
+| RunLine（作業中の 1 行） | 同 | run（name・text・waiting・recent・all・stop）、on | なし | 本文の箱にしない。回る輪・経過の文・待ちの文・最後の 3 手順・4 件からの「すべての手順」・abortable のときの［中断］。文が 1 秒ごとに変わるので `aria-live`・`role="status"` を付けない（`aria-busy`） |
 | Divider / Notice | 同 | text（Notice は time も） | なし | 文は要素で包まない。Notice の時刻だけ `span.c-notice-time` |
 | Cards（カードの並び） | `c-cards.js` / `.css` | items（kind ごとの項目。文は全部呼ぶ側が作る）、on、otherRef（質問のカードへ渡す） | なし | `div.c-cards`。key は `kind:id`。並びでない・空なら出さない。知らない kind は出さない。左右の余白は持たない |
 | Card（枠） | 同 | kind、label（`aria-label`）、title、meta、urgent、note、children | なし | `section.c-card`。どの幅でも番の面（`--turn-surface`）+ 左 3px の `--warning` の線（枠なし・右の角だけ `--c-card-r`。#463 の D3）・最大幅 `--c-card-max`。見出しは「あなたの番: …」（12px・semibold・`--text`）。右の文は urgent で semibold（色は `--text` のまま） |
@@ -256,8 +256,8 @@
 | `--c-gutter` | 16 | — | 左右の余白 |
 | `--c-list-w` | 280 | — | PC の一覧の幅（K3） |
 | `--c-hand-w` | 360 | — | PC の右腕の幅。まだ使っていない（効いているのは `shell.css` の `--v3-hand-w` で、`shell.js` の `handWidth()` が読む）。K7 で 1 つに |
-| `--c-bubble-r` | 14 | — | 吹き出しの角（K4。決定） |
-| `--c-bubble-tail` | 4 | — | 吹き出しのしっぽ側の角（K4） |
+| `--c-bubble-r` | 14 | — | 吹き出しの角（K4。決定）。D4 から未使用（自分の発言の見せ方が決まるまで残す） |
+| `--c-bubble-tail` | 4 | — | 吹き出しのしっぽ側の角（K4）。D4 から未使用（同上） |
 | `--c-card-r` | 10 | — | カードの角（K5。決定） |
 | `--c-btn-sm-h` | 36 | — | Button・IconButton の sm |
 | `--c-round-r` | 22 | 8 | accent のボタンの角（スマホは丸） |
@@ -273,7 +273,7 @@
 | `--c-top-full-min` | 520 | — | 広い幅の見出しが場所と［会話］［端末］を帯に出せる根の幅の下限。切ると compact（K4） |
 | `--c-top-place-min` | 96 | — | 見出しの場所のボタンの幅の下限（K4） |
 | `--c-talk-max` | 840 | — | 会話の列の最大の幅（K4） |
-| `--c-bubble-pad-y` / `--c-bubble-pad-x` | 10 / 14 | — | 吹き出しの上下 / 左右の内側の余白（K4） |
+| `--c-bubble-pad-y` / `--c-bubble-pad-x` | 10 / 14 | — | 自分の発言の面の上下 / 左右の内側の余白（K4 は吹き出しの余白。D4 から自分の発言だけ） |
 | `--c-card-max` | 520 | — | カードの最大の幅（K5） |
 | `--c-check` | 24 | — | カードの中のチェック・ラジオの印の大きさ（K5） |
 
@@ -289,7 +289,7 @@
 - K8 以降: `index.html`（新しい殻）の `<link>` に `app.css`・`shell.css` が無い。
 - 部品は `style` の prop と `dangerouslySetInnerHTML` を使わない（Preact は style を `style.cssText` で入れるので CSP では止まらない。11 系は数値に px を付けない）。動く値は `data-*` と CSS、どうしても要るときは入口が `style.setProperty` で CSS の変数を入れる。
 - `document`・`window` に触ってよいのは入口（`c-app.js` と見本の `c-gallery.js`）だけ。
-- `c-*.css` の `var()` は `--c-*` か許可リスト（`test/web-components.test.ts` の `ALLOWED_VARS`）だけ。許可リストは base.css の目盛り（`--space-*`・`--font-xs`〜`--font-base`・`--leading-*`・`--weight-*`・`--radius-*`・`--border-width`・`--ring-width`・`--dialog-max`・`--container-max`）、tokens.css の色（`--text-secondary` と、会話の吹き出しの地 `--bubble-*` を含む）、動き・重なり・字（`--dur-*`・`--ease-out`・`--z-toast`・`--font-mono`）。ここに無い物（`--tap`・`--row`・`--icon-size`・`--font-lg` 以上・古い殻の寸法・`--kb`・`--vvh`）は落ちる。足すときはテストの許可リストとこの行を一緒に直す。
+- `c-*.css` の `var()` は `--c-*` か許可リスト（`test/web-components.test.ts` の `ALLOWED_VARS`）だけ。許可リストは base.css の目盛り（`--space-*`・`--font-xs`〜`--font-base`・`--leading-*`・`--weight-*`・`--radius-*`・`--border-width`・`--ring-width`・`--dialog-max`・`--container-max`）、tokens.css の色（`--text-secondary` を含む。古い殻の吹き出しの地 `--bubble-*` は D4 で外した）、動き・重なり・字（`--dur-*`・`--ease-out`・`--z-toast`・`--font-mono`）。ここに無い物（`--tap`・`--row`・`--icon-size`・`--font-lg` 以上・古い殻の寸法・`--kb`・`--vvh`）は落ちる。足すときはテストの許可リストとこの行を一緒に直す。
 
 ### 7.4 `chat.js`・`views.js` の中の見た目
 
@@ -401,9 +401,9 @@
 - K4 以降への申し送り: 広い幅のバーは高さ 44 に sm のボタンの当たり 44 がちょうど入る作りなので、バーに枠・上下の余白を足さない（足すと列がずれる。上の線は付けない（D3 で内側の影もやめ、板と台の溝で区切る）。`npm run ui-shots` のバーの検査が捕まえる）。
 - 下のバーが `position: fixed`・`absolute` で一覧に重ならない事は、`c-shell.css` の見張り（`test/web-components.test.ts`）と、`npm run ui-shots` の「最後の行がバーに隠れない」（ダークのスマホ・タブレット）で見ている。
 
-**K4 会話の見出し + 吹き出し**
+**K4 会話の見出し + 吹き出し**（会話の行の形は D4（#463）で吹き出しでなくなった。下の受け入れの「吹き出し」は今は「本文の箱」で、高さ・幅・角の値は D4 の形で見る）
 - やること: TopBar（1 段）、`c-talk.js/.css`。`chat.js` の `render` の先頭に、部品が登録されていればそちらへ渡す分岐を 1 つ足す。`chat.js` の `header`・`frameHeader`・`bubbleRow`・`renderTurn`・`renderRunning`・`stepsList` に当たる物を部品で作る（古い関数は古い殻のために残す）。
-- 受け入れ（どれも `npm run ui-shots` の検査で見る。見出しは段 t、会話の行は段 b と段 k）: (1) スマホの会話で、画面の上から本文の始まりまでが 56px + safe-area（今は約 113px）。(2) 戻る・題・状態・場所・「…」・右腕が 1 段に入り、題は 1 行で省かれる。(3) 吹き出しの中に「完了」の行が無い。手順は吹き出しの外の 1 行で、完了で 0 件なら出ない。(4) 1 文の返事の吹き出しの高さが 1 行ぶん + 余白（字 × 1.5 + 20）。幅の割合と角が決まりどおりで、PC の列は 840px で真ん中。(5) 400 字の URL が吹き出し・列・`.ed-scroll` からはみ出さない。(6) 下に付いているときだけ新着で下へ送り、上を読んでいるときは動かさない。前の会話を読んでも見ていた行の位置が動かない。(7) 820 幅と PC で見出しが 1 段のまま折り返さない。待ちにする・閉じる・会話を新しくする・Discord は「…」の板の中。(8) コードの長い行は吹き出しの中で横に送れる。(9) 描き直し（定期の読み直し・1 秒ごと）で、入力欄のフォーカスと書きかけ・変換の途中・文の選択・開いた手順が残る。(10) 1 秒ごとの描きは、300 行・CPU 4 倍絞りで中央値 4 ms 以下、かつ全部の描き直しの中央値の 1/4 以下（段 k のスマホ。測りの行は行ごとに違う文と時刻で、時刻は本番と同じ `SA.ui.shortTime`。実測は draw の中央値約 38 ms、tick の中央値約 2 ms）。(11) 等幅の字（幅 390・375）でも時刻と手順の行が 1 行。当たりは指で 44px・PC で 36px 以上。実行中の行に `aria-live`・`role="status"` が無い。(12) 入力欄・カード・［続ける］・空の文・右腕はこの段では古いまま（混ざって見えることを PR に書く）。(13) `/` は変わらない（古い殻に `SA.talk` が無く、古い吹き出しが出ている）。
+- 受け入れ（どれも `npm run ui-shots` の検査で見る。見出しは段 t、会話の行は段 b と段 k）: (1) スマホの会話で、画面の上から本文の始まりまでが 56px + safe-area（今は約 113px）。(2) 戻る・題・状態・場所・「…」・右腕が 1 段に入り、題は 1 行で省かれる。(3) 吹き出しの中に「完了」の行が無い。手順は吹き出しの外の 1 行で、完了で 0 件なら出ない。(4) 1 文の返事の吹き出しの高さが 1 行ぶん + 余白（字 × 1.5 + 20。D4 から返事は字 × 1.5、自分の発言が + 20）。幅の割合と角が決まりどおりで、PC の列は 840px で真ん中。(5) 400 字の URL が吹き出し・列・`.ed-scroll` からはみ出さない。(6) 下に付いているときだけ新着で下へ送り、上を読んでいるときは動かさない。前の会話を読んでも見ていた行の位置が動かない。(7) 820 幅と PC で見出しが 1 段のまま折り返さない。待ちにする・閉じる・会話を新しくする・Discord は「…」の板の中。(8) コードの長い行は吹き出しの中で横に送れる。(9) 描き直し（定期の読み直し・1 秒ごと）で、入力欄のフォーカスと書きかけ・変換の途中・文の選択・開いた手順が残る。(10) 1 秒ごとの描きは、300 行・CPU 4 倍絞りで中央値 4 ms 以下、かつ全部の描き直しの中央値の 1/4 以下（段 k のスマホ。測りの行は行ごとに違う文と時刻で、時刻は本番と同じ `SA.ui.shortTime`。実測は draw の中央値約 38 ms、tick の中央値約 2 ms）。(11) 等幅の字（幅 390・375）でも時刻と手順の行が 1 行。当たりは指で 44px・PC で 36px 以上。実行中の行に `aria-live`・`role="status"` が無い。(12) 入力欄・カード・［続ける］・空の文・右腕はこの段では古いまま（混ざって見えることを PR に書く）。(13) `/` は変わらない（古い殻に `SA.talk` が無く、古い吹き出しが出ている）。
 - 進み: **済**。見出しの部品（`c-shell.js` の TopBar・`topModel`、BottomBar の `controls`）と見本の節「見出し（TopBar）」（スマホ 3・広い幅 5・compact 2。`npm run ui-shots` が見本の名前・高さ・1 段・はみ出し・省き・縮む順・題と状態の間・場所のボタンの幅・入れ物の幅を見る）。本番の見出し（#398）。会話の部品（`c-talk`）と見本の節（#399 の 1 本目。見本の節「会話」は 6 つで、`npm run ui-shots` が見本の名前・吹き出しの中に結果の文が無い・1 行の吹き出しの高さ・幅の上限・角・はみ出し・長いコードを横に送れる・手順の行・実行中の行の読み上げ・根の字を、今の字・等幅の字・スマホは幅 375 でも見る）。本番の会話の行（#399 の 2 本目。下の「本番の会話の行の形」）。
 - 本番の見出しの形（#398）:
   - 新しい殻（K4 のときは `v3.html`。M8 から `index.html`）の列 2 の上は `#c-top-root` だけ（古い帯 `#v3-bar`・場所のボタン・［会話］［端末］・上の［右腕］は消した）。入口 `c-app.js` の口 `SA.top` は 3 つ: `draw(state)`（描けたか。描く前に見出しの中に在った焦点のボタンが消えたら「…」→「一覧へ」→ 最初のボタンへ）、`focus(act)`（back・place・menu・hand）、`compact()`（今の列の幅なら compact か。測るだけで覚えない・描かない。スマホは false、測れなければ null）
@@ -487,7 +487,7 @@
 - ［続ける］（K5b。#406）:
   - `talkModel` は `state.continueKey` の返事の行にだけ `act: { busy }` を置き、`Bubble` は行の最後の子（開いた手順の一覧の後ろ）に `.c-msg-act` > ［続ける］（secondary・sm・左寄せ・上の物との間 16px）を出す。押すと `on.continue(key)`
   - `chat.js` の `talkState` は、出せるとき（`continuable`: 手順の上限で止まった最後の返事・セッション・実行中のターンが無い・まだ受け付けられていない）だけ `continueKey` を渡す。`on.continue` は押されたときの最後の行を読み、`/continue` を 1 回だけ送り、待つ間は `continueBusy`、だめなら文を出して戻す（受け付けたら今までどおりの描き直しで消える）。新しい殻の `.tl` に古いボタンは入らない。古い殻は古いボタンのまま（右腕は K6 から部品の行。`continueTurn` は受け付けられたかを返す）
-  - 確かめ: 見本の `talk-stopped`・`talk-stopped-open`・`talk-stopped-busy` と、`talkProblems` の 10（行の最後の子・ボタン 1 つ・高さ 36・左端が吹き出しと同じ・上の物との間 16）。段 k の 14 は話題 `long` で `.tl` が空・ボタンが最後の返事の一番下で見えている・当たり、19 は実際に押す（送り 1 回・待ちの形を見る・消える・入力欄と `.ed-scroll` が同じ要素・知らせなし）
+  - 確かめ: 見本の `talk-stopped`・`talk-stopped-open`・`talk-stopped-busy` と、`talkProblems` の 10（行の最後の子・ボタン 1 つ・高さ 36・左端が吹き出しと同じ・上の物との間 16。D4 から左端は本文の箱と会話の列の中身の左端）。段 k の 14 は話題 `long` で `.tl` が空・ボタンが最後の返事の一番下で見えている・当たり、19 は実際に押す（送り 1 回・待ちの形を見る・消える・入力欄と `.ed-scroll` が同じ要素・知らせなし）
   - 結果の文: 吹き出しの足の結果の文は、手順を開いている間だけ省かずに折り返す（`c-talk.css` の 1 規則。閉じた形は 1 行で、スマホは今までどおり末尾を省く）。時刻と山形は上下の真ん中のまま。実行中の行の「すべての手順」には効かない
   - 確かめ: 段 k の 20（話題 `long` の最後の返事を開くと省かれず、最後の字が文の箱の中・行の幅が変わらない・スマホは 2 行で足の行が 24 より高い・広い幅は 1 行で 24・閉じると戻る。絵はスマホの `b-talk-long-open`）。`talkProblems` の 7 は、開いた足の行を「24 以上・省かない」で見る
 - 実機で確かめる手順（#406）: iOS の Safari（ホーム画面から開いた形も）で、(1) 欄を押すとキーボードが出て、欄と［送る］が見える。拡大しない、(2) 日本語を変換の途中にして 5 秒待つ（切れない）、(3) 6 行まで打つと伸び、最後の吹き出しの時刻が見える、(4) キーボードを閉じると元の位置に戻る、(5) 送った後、欄が空になり 1 行に戻る
