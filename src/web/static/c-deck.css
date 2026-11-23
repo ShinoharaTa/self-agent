@@ -70,6 +70,8 @@
 .c-band-count {
   color: var(--text-secondary);
   font-size: var(--font-sm);
+  /* 帯の数は h2 の中なので、太さを継がせない（列の見出しの数と同じ太さ） */
+  font-weight: var(--weight-normal);
   font-variant-numeric: tabular-nums;
 }
 

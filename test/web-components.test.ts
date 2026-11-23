@@ -4565,6 +4565,8 @@ test("web components: c-deck.css のスマホの帯の題（名前と数を横�
   // 数は列の見出しの数と同じ宣言
   assert.equal(body(".c-band-count"), body(".c-col-count"));
   assert.ok(body(".c-band-count").includes("color: var(--text-secondary)"));
+  // 帯の数は h2 の中でも太くしない
+  assert.ok(body(".c-band-count").includes("font-weight: var(--weight-normal)"));
   assert.ok(body('.c-deck[data-paged="true"] .c-col-head').includes("display: none"));
 });
 
