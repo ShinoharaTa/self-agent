@@ -2246,7 +2246,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       await settled(page);
       if (!(await page.evaluate(() => (document.activeElement as unknown as { __k?: number } | null)?.__k === 1))) say("右腕を閉じた後の焦点が右腕のボタンに戻らない");
     }
-    // 幅をまたぐ（6）: 800 は広い幅の流れの列で下のバーは空・帯のボタン 4 つ。列を横に送っても下のバーは出ない（入口の口の 3）。390 に戻すと下のバー 4 つ・帯 3 つ
+    // 幅をまたぐ（6）: 800 は広い幅の流れの列で下のバーは空・帯のボタン 3 つと右腕の丸（D6）。列を横に送っても下のバーは出ない（入口の口の 3）。390 に戻すと下のバー 4 つ・帯 3 つ
     const pagedBefore = (await seen()).paged.length;
     try {
       await page.setViewportSize({ width: 800, height: VIEWPORTS.phone.viewport.height });
@@ -2255,7 +2255,11 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         page.evaluate(() => [...document.querySelectorAll<HTMLElement>("#c-band-root .c-band-ops [data-act]")].filter((el) => el.getClientRects().length > 0).map((el) => el.getAttribute("data-act")));
       const kids = (): Promise<number> => page.evaluate(() => document.querySelector("#c-foot-root")?.children.length ?? -1);
       const wideBand = await band();
-      if ((await kids()) !== 0 || JSON.stringify(wideBand) !== JSON.stringify(["find", "hand", "start", "more"])) say(`800 で下のバーが空で帯のボタン 4 つの形にならない（子 ${await kids()}・帯 ${wideBand.join("・")}）`);
+      // 広い幅の口は右下の丸（D6）。帯は 探す・始める・ほか
+      const wideOrbs = await page.evaluate((sel: string) => document.querySelectorAll(sel).length, ORB);
+      if ((await kids()) !== 0 || JSON.stringify(wideBand) !== JSON.stringify(["find", "start", "more"]) || wideOrbs !== 1) {
+        say(`800 で下のバーが空で帯のボタン 3 つ・右腕の丸 1 つの形にならない（子 ${await kids()}・帯 ${wideBand.join("・")}・丸 ${wideOrbs}）`);
+      }
       // 広い幅の帯は「self-agent」のまま、列の見出しは見える
       const wideHead = await page.evaluate(() => {
         const name = document.querySelector("#c-band-root .c-band-name");
