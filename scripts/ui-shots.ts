@@ -1340,6 +1340,18 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     await settled(page);
   }
 
+  /** 板（幕が在る dialog）は枠を持たない（D3）。selector の要素の 4 辺の枠の太さが 0px でなければ文を返す */
+  async function sheetFrame(page: Page, selector: string, what: string): Promise<string[]> {
+    const widths = await page.evaluate((sel: string) => {
+      const el = document.querySelector(sel);
+      if (el === null) return null;
+      const cs = getComputedStyle(el);
+      return [cs.borderTopWidth, cs.borderRightWidth, cs.borderBottomWidth, cs.borderLeftWidth];
+    }, selector);
+    if (widths === null) return [`${what}が無い（${selector}）`];
+    return widths.every((w) => w === "0px") ? [] : [`${what}の枠 ${widths.join(" ")}（上下左右とも 0px のはず。板は幕で区切る）`];
+  }
+
   /** 一覧の行を押す（流れの列では先に「探す」の板を開く。本当の道） */
   async function clickRow(page: Page, selector: string, which: "first" | "last"): Promise<void> {
     await openFind(page);
@@ -2666,6 +2678,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     for (const want of ["待ちにする", "閉じる", "会話を新しくする"]) if (!rows.includes(want)) lines.push(`本番の見出し: 「…」の板に「${want}」が無い（${rows.join("・")}）`);
     if (vp === "pc" ? rows.includes("場所を変える") : rows[0] !== "場所を変える") lines.push(`本番の見出し: 「…」の板の「場所を変える」の在り方が違う（${rows.join("・")}）`);
     lines.push(...(await checkH1(page, "「…」の板")));
+    lines.push(...(await sheetFrame(page, "#v3-sheet[open]", "本番の見出し: 「…」の板")));
     await shot(page, `${p}-b-top-menu`);
     await escSheet(page);
     if (!(await activeIs(page, TOP_MENU))) lines.push("本番の見出し: 「…」の板を閉じた後の焦点が「…」に無い");
@@ -4828,6 +4841,16 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         const problems = [...(await checkParts(page, vp, [".c-list", "#v3-list .c-bottom"])), ...(await checkList(page, vp)), ...(await checkBar(page, vp, p))];
         if (vp !== "tablet") problems.push(...(await checkLeaks(page, vp)));
         problems.push(...(await checkWidths(page, vp, mono)));
+        // 群・番の行の間は余白だけ（D3）: 上下の枠が 0px（「探す」の板の下端に次の群の上の線が覗かない）
+        problems.push(
+          ...(await page.evaluate(() =>
+            [...document.querySelectorAll<HTMLElement>("#v3-list .c-group, #v3-list .c-turn")]
+              .map((el) => ({ el, cs: getComputedStyle(el) }))
+              .filter(({ cs }) => cs.borderTopWidth !== "0px" || cs.borderBottomWidth !== "0px")
+              .map(({ el, cs }) => `一覧の ${el.className}「${(el.getAttribute("aria-label") ?? el.textContent ?? "").trim().slice(0, 12)}」の上下の線 ${cs.borderTopWidth} ${cs.borderBottomWidth}（0px のはず）`),
+          )),
+        );
+        if (await page.evaluate(() => document.querySelectorAll("#v3-list .c-group").length === 0)) problems.push("一覧に群が無い（群の間の線を確かめられない）");
         // 絞り込み欄の箱の左端は一覧の列の左から 16（スマホ・PC。流れの列は「探す」の板を開くと絞り込み欄が出ている）
         if (vp !== "tablet") {
           const deck = await deckOn(page);
@@ -5266,6 +5289,9 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         else await page.locator("#c-list-root .c-group-head > .c-iconbtn").first().click();
         await settled(page);
         await shot(page, `${p}-e-start-dialog`);
+        const frame = await sheetFrame(page, "#v3-start[open]", "始める板");
+        for (const line of frame) logLines.push(`[v3-${p}] ${line}`);
+        if (frame.length > 0) throw new Error(`始める板の枠の検査で ${frame.length} 件`);
       });
       await step(`${p} f`, [`${p}-f-settings`, `${p}-f-knowledge-list`, `${p}-f-knowledge-detail`], async () => {
         await load(page, "/#/settings");
@@ -5680,6 +5706,18 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           await page.waitForSelector(ready, { timeout: 5000 });
           await settled(page);
           await checkGallery(page, vp, label);
+          // 見本の板・確認（c-sheet）は枠を持たない。知らせは枠のまま（幕が無い）
+          if (kind !== "g-toast") {
+            const frame = await sheetFrame(page, ready, `見本の ${kind} の板`);
+            for (const line of frame) logLines.push(`[${label}] ${line}`);
+            if (frame.length > 0) throw new Error(`板の枠の検査で ${frame.length} 件`);
+          } else {
+            const toast = await page.evaluate(() => [...document.querySelectorAll(".c-toast-item")].map((el) => getComputedStyle(el).borderTopWidth));
+            if (toast.length === 0 || toast.some((w) => w === "0px")) {
+              logLines.push(`[${label}] 知らせの枠 ${toast.join(" ")}（枠のままのはず）`);
+              throw new Error("知らせの枠の検査で 1 件");
+            }
+          }
           await shot(page, name);
         });
       }
