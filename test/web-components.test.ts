@@ -2484,8 +2484,6 @@ test("web components: 会話の行は吹き出しでない（docs/plan/web-ui-de
   for (const decl of ["padding: var(--c-bubble-pad-y) var(--c-bubble-pad-x)", "background: var(--muted)", "border-radius: var(--c-card-r)"]) assert.ok(owner.some((r) => r.decls.includes(decl)), decl);
   const rules = parseCss(read("c-talk.css"));
   assert.ok(!rules.some((r) => r.selectors.includes('.c-msg[data-who="owner"]')), "自分の行の寄せと幅の規則");
-  // 右寄せをしない
-  assert.doesNotMatch(stripCssComments(read("c-talk.css")), /flex-end/);
   // 行（.c-msg）と待ちの行（.c-run）は列いっぱい。広い幅でも % の上書きを戻さない
   for (const selector of [".c-msg", ".c-run"]) assert.ok(talkRule(selector).some((r) => r.decls.includes("max-width: 100%")), `${selector} の max-width`);
   for (const r of rules.filter((x) => x.at.some((at) => at.startsWith("@media")))) {
@@ -2536,6 +2534,18 @@ test("web components: 行（.c-msg）と待ちの行（.c-run）の max-width �
     all.filter(({ rule }) => rule.selectors.some((s) => classesInSelector(s).includes(cls))).flatMap(({ decls }) => decls.filter((d) => d.prop === prop).map((d) => d.value));
   for (const cls of ["c-msg", "c-run"]) assert.deepEqual(declsFor(cls, "max-width"), ["100%"], `.${cls} の max-width`);
   assert.deepEqual(declsFor("c-talk", "gap"), ["var(--space-4)"], ".c-talk の gap");
+});
+
+test("web components: 行（.c-msg）と本文の箱（.c-bubble）を、どの書き方でも右へ寄せない（margin-left・margin-inline-start・justify-self・text-align を書かず、align-self は flex-start だけ）（D4）", () => {
+  const rows = talkAllRules().filter(({ rule }) => rule.selectors.some((s) => ["c-msg", "c-bubble"].some((cls) => classesInSelector(lastCompound(s)).includes(cls))));
+  assert.ok(rows.length > 0, ".c-msg・.c-bubble の規則が無い");
+  for (const { rule, decls } of rows) {
+    for (const { prop, value } of decls) {
+      const where = `${rule.at.join(" ")} ${rule.selectors.join(",")} の ${prop}: ${value}`;
+      assert.ok(!["margin-left", "margin-inline-start", "justify-self", "text-align"].includes(prop), where);
+      if (prop === "align-self") assert.equal(value, "flex-start", where);
+    }
+  }
 });
 
 test("web components: 会話のコードは文中も段も地が --muted で、段は 1px の --border の線で囲む。c-talk.css は吹き出しの変数（--bubble-*・--c-bubble-r・--c-bubble-tail）と右寄せを使わない", () => {
