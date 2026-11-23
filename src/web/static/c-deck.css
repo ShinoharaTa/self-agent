@@ -118,6 +118,11 @@
   background: var(--muted);
 }
 
+/* 開いている番の項目は、線は開いている印の --accent のまま、地は番の面（開いても番が消えない） */
+.c-item[data-turn="true"][data-current="true"] {
+  background: var(--turn-surface);
+}
+
 /* 押せる物（ボタン・リンク）も押せない物も同じ形 */
 .c-item-main,
 .c-item-link {

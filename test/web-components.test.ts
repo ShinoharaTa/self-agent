@@ -4499,6 +4499,28 @@ test("web components: c-deck.css は区切りの線（左の線と 0 の外し�
   assert.doesNotMatch(stripCssComments(read("c-deck.css")), /@keyframes|@media \(min-width|1340/);
 });
 
+test("web components: c-deck.css の開いていて番の項目は、地が番の面（--turn-surface）で、線は開いている項目の --accent のまま（規則は地だけ）", () => {
+  const rules = parseCss(read("c-deck.css")).filter((r) => r.at.length === 0);
+  const declsOf = (sel: string): string[] => rules.filter((r) => r.selectors.includes(sel)).flatMap((r) => r.body.split(";").map((d) => d.trim()).filter((d) => d !== ""));
+  assert.deepEqual(declsOf('.c-item[data-turn="true"][data-current="true"]'), ["background: var(--turn-surface)"]);
+  assert.ok(declsOf('.c-item[data-current="true"]').includes("border-left-color: var(--accent)"));
+  assert.ok(declsOf('.c-item[data-turn="true"]').includes("background: var(--turn-surface)"));
+});
+
+test("web components: 新しい殻の CSS（shell.css と c-*.css。c-gallery.css を除く）で accent の塗りを書くのは、accent のボタン・accent の数の印・未読の点 3 つ・下のバーの右腕だけ", () => {
+  const files = ["shell.css", ...CSS_FILES.filter((n) => n !== "c-gallery.css")];
+  const painted = new Set<string>();
+  for (const name of files) {
+    for (const rule of parseCss(read(name))) {
+      const decls = rule.body.split(";").map((d) => d.trim()).filter((d) => d !== "");
+      if (decls.some((d) => /^background(?:-color|-image)?\s*:/.test(d) && d.includes("var(--accent)"))) for (const sel of rule.selectors) painted.add(sel);
+    }
+  }
+  assert.deepEqual([...painted].sort(), [
+    '.c-btn[data-kind="accent"]', '.c-badge[data-tone="accent"]', '.c-mark[data-state="unread"]', '.c-band-hand-mark[data-state="unread"]', '.c-top-hand-mark[data-state="unread"]', ".c-bottom-hand",
+  ].sort());
+});
+
 test("web components: 見出し（c-shell.css の .c-top・c-hand.css の .c-hand-head）と下のバーと入力欄の帯は区切りの線を書かない。残る線は押す所の輪郭と欄の枠だけ", () => {
   const declsOf = (name: string): { sel: string; decl: string; prop: string }[] =>
     parseCss(read(name)).flatMap((r) =>
