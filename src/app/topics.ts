@@ -4,7 +4,8 @@ import type { TopicListRow } from "../agent/tools.ts";
 import type { HistoryKind, HistoryOutcome } from "../store/history.ts";
 import { formatWallClock } from "./recurrence.ts";
 
-export type TopicTurnKind = "permission" | "question" | "waiting" | "confirm";
+/** max_turns・failed は上限・失敗で止まった話題（state が active のときだけ。topicOf が作る） */
+export type TopicTurnKind = "permission" | "question" | "waiting" | "confirm" | "max_turns" | "failed";
 export type TopicTurn = {
   kind: TopicTurnKind;
   /** 1 行・80 字まで */
@@ -18,8 +19,8 @@ export type TopicTurn = {
 export type TopicMark = "turn" | "running" | "unread" | null;
 /** lead: 右腕の最後の行が統括のまとめの notice（Web の未読に数える。右腕の last にだけ、真のときだけ付ける。#457 の L2） */
 export type TopicLast = { id: number; at: string; kind: HistoryKind; lead?: true } | null;
-/** 最後の agent の行（終わり方・かかった時間）。無ければ null */
-export type TopicLastAgent = { id: number; outcome: HistoryOutcome | null; durationMs: number | null } | null;
+/** 最後の agent の行（時刻・終わり方・かかった時間）。無ければ null */
+export type TopicLastAgent = { id: number; at: string; outcome: HistoryOutcome | null; durationMs: number | null } | null;
 
 export type Topic = {
   /** Discord のチャンネルがあれば "ch:<channelId>"、無い Claude Code のセッションは "cc:<sessionId>" */
@@ -180,9 +181,9 @@ export function compareTurns(a: TopicTurn, b: TopicTurn): number {
   return time(a.since) - time(b.since);
 }
 
-const TURN_PRIORITY: Readonly<Record<TopicTurnKind, number>> = { permission: 0, question: 0, waiting: 1, confirm: 2 };
+const TURN_PRIORITY: Readonly<Record<TopicTurnKind, number>> = { permission: 0, question: 0, waiting: 1, confirm: 2, max_turns: 3, failed: 3 };
 
-/** 待っているものから 1 つ（許可・質問 > 判断待ち > 確認。同じなら古い方）。空なら null */
+/** 待っているものから 1 つ（許可・質問 > 判断待ち > 確認 > 上限・失敗で止まった。同じなら古い方）。空なら null */
 export function pickTurn(turns: TopicTurn[]): TopicTurn | null {
   let best: TopicTurn | null = null;
   for (const turn of turns) {
@@ -215,6 +216,18 @@ export function stoppedOf(lastAgent: TopicLastAgent, lastOwnerId: number | null,
   return lastOwnerId === null || lastOwnerId < lastAgent.id;
 }
 
+/** 上限・失敗で止まった話題の番（stopped が真で state が active のときだけ。中断は数えない。since は最後の agent の行の時刻）。ほかは null */
+function stoppedTurnOf(stopped: boolean, state: Topic["state"], lastAgent: TopicLastAgent): TopicTurn | null {
+  if (!stopped || state !== "active" || lastAgent === null) return null;
+  if (lastAgent.outcome !== "max_turns" && lastAgent.outcome !== "failed") return null;
+  return { kind: lastAgent.outcome, summary: "", since: lastAgent.at, expiresAt: null };
+}
+
+/** 番の種類が上限・失敗で止まった物か（topic_list では your_turn にしない） */
+function isStoppedTurn(turn: TopicTurn | null): boolean {
+  return turn !== null && (turn.kind === "max_turns" || turn.kind === "failed");
+}
+
 function markRank(mark: TopicMark): number {
   return mark === "turn" ? 0 : mark === "running" ? 1 : 2;
 }
@@ -235,8 +248,11 @@ export function compareTopics(a: Topic, b: Topic): number {
 
 function topicOf(seed: TopicSeed, generalDir: string | null): Topic {
   const done = seed.state === "done";
-  const turn = done ? null : pickTurn(seed.turns);
   const queued = seed.queued && !seed.running && !done;
+  const stopped = !seed.running && !queued && !done && stoppedOf(seed.lastAgent, seed.lastOwnerId, seed.lastDividerId);
+  // 上限・失敗で止まった話題も番にする（ほかの番と重なれば、ほかの番が勝つ）
+  const stoppedTurn = stoppedTurnOf(stopped, seed.state, seed.lastAgent);
+  const turn = done ? null : pickTurn(stoppedTurn === null ? seed.turns : [...seed.turns, stoppedTurn]);
   return {
     id: seed.id,
     title: seed.title,
@@ -255,7 +271,7 @@ function topicOf(seed: TopicSeed, generalDir: string | null): Topic {
     movable: seed.movable,
     link: seed.link,
     queued,
-    stopped: !seed.running && !queued && !done && stoppedOf(seed.lastAgent, seed.lastOwnerId, seed.lastDividerId),
+    stopped,
     ended: seed.lastAgent?.outcome ?? null,
     tookMs: seed.lastAgent?.durationMs ?? null,
     byRightHand: seed.byRightHand,
@@ -365,7 +381,8 @@ function listPlaceOf(dir: string | null, generalDir: string | undefined): string
 
 /**
  * buildTopics の結果 → topic_list の短い行（純関数）。対象は入口（pinned）でなく完了でない話題と、入口のうち あなたの番・作業中 の物と、
- * あなたの番のある右腕（#inbox）。だから counts.your_turn は result.turns と、counts.running は群の running の和と同じになる。
+ * あなたの番のある右腕（#inbox）。上限・失敗で止まった番の話題は stopped の行にする。だから counts.your_turn は result.turns から
+ * その話題の数を引いた数と、counts.running は群の running の和と同じになる。
  * あなたの番 → 止まった → 作業中 → 順番待ち → 残りの順、同じ中では新しい順に先頭 TOPIC_LIST_MAX 件。counts は切る前の数、more は切った残りの数。
  * ended・took_min・by_right_hand は値が在るときだけ付ける。ended・took_min は作業中・順番待ちの行には付けない（前のターンの値なので）。
  * 最後の発言の本文・sessionId・cwd・link は出さない
@@ -384,8 +401,9 @@ export function topicListRows(
   for (const topic of result.topics) {
     if (topic.state === "done") continue;
     if (topic.pinned && topic.mark !== "turn" && topic.mark !== "running") continue;
+    // 上限・失敗で止まった番は your_turn にせず stopped のまま（topic_list の出力は変えない）
     const state: TopicListRow["state"] =
-      topic.mark === "turn"
+      topic.mark === "turn" && !isStoppedTurn(topic.turn)
         ? "your_turn"
         : topic.mark === "running"
           ? "running"

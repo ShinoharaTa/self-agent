@@ -521,28 +521,28 @@ test("SESSION_OPEN_TEXT_MAX_LENGTH は startTopic の TOPIC_TEXT_MAX_LENGTH と�
 
 test("stoppedOf: 上限・失敗・中断で終わり、後に owner の行が無ければ真。ふつうの終わり・後に owner の行・agent の行なしは偽", () => {
   for (const outcome of ["max_turns", "failed", "aborted"] as const) {
-    assert.equal(stoppedOf({ id: 5, outcome, durationMs: null }, null, null), true, outcome);
-    assert.equal(stoppedOf({ id: 5, outcome, durationMs: null }, 4, null), true, outcome);
-    assert.equal(stoppedOf({ id: 5, outcome, durationMs: null }, 6, null), false, outcome);
+    assert.equal(stoppedOf({ id: 5, at: at(0), outcome, durationMs: null }, null, null), true, outcome);
+    assert.equal(stoppedOf({ id: 5, at: at(0), outcome, durationMs: null }, 4, null), true, outcome);
+    assert.equal(stoppedOf({ id: 5, at: at(0), outcome, durationMs: null }, 6, null), false, outcome);
   }
-  assert.equal(stoppedOf({ id: 5, outcome: "done", durationMs: 1000 }, null, null), false);
-  assert.equal(stoppedOf({ id: 5, outcome: null, durationMs: null }, null, null), false);
+  assert.equal(stoppedOf({ id: 5, at: at(0), outcome: "done", durationMs: 1000 }, null, null), false);
+  assert.equal(stoppedOf({ id: 5, at: at(0), outcome: null, durationMs: null }, null, null), false);
   assert.equal(stoppedOf(null, null, null), false);
   assert.equal(stoppedOf(null, 3, null), false);
 });
 
 test("stoppedOf: 後に区切り（divider）の行があれば偽。前の区切り・区切りの後にもう一度止まったのは真", () => {
   for (const outcome of ["max_turns", "failed", "aborted"] as const) {
-    assert.equal(stoppedOf({ id: 5, outcome, durationMs: null }, null, 6), false, outcome);
-    assert.equal(stoppedOf({ id: 5, outcome, durationMs: null }, 4, 6), false, outcome);
-    assert.equal(stoppedOf({ id: 5, outcome, durationMs: null }, null, 4), true, outcome);
-    assert.equal(stoppedOf({ id: 5, outcome, durationMs: null }, 3, 4), true, outcome);
+    assert.equal(stoppedOf({ id: 5, at: at(0), outcome, durationMs: null }, null, 6), false, outcome);
+    assert.equal(stoppedOf({ id: 5, at: at(0), outcome, durationMs: null }, 4, 6), false, outcome);
+    assert.equal(stoppedOf({ id: 5, at: at(0), outcome, durationMs: null }, null, 4), true, outcome);
+    assert.equal(stoppedOf({ id: 5, at: at(0), outcome, durationMs: null }, 3, 4), true, outcome);
   }
   // 同じ話題で区切りの後にもう一度止まった（agent の行の id の方が大きい）
-  assert.equal(stoppedOf({ id: 9, outcome: "max_turns", durationMs: null }, 7, 8), true);
+  assert.equal(stoppedOf({ id: 9, at: at(0), outcome: "max_turns", durationMs: null }, 7, 8), true);
 });
 
-const STOPPED_SEED = { lastAgent: { id: 10, outcome: "failed", durationMs: 90_000 }, lastOwnerId: 9 } as const;
+const STOPPED_SEED = { lastAgent: { id: 10, at: at(1), outcome: "failed", durationMs: 90_000 }, lastOwnerId: 9 } as const;
 
 test("buildTopics: queued は running なら false。stopped は running・queued・done なら false。ended・tookMs・byRightHand はそのまま", () => {
   const result = buildTopics(
@@ -554,7 +554,7 @@ test("buildTopics: queued は running なら false。stopped は running・queue
         seed("ch:4", { ...STOPPED_SEED, running: true }),
         seed("ch:5", { ...STOPPED_SEED, queued: true }),
         seed("ch:6", { ...STOPPED_SEED, state: "done" }),
-        seed("ch:7", { lastAgent: { id: 10, outcome: "done", durationMs: 1000 }, lastOwnerId: 11 }),
+        seed("ch:7", { lastAgent: { id: 10, at: at(0), outcome: "done", durationMs: 1000 }, lastOwnerId: 11 }),
       ],
       { done: "general" },
     ),
@@ -575,9 +575,9 @@ test("buildTopics: queued は running なら false。stopped は running・queue
   assert.deepEqual([of("ch:3").ended, of("ch:3").tookMs, of("ch:3").byRightHand], ["failed", 90_000, true]);
   assert.deepEqual([of("ch:7").ended, of("ch:7").tookMs, of("ch:7").byRightHand], ["done", 1000, false]);
   assert.deepEqual([of("ch:1").ended, of("ch:1").tookMs], [null, null]);
-  // 印・群の数は今のまま（queued・stopped は mark にしない）
+  // queued は mark にしない。失敗で止まった話題（active）は あなたの番（#457 の L1c PR-3）
   assert.equal(of("ch:1").mark, null);
-  assert.equal(of("ch:3").mark, null);
+  assert.equal(of("ch:3").mark, "turn");
   assert.equal(result.groups.find((group) => group.key === "general")?.running, 2);
 });
 
@@ -638,7 +638,7 @@ test("buildTopics・topicListRows: 止まった後に区切り（divider）の�
 });
 
 test("topicListRows: ended・took_min（1 分の下限・丸め）・by_right_hand は値が在るときだけ", () => {
-  const agent = (durationMs: number | null) => ({ lastAgent: { id: 10, outcome: "done" as const, durationMs }, lastOwnerId: 9 });
+  const agent = (durationMs: number | null) => ({ lastAgent: { id: 10, at: at(0), outcome: "done" as const, durationMs }, lastOwnerId: 9 });
   const result = buildTopics(
     input([
       seed("ch:1", { activityAt: at(5), ...agent(29_000) }),
@@ -658,6 +658,116 @@ test("topicListRows: ended・took_min（1 分の下限・丸め）・by_right_ha
   assert.deepEqual(Object.keys(of("4")).sort(), ["at", "channel_id", "kind", "place", "state", "title"]);
 });
 
+// ---- 上限・失敗で止まった話題を あなたの番 に数える（#457 の L1c PR-3） ----
+
+const stoppedSeed = (outcome: "max_turns" | "failed" | "aborted", minute: number) =>
+  ({ lastAgent: { id: 10, at: at(minute), outcome, durationMs: 60_000 }, lastOwnerId: 9 }) as const;
+
+test("buildTopics: 上限・失敗で止まった active の話題は mark turn・turn は終わり方の種類で、turns・turnIds・群の turns に入る", () => {
+  const result = buildTopics(
+    input([seed("ch:1", { dir: "alpha", ...stoppedSeed("max_turns", 3) }), seed("ch:2", { dir: "alpha", ...stoppedSeed("failed", 4) })], {
+      projects: ["alpha"],
+    }),
+  );
+  const of = (id: string) => result.topics.find((item) => item.id === id)!;
+  assert.equal(of("ch:1").mark, "turn");
+  assert.deepEqual(of("ch:1").turn, { kind: "max_turns", summary: "", since: at(3), expiresAt: null });
+  assert.equal(of("ch:2").mark, "turn");
+  assert.deepEqual(of("ch:2").turn, { kind: "failed", summary: "", since: at(4), expiresAt: null });
+  // stopped・ended・tookMs の意味は変えない
+  assert.deepEqual([of("ch:1").stopped, of("ch:1").ended, of("ch:1").tookMs], [true, "max_turns", 60_000]);
+  assert.equal(result.turns, 2);
+  assert.deepEqual(result.turnIds, ["ch:1", "ch:2"]);
+  assert.equal(result.groups.find((group) => group.key === "p:alpha")?.turns, 2);
+});
+
+test("buildTopics: 中断・待ち・完了・作業中・順番待ち・後に owner の行・後に区切りの話題は あなたの番 にならない", () => {
+  const result = buildTopics(
+    input(
+      [
+        seed("ch:1", stoppedSeed("aborted", 1)),
+        seed("ch:2", { ...stoppedSeed("max_turns", 1), state: "waiting" }),
+        seed("ch:3", { ...stoppedSeed("failed", 1), state: "done" }),
+        seed("ch:4", { ...stoppedSeed("max_turns", 1), running: true }),
+        seed("ch:5", { ...stoppedSeed("failed", 1), queued: true }),
+        seed("ch:6", { ...stoppedSeed("max_turns", 1), lastOwnerId: 11 }),
+        seed("ch:7", { ...stoppedSeed("failed", 1), lastDividerId: 11 }),
+      ],
+      { done: "general" },
+    ),
+  );
+  const of = (id: string) => result.topics.find((item) => item.id === id)!;
+  assert.deepEqual(
+    ["ch:1", "ch:2", "ch:3", "ch:4", "ch:5", "ch:6", "ch:7"].map((id) => [id, of(id).mark, of(id).turn, of(id).stopped]),
+    [
+      ["ch:1", null, null, true],
+      ["ch:2", null, null, true],
+      ["ch:3", null, null, false],
+      ["ch:4", "running", null, false],
+      ["ch:5", null, null, false],
+      ["ch:6", null, null, false],
+      ["ch:7", null, null, false],
+    ],
+  );
+  assert.equal(result.turns, 0);
+  assert.deepEqual(result.turnIds, []);
+});
+
+test("buildTopics: 止まった話題にほかの番（/close の確認・許可）が在れば、ほかの番が勝つ", () => {
+  const result = buildTopics(
+    input([
+      seed("ch:1", { ...stoppedSeed("max_turns", 1), turns: [turn("confirm", 5)] }),
+      seed("ch:2", { ...stoppedSeed("failed", 1), turns: [turn("permission", 6)] }),
+    ]),
+  );
+  const of = (id: string) => result.topics.find((item) => item.id === id)!;
+  assert.equal(of("ch:1").turn?.kind, "confirm");
+  assert.equal(of("ch:2").turn?.kind, "permission");
+  assert.equal(result.turns, 2);
+});
+
+test("buildTopics: 並びは時間切れの在る許可が先、止まった話題は since（最後の agent の行の時刻）の古い順", () => {
+  const result = buildTopics(
+    input([
+      seed("ch:1", { activityAt: at(9), ...stoppedSeed("max_turns", 8) }),
+      seed("ch:2", { activityAt: at(2), ...stoppedSeed("failed", 2) }),
+      seed("ch:3", { activityAt: at(1), turns: [turn("permission", 7, 30)] }),
+    ]),
+  );
+  assert.deepEqual(result.turnIds, ["ch:3", "ch:2", "ch:1"]);
+  assert.deepEqual(result.topics.map((item) => item.id), ["ch:3", "ch:2", "ch:1"]);
+});
+
+test("topicListRows: 上限・失敗で止まった番の話題は stopped の行で turn を付けない。counts.your_turn + その行の数 = result.turns", () => {
+  const result = buildTopics(
+    input(
+      [
+        seed("ch:1", { activityAt: at(3), ...stoppedSeed("max_turns", 3) }),
+        seed("ch:2", { activityAt: at(2), ...stoppedSeed("failed", 2) }),
+        seed("ch:3", { activityAt: at(1), turns: [turn("question", 1)] }),
+        seed("ch:4", { activityAt: at(4), ...stoppedSeed("aborted", 4) }),
+      ],
+      { rightHands: [{ id: "ch:10", guildId: "guild-1", title: "右腕", last: null, link: "https://x", turns: [turn("confirm", 0)] }] },
+    ),
+  );
+  const rows = topicListRows(result, LIST_OPTIONS);
+  const of = (id: string) => rows.topics.find((row) => row.channel_id === id)!;
+  assert.deepEqual(
+    ["1", "2", "3", "4", "10"].map((id) => [id, of(id).state, "turn" in of(id)]),
+    [
+      ["1", "stopped", false],
+      ["2", "stopped", false],
+      ["3", "your_turn", true],
+      ["4", "stopped", false],
+      ["10", "your_turn", true],
+    ],
+  );
+  assert.deepEqual(rows.counts, { your_turn: 2, running: 0, queued: 0, stopped: 3, total: 5 });
+  const stoppedTurns = result.topics.filter((item) => item.mark === "turn" && (item.turn?.kind === "max_turns" || item.turn?.kind === "failed")).length;
+  assert.equal(stoppedTurns, 2);
+  assert.equal(rows.counts.your_turn + stoppedTurns, result.turns);
+});
+
 test("buildTopics: 完了の話題は種の queued が true でも queued: false", () => {
   const result = buildTopics(input([seed("ch:1", { queued: true, state: "done" }), seed("ch:2", { queued: true })], { done: "general" }));
   const of = (id: string) => result.topics.find((item) => item.id === id)!;
@@ -665,7 +775,7 @@ test("buildTopics: 完了の話題は種の queued が true でも queued: false
 });
 
 test("topicListRows: 作業中・順番待ちの行には ended・took_min を付けない（前のターンの値）。止まった・idle の行には付く", () => {
-  const agent = { lastAgent: { id: 10, outcome: "done" as const, durationMs: 90_000 }, lastOwnerId: 11 };
+  const agent = { lastAgent: { id: 10, at: at(0), outcome: "done" as const, durationMs: 90_000 }, lastOwnerId: 11 };
   const result = buildTopics(
     input([
       seed("ch:1", { activityAt: at(5), ...agent, running: true, byRightHand: true }),
