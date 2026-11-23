@@ -2597,9 +2597,16 @@ test("web components: 行（.c-msg）と本文の箱（.c-bubble）を、どの�
   }
 });
 
-test("web components: 会話のコードは文中も段も地が --muted で、段は 1px の --border の線で囲む。c-talk.css は吹き出しの変数（--bubble-*・--c-bubble-r・--c-bubble-tail）と右寄せを使わない", () => {
+test("web components: 会話のコードは文中も段も地が --muted で、段は線を持たない（border を書かない。書くなら 0）。c-talk.css は吹き出しの変数（--bubble-*・--c-bubble-r・--c-bubble-tail）と右寄せを使わない", () => {
   for (const selector of [".c-md-code", ".c-md-pre"]) assert.ok(talkRule(selector).some((r) => r.decls.includes("background: var(--muted)")), `${selector} の地`);
-  assert.ok(talkRule(".c-md-pre").some((r) => r.decls.includes("border: var(--border-width) solid var(--border)")), ".c-md-pre の線");
+  for (const rule of talkRule(".c-md-pre")) {
+    for (const decl of rule.decls) {
+      const [prop, ...rest] = decl.split(":");
+      const name = prop!.trim();
+      if (!name.startsWith("border") || name === "border-radius") continue;
+      assert.equal(rest.join(":").trim(), "0", `.c-md-pre の線: ${decl}`);
+    }
+  }
   const src = stripCssComments(read("c-talk.css"));
   for (const word of ["flex-end", "--bubble-", "--c-bubble-r", "--c-bubble-tail"]) assert.ok(!src.includes(word), `c-talk.css に ${word}`);
 });
