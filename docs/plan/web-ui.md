@@ -302,7 +302,7 @@ v1 §1 の事実（静的サーバーの `allowedLogin`、Tailscale KB の `Tail
 | `name` / `short_name` | `self-agent` / `self-agent` | 表示名は 1 つ。ホームでは 12 字までしか出ない |
 | `id` / `start_url` / `scope` | `/` / `/` / `/` | hash のルーティングなので `/` だけ。`/login` は scope の中でもよい（302 で戻る）。M8 からも値は `/` のままで、開く物が新しい殻になった（`/static/classic.html` も scope の中） |
 | `display` | `standalone` | ブラウザの枠を消す。`fullscreen` にしない（ステータスバーが消えると時計が見えない） |
-| `background_color` | `#0b0d14` | 起動の一瞬の地。既定のダークの `--bg`（GUIDELINES §2.1） |
+| `background_color` | `#05060a` | 起動の一瞬の地。既定のダークの `--bg`（GUIDELINES §2.1。2026-11-23 に `#0b0d14` から台の色にした。#463。`test/web-static.test.ts` が tokens.css と同じ値か見る） |
 | `theme_color` | `#11141c` | タイトルバーの `--surface`（ダーク）。ライトは meta で上書き（§11.2） |
 | `lang` / `dir` | `ja` / `ltr` | |
 | `orientation` | 書かない | 固定しない |
