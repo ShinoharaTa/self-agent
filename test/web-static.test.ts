@@ -11505,8 +11505,10 @@ test("web static: 新しい殻の板（歯車の板 .v3-sheet・始める板 .v3
   const css = read("shell.css").replace(/\/\*[\s\S]*?\*\//g, "");
   const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ sel: m[1]!.trim().replace(/\s+/g, " "), body: m[2]!.trim() }));
   for (const sel of [".v3-sheet", ".v3-start"]) {
-    const own = rules.filter((r) => r.sel.split(",").map((x) => x.trim()).includes(sel));
-    assert.ok(own.some((r) => /(?:^|;)\s*border: 0;/.test(r.body)), sel);
+    // 板そのものを宛てる規則（.v3-sheet[open]・.v3[data-deck] .v3-sheet の形も。.v3-sheet-head など中の物は別）
+    const self = new RegExp(`(?:^|[\\s>+~])${sel.replace(".", "\\.")}(?:\\[[^\\]]*\\]|:[a-z-]+(?:\\([^)]*\\))?)*$`);
+    const own = rules.filter((r) => r.sel.split(",").some((x) => self.test(x.trim())));
+    assert.ok(own.some((r) => r.sel === sel && /(?:^|;)\s*border: 0;/.test(r.body)), sel);
     for (const r of own) {
       for (const decl of r.body.split(";").map((d) => d.trim()).filter((d) => d !== "")) {
         const prop = decl.slice(0, decl.indexOf(":")).trim();

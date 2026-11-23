@@ -4851,6 +4851,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           )),
         );
         if (await page.evaluate(() => document.querySelectorAll("#v3-list .c-group").length === 0)) problems.push("一覧に群が無い（群の間の線を確かめられない）");
+        // 番の行（.c-turn）を描くのはスマホの形（広い幅は件数のボタンだけ）。スマホで 0 個なら上の検査が空振りしている
+        if (vp === "phone" && (await page.evaluate(() => document.querySelectorAll("#v3-list .c-turn").length === 0))) problems.push("一覧に番の行が無い（番の行の間の線を確かめられない）");
         // 絞り込み欄の箱の左端は一覧の列の左から 16（スマホ・PC。流れの列は「探す」の板を開くと絞り込み欄が出ている）
         if (vp !== "tablet") {
           const deck = await deckOn(page);
