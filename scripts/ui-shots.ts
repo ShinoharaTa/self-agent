@@ -973,6 +973,13 @@ function talkProblems({ demos, max, owner: ownerShape, need, fontSize, label }: 
     for (const side of ["Top", "Right", "Bottom", "Left"] as const) {
       if (cs[`border${side}Width`] !== "0px") say(`${nameOf(el)} のコードの段の ${side} の枠 ${cs[`border${side}Width`]}。0px（線なし）のはず`);
     }
+    // 枠の代わりの線（内側の影・outline）も持たない。区切りは面だけなので、下の地と同じ色なら見分けられない
+    if (cs.boxShadow !== "none") say(`${nameOf(el)} のコードの段の影 ${cs.boxShadow}。none のはず`);
+    if (cs.outlineStyle !== "none") say(`${nameOf(el)} のコードの段の outline ${cs.outlineStyle}。none のはず`);
+    let up = el.parentElement;
+    while (up !== null && clear(getComputedStyle(up).backgroundColor)) up = up.parentElement;
+    const under = up === null ? null : getComputedStyle(up).backgroundColor;
+    if (under === null || under === cs.backgroundColor) say(`${nameOf(el)} のコードの段の面が下の地（${String(under)}）と同じ色`);
   }
   // D. 空振りの守り（見る物が足りなければ落とす）
   for (const key of ["agent", "owner", "pre"] as const) if (counts[key] < need[key]) say(`${key} の本文（コードの段）が ${counts[key]} 個。${need[key]} 個以上のはず`);
