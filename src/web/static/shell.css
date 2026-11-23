@@ -303,11 +303,12 @@
  * ===== 流れの列（D1。docs/plan/web-ui-deck.md §4）: 640px 以上で入口が在る間だけ shell.js が data-deck（見える列の数）・data-seat・data-find を書く =====
  * 上の帯 + 3 つの列 + 席（列 2 を開いたときだけ）。一覧は「探す」の板として重ねる。幅の段は足さない（数は shell.js が c-deck.js の deckFit で測る）
  */
-/* 落ち先（入口が無いとき）では出さない。下のバーの入れ物（.v3-foot）はスマホの流れの列（data-seat="full"。D2）だけ */
+/* 落ち先（入口が無いとき）では出さない。下のバーの入れ物（.v3-foot）はスマホの流れの列（data-seat="full"。D2）だけ、右腕の丸の入れ物（.v3-orb。D6）は広い幅（side・fold）だけ */
 .v3-band,
 .v3-deck,
 .v3-find-backdrop,
-.v3-foot {
+.v3-foot,
+.v3-orb {
   display: none;
 }
 
@@ -346,6 +347,33 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+}
+
+/*
+ * 右腕の丸（D6 の PR-1b）: 列の場所（格子の 1 列目・2 行目）の右下に重ねる。席が閉じていれば画面の右下、開いていれば席のすぐ左の下。
+ * 入れ物は丸の箱より広げない（余白は margin）。position は使わない。スマホ（full）と席だけの幅（下の data-deck="0"）では出さない
+ */
+.v3[data-deck][data-seat="side"] .v3-orb,
+.v3[data-deck][data-seat="fold"] .v3-orb {
+  display: block;
+  grid-column: 1;
+  grid-row: 2;
+  align-self: end;
+  justify-self: end;
+  z-index: var(--z-sash);
+  margin: 0 var(--space-4) calc(var(--space-4) + env(safe-area-inset-bottom, 0px)) 0;
+}
+
+/* 席が閉じている間は画面の右端なので、右の safe-area の分も内へ */
+.v3[data-deck][data-view="list"][data-seat="side"] .v3-orb,
+.v3[data-deck][data-view="list"][data-seat="fold"] .v3-orb {
+  margin-right: calc(var(--space-4) + env(safe-area-inset-right, 0px));
+}
+
+/* 丸の出る形では、列の本体の下に丸の分（丸 + 上下の余白 + 下の safe-area）を空け、一番下まで送った最後の項目を丸に隠さない（スマホ・落ち先は tokens.css の既定のまま） */
+.v3[data-deck][data-seat="side"] .v3-deck,
+.v3[data-deck][data-seat="fold"] .v3-deck {
+  --c-deck-tail: calc(var(--c-orb) + var(--space-4) + var(--space-4) + env(safe-area-inset-bottom, 0px));
 }
 
 .v3[data-deck] .v3-main {
@@ -397,6 +425,11 @@
   grid-column: 1;
 }
 
+/* 席だけの幅では丸を出さない（口は上の帯の［右腕］） */
+.v3[data-deck="0"][data-view="body"] .v3-orb {
+  display: none;
+}
+
 /* 一覧は「探す」の板のときだけ。帯の下の中央に重ねる（一覧の見出しは帯が持つので出さない） */
 .v3[data-deck] .v3-list {
   display: none;
@@ -429,7 +462,7 @@
   background: var(--backdrop);
 }
 
-/* 右腕は重ねる形だけ（畳んだ帯は出さない。口は上の帯の［右腕］、スマホは下のバーの右腕） */
+/* 右腕は重ねる形だけ（畳んだ帯は出さない。口は右下の丸（席だけの幅は上の帯の［右腕］）、スマホは下のバーの右腕） */
 .v3[data-deck][data-hand="closed"] .v3-hand {
   display: none;
 }
