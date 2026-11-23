@@ -5063,7 +5063,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
                 probe.style.color = `var(${v})`;
                 return getComputedStyle(probe).color;
               };
-              const want = { surface: colorOf("--surface"), bench: colorOf("--bg"), muted: colorOf("--muted") };
+              const want = { surface: colorOf("--surface"), ground: colorOf("--bg"), muted: colorOf("--muted") };
               probe.remove();
               const cs = (sel: string): CSSStyleDeclaration | null => {
                 const el = document.querySelector(sel);
@@ -5081,7 +5081,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
               }
               if (main.backgroundColor !== want.surface) say(`席の地 ${main.backgroundColor}（--surface ${want.surface} のはず）`);
               if (ed.backgroundColor !== want.surface) say(`席の中（#ed）の地 ${ed.backgroundColor}（--surface ${want.surface} のはず）`);
-              if (shell.backgroundColor !== want.bench) say(`台の地 ${shell.backgroundColor}（--bg ${want.bench} のはず）`);
+              if (shell.backgroundColor !== want.ground) say(`台の地 ${shell.backgroundColor}（--bg ${want.ground} のはず）`);
               if (top.boxShadow !== "none") say(`見出しの影 ${top.boxShadow}（none のはず）`);
               if (composer.borderTopWidth !== "0px") say(`入力欄の帯の上の線 ${composer.borderTopWidth}（0px のはず）`);
               if (input.backgroundColor !== want.muted) say(`欄の地 ${input.backgroundColor}（--muted ${want.muted} のはず）`);

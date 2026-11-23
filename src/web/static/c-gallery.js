@@ -144,9 +144,9 @@ const SEG_6 = [
 
 function Segments() {
   return html`<${Section} name="segmented" title="切り替え">
-    <div><${SegDemo} items=${SEG_2} first="talk" label="見る物" /></div>
-    <div><${SegDemo} items=${SEG_3} first="list" label="画面" /></div>
-    <div data-demo="seg-6"><${SegDemo} items=${SEG_6} first="talk" label="タブ" /></div>
+    <div class="c-gallery-plate"><${SegDemo} items=${SEG_2} first="talk" label="見る物" /></div>
+    <div class="c-gallery-plate"><${SegDemo} items=${SEG_3} first="list" label="画面" /></div>
+    <div class="c-gallery-plate" data-demo="seg-6"><${SegDemo} items=${SEG_6} first="talk" label="タブ" /></div>
   <//>`;
 }
 

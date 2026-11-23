@@ -66,6 +66,13 @@
   background: var(--surface);
 }
 
+/* 板の上に載る部品（切り替え）の見本の地。本番は見出しの板の上 */
+.c-gallery-plate {
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
 .c-gallery-narrow {
   max-width: var(--c-list-w);
 }
