@@ -4236,7 +4236,8 @@ test("web components: 上限・失敗で止まった話題の番は、列の項�
     ],
     rightHands: [],
   };
-  const items = deck.turnItems(flowOf({ topics }));
+  // 操作を出せる条件（ops・handoff）でも、番の項目は操作を持たない（列の中の［続ける］は置かない決定）
+  const items = deck.turnItems(flowOf({ topics, ops: true, handoff: true }));
   assert.deepEqual(items.map((i) => [i.key, i.kind, i.word, i.place, i.time, i.title, i.summary, i.mark, i.turn, i.target]), [
     ["turn:ch:1", "max_turns", "上限で停止", "A", "ago:S1", "上限", "", "turn", true, "ch:1"],
     ["turn:ch:2", "failed", "失敗", "A", "ago:S2", "失敗", "", "turn", true, "ch:2"],
