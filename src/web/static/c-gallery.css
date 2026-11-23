@@ -145,12 +145,12 @@
   background: var(--surface);
 }
 
-/* 流れの列と上の帯の見本の入れ物（列の幅いっぱい。地は列の間の台と同じ --bench） */
+/* 流れの列と上の帯の見本の入れ物（列の幅いっぱい。地は列の間の台と同じ地（--bg）） */
 .c-gallery-deck {
   box-sizing: border-box;
   width: 100%;
   border: var(--border-width) solid var(--border);
-  background: var(--bench);
+  background: var(--bg);
 }
 
 /* 帯は 640px 以上でだけ出るので、スマホの幅でも縮めずに横に送る（幅は見出しの見本の一番きつい幅と同じ） */

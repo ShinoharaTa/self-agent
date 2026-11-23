@@ -2728,7 +2728,7 @@ test("web static: 新しい殻は上の安全域を .v3 の 1 か所で持ち、
   assert.ok(over.includes("top: env(safe-area-inset-top, 0px);"));
   assert.ok(!over.includes("top: 0;"));
   assert.ok(phoneRule(hand).includes("top: calc(var(--space-8) + env(safe-area-inset-top, 0px));"));
-  assert.equal(css.match(/safe-area-inset-top/g)?.length, 7);
+  assert.equal(css.match(/safe-area-inset-top/g)?.length, 5);
 });
 
 test("web static: 新しい殻のライトのステータスバーの帯は古い殻と同じ決定（standalone のときだけ --primary）", () => {
@@ -2739,23 +2739,21 @@ test("web static: 新しい殻のライトのステータスバーの帯は古�
   const block = css.slice(at, css.indexOf("\n}", at) + 2);
   const flat = block.replace(/\s+/g, " ");
   assert.ok(flat.includes(`.v3:is(:root[data-theme="light"] *) { background: ${band} var(--bg); }`), flat);
-  // 流れの列の形（data-deck）は台（--bench）。地をまとめて書く上の規則が .v3[data-deck]（shell.css）に勝つので、同じ場所に data-deck の版を置く（D3）
-  assert.ok(flat.includes(`.v3[data-deck]:is(:root[data-theme="light"] *) { background: ${band} var(--bench); }`), flat);
+  // 流れの列の形（data-deck）の台は地（--bg）と同じ色なので、data-deck の版を置かない
+  assert.ok(!block.includes("[data-deck]"), flat);
   assert.ok(
-    flat.includes(
-      `@media (prefers-color-scheme: light) { .v3:is(:root:not([data-theme]) *) { background: ${band} var(--bg); } .v3[data-deck]:is(:root:not([data-theme]) *) { background: ${band} var(--bench); } }`,
-    ),
+    flat.includes(`@media (prefers-color-scheme: light) { .v3:is(:root:not([data-theme]) *) { background: ${band} var(--bg); } }`),
     flat,
   );
-  // 地（background）を書く .v3 の規則は、どれも data-deck の版を持つ（持たないと、その条件でだけ台が --bg に戻る）
-  const grounds = [...css.matchAll(/([^{}@]+)\{([^{}]*)\}/g)]
-    .map((m) => ({ sel: m[1]!.trim().replace(/\s+/g, " "), body: m[2]! }))
-    .filter((r) => /^\.v3(?::is\(.*\))?$/.test(r.sel) && /(?:^|;)\s*background\s*:/.test(r.body));
+  // 地（background）を書く .v3 の規則は 3 つで、どれも値が --bg で終わる
+  const rules = [...css.matchAll(/([^{}@]+)\{([^{}]*)\}/g)].map((m) => ({ sel: m[1]!.trim().replace(/\s+/g, " "), body: m[2]! }));
+  const grounds = rules.filter((r) => /^\.v3(?::is\(.*\))?$/.test(r.sel) && /(?:^|;)\s*background\s*:/.test(r.body));
   assert.equal(grounds.length, 3);
-  for (const r of grounds) {
-    const deck = r.sel.replace(/^\.v3/, ".v3[data-deck]");
-    assert.ok(css.replace(/\s+/g, " ").includes(`${deck} { `), deck);
-  }
+  for (const r of grounds) assert.match(r.body, /(?:^|;)\s*background\s*:[^;]*\bvar\(--bg\);/, r.sel);
+  // 殻そのもの（.v3[data-deck]。:is(...) 付きも）の規則は background を書かない（書くと、その条件でだけ台が地と別の色になる）
+  const decks = rules.filter((r) => /^\.v3\[data-deck\](?::is\(.*\))?$/.test(r.sel));
+  assert.ok(decks.length >= 1);
+  for (const r of decks) assert.doesNotMatch(r.body, /(?:^|;)\s*background(?:-color)?\s*:/, r.sel);
   assert.ok(at < css.indexOf("@media (max-width: 639px)"));
   assert.ok(!block.includes("dark"));
   // 古い殻（app.css の .wb-titlebar）と同じ値
@@ -11522,15 +11520,17 @@ test("web static: 下のバーの入れ物（.v3-foot。D2）は素の display: 
   assert.doesNotMatch(read("app.css"), /v3-foot|c-foot/);
 });
 
-test("web static: 流れの列の地は台（.v3[data-deck] に --bench）、席（.v3[data-deck] .v3-main）とその中の .ed と右腕の枠（.v3[data-deck] .v3-hand）は板（--surface）。落ち先の .v3・.v3-hand は --bg のまま", () => {
+test("web static: 流れの列の台は地と同じ色（.v3[data-deck] は background を書かず .v3 の --bg を継ぐ。shell.css に --bench は無い）、席（.v3[data-deck] .v3-main）とその中の .ed と右腕の枠（.v3[data-deck] .v3-hand）は板（--surface）。落ち先の .v3・.v3-hand は地（--bg）", () => {
   const css = read("shell.css").replace(/\/\*[\s\S]*?\*\//g, "");
   const bodies = (sel: string): string[] =>
     [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter((m) => m[1]!.trim().replace(/\s+/g, " ") === sel).map((m) => m[2]!.trim());
-  assert.ok(bodies(".v3[data-deck]").some((b) => /(?:^|;)\s*background: var\(--bench\);/.test(b)), ".v3[data-deck]");
+  assert.ok(bodies(".v3[data-deck]").length >= 1, ".v3[data-deck]");
+  for (const b of bodies(".v3[data-deck]")) assert.doesNotMatch(b, /(?:^|;)\s*background(?:-color)?\s*:/, ".v3[data-deck]");
+  assert.ok(!read("shell.css").includes("--bench"), "shell.css に --bench が在る");
   assert.ok(bodies(".v3[data-deck] .v3-main").some((b) => /(?:^|;)\s*background: var\(--surface\);/.test(b)), ".v3[data-deck] .v3-main");
   assert.ok(bodies(".v3[data-deck] .ed").some((b) => /(?:^|;)\s*background: var\(--surface\);/.test(b)), ".v3[data-deck] .ed");
   assert.ok(bodies(".v3[data-deck] .v3-hand").some((b) => /(?:^|;)\s*background: var\(--surface\);/.test(b)), ".v3[data-deck] .v3-hand");
-  // 落ち先（入口に流れの列が無い）の地は今のまま
+  // 落ち先（入口に流れの列が無い）の地は地（--bg）
   assert.ok(bodies(".v3").some((b) => /(?:^|;)\s*background: var\(--bg\);/.test(b)), ".v3");
   assert.ok(bodies(".v3-hand").some((b) => /(?:^|;)\s*background: var\(--bg\);/.test(b)), ".v3-hand");
 });

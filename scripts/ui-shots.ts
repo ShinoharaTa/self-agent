@@ -5052,7 +5052,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           // 開いている番の項目の地（D3）は、押した後の指の hover（--muted）を外して測る。撮る前に指を押した所へ戻す（絵は今までと同じ状態）
           await page.mouse.move(0, 0);
           problems.push(...(await deckLines(page, vp, "席")));
-          // 席は 1 枚の板（D3 の PR-1）: 席の地は --surface・台は --bench・見出しの下と入力欄の帯の上に線が無い・欄の地は --muted
+          // 席は 1 枚の板（D3 の PR-1）: 席の地は --surface・台は地（--bg）・見出しの下と入力欄の帯の上に線が無い・欄の地は --muted
           problems.push(
             ...(await page.evaluate(() => {
               const out: string[] = [];
@@ -5063,7 +5063,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
                 probe.style.color = `var(${v})`;
                 return getComputedStyle(probe).color;
               };
-              const want = { surface: colorOf("--surface"), bench: colorOf("--bench"), muted: colorOf("--muted") };
+              const want = { surface: colorOf("--surface"), bench: colorOf("--bg"), muted: colorOf("--muted") };
               probe.remove();
               const cs = (sel: string): CSSStyleDeclaration | null => {
                 const el = document.querySelector(sel);
@@ -5081,7 +5081,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
               }
               if (main.backgroundColor !== want.surface) say(`席の地 ${main.backgroundColor}（--surface ${want.surface} のはず）`);
               if (ed.backgroundColor !== want.surface) say(`席の中（#ed）の地 ${ed.backgroundColor}（--surface ${want.surface} のはず）`);
-              if (shell.backgroundColor !== want.bench) say(`台の地 ${shell.backgroundColor}（--bench ${want.bench} のはず）`);
+              if (shell.backgroundColor !== want.bench) say(`台の地 ${shell.backgroundColor}（--bg ${want.bench} のはず）`);
               if (top.boxShadow !== "none") say(`見出しの影 ${top.boxShadow}（none のはず）`);
               if (composer.borderTopWidth !== "0px") say(`入力欄の帯の上の線 ${composer.borderTopWidth}（0px のはず）`);
               if (input.backgroundColor !== want.muted) say(`欄の地 ${input.backgroundColor}（--muted ${want.muted} のはず）`);
