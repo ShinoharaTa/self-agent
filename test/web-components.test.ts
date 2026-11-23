@@ -2494,6 +2494,13 @@ test("web components: 会話の行は吹き出しでない（docs/plan/web-ui-de
   assert.ok(talkRule(".c-talk").some((r) => r.decls.includes("gap: var(--space-4)")), ".c-talk の gap");
 });
 
+test("web components: 会話のコードは文中も段も地が --muted で、段は 1px の --border の線で囲む。c-talk.css は吹き出しの変数（--bubble-*・--c-bubble-r・--c-bubble-tail）と右寄せを使わない", () => {
+  for (const selector of [".c-md-code", ".c-md-pre"]) assert.ok(talkRule(selector).some((r) => r.decls.includes("background: var(--muted)")), `${selector} の地`);
+  assert.ok(talkRule(".c-md-pre").some((r) => r.decls.includes("border: var(--border-width) solid var(--border)")), ".c-md-pre の線");
+  const src = stripCssComments(read("c-talk.css"));
+  for (const word of ["flex-end", "--bubble-", "--c-bubble-r", "--c-bubble-tail"]) assert.ok(!src.includes(word), `c-talk.css に ${word}`);
+});
+
 test("web components: 会話の字は板（--surface）の上で 4.5 以上（返事は地なしの文。名前・時刻・結果の文・リンクも）", () => {
   // --muted の上の --text（自分の発言の面とコードの地）は入力欄（.c-input）の検査が見る
   const blocks = parseCss(read("tokens.css")).filter((r) => r.body.includes("--surface:") && r.body.includes("--text-muted:"));

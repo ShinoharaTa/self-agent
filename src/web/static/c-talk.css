@@ -1,4 +1,4 @@
-/* 会話の行（c-talk.js。docs/plan/web-ui-components.md §6 の K4）。寸法は tokens.css の --c-*、色は tokens.css の変数（地は --bubble-*）、字と間隔は base.css の目盛りだけ。動きは実行中の輪だけ */
+/* 会話の行（c-talk.js。docs/plan/web-ui-components.md §6 の K4）。寸法は tokens.css の --c-*、色は tokens.css の変数（返事は地なし。自分の発言の面とコードの地は --muted）、字と間隔は base.css の目盛りだけ。動きは実行中の輪だけ */
 
 .c-talk {
   display: flex;
@@ -89,18 +89,20 @@
 
 .c-md-code {
   padding: 0 var(--space-1);
-  background: var(--bubble-inset);
+  background: var(--muted);
   border-radius: var(--radius-sm);
   font-family: var(--font-mono);
   font-size: var(--font-sm);
 }
 
+/* コードの段は地 --muted に線を足す（線が無いと自分の発言の面と同じ箱に見える） */
 .c-md-pre {
   box-sizing: border-box;
   margin: 0;
   max-width: 100%;
   padding: var(--space-2) var(--space-3);
-  background: var(--bubble-inset);
+  background: var(--muted);
+  border: var(--border-width) solid var(--border);
   border-radius: var(--radius-md);
   font-family: var(--font-mono);
   font-size: var(--font-sm);
