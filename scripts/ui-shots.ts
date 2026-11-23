@@ -967,12 +967,11 @@ function talkProblems({ demos, max, owner: ownerShape, need, fontSize, label }: 
     const cs = getComputedStyle(el);
     const kind = el.classList.contains("c-md-pre") ? "コードの段" : "文中のコード";
     const muted = colorOf(el, "var(--muted)");
-    const line = colorOf(el, "var(--border)");
     if (cs.backgroundColor !== muted) say(`${nameOf(el)} の${kind}の地 ${cs.backgroundColor}。--muted（${muted}）のはず`);
     if (!el.classList.contains("c-md-pre")) continue;
     if (inRoot(el)) counts.pre++;
     for (const side of ["Top", "Right", "Bottom", "Left"] as const) {
-      if (cs[`border${side}Width`] !== "1px" || cs[`border${side}Color`] !== line) say(`${nameOf(el)} のコードの段の ${side} の枠 ${cs[`border${side}Width`]} ${cs[`border${side}Color`]}。1px の --border（${line}）のはず`);
+      if (cs[`border${side}Width`] !== "0px") say(`${nameOf(el)} のコードの段の ${side} の枠 ${cs[`border${side}Width`]}。0px（線なし）のはず`);
     }
   }
   // D. 空振りの守り（見る物が足りなければ落とす）
