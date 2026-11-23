@@ -646,7 +646,7 @@
   }
 
   /**
-   * 押せない（inert）所を 1 か所で決める: 重ねた右腕の間は一覧・列 2・上の帯・列、「探す」の板の間は上の帯・列・列 2（一覧は板として前に出る）。
+   * 押せない（inert）所を 1 か所で決める: 重ねた右腕の間は一覧・列 2・上の帯・右腕の丸・列、「探す」の板の間は上の帯・右腕の丸・列・列 2（一覧は板として前に出る）。
    * 呼ぶのは applyHand・openFind・closeFind・fitDeck（流れの列でなくなったとき）
    */
   function applyInert() {
@@ -657,7 +657,7 @@
       if (n) n.inert = on;
     };
     set("v3-list", over);
-    for (const id of ["v3-band", "v3-deck", "v3-foot", "v3-main"]) set(id, over || find);
+    for (const id of ["v3-band", "v3-orb", "v3-deck", "v3-foot", "v3-main"]) set(id, over || find);
   }
 
   /** 開閉と形を属性に書き、見えていれば描く（見えていない間は高さが測れないので、属性を書いた後で描く） */
@@ -888,13 +888,13 @@
       if (SA.list) SA.list.focusHand();
       return;
     }
-    // スマホは見出しの [右腕]、流れの列は上の帯の［右腕］、広い幅は畳んだ帯
+    // スマホは見出しの [右腕]、流れの列は右腕の丸（無ければ上の帯の［右腕］）、広い幅は畳んだ帯
     if (phone()) {
       if (SA.top) SA.top.focus("hand");
       return;
     }
     if (deckOn()) {
-      SA.deck.focusBand("hand");
+      if (!(typeof SA.deck.focusOrb === "function" && SA.deck.focusOrb())) SA.deck.focusBand("hand");
       return;
     }
     target = $("v3-hand-show");
@@ -941,7 +941,7 @@
     });
     // 下のバーは毎回（件数は印と別に変わる）
     renderBottom(mark);
-    // 見出しの [右腕] の印（スマホ）と、上の帯の［右腕］の印と開閉（流れの列）
+    // 見出しの [右腕] の印（スマホ）と、右腕の丸か上の帯の［右腕］の印と開閉（流れの列）
     renderBar();
     renderBand();
   }
@@ -1772,6 +1772,7 @@
       applyInert();
       S.deckCols = null;
       S.deckCurrent = null;
+      renderOrb();
       renderBottom(handMark());
       return;
     }
@@ -1818,14 +1819,42 @@
     more: (opener) => openDeckMore(opener),
   };
 
-  /** 上の帯（描くのは入口 c-app.js。流れの列の間だけ）。点は接続の Bot、右腕は印と開閉（スマホの形は［右腕］を出さない。口は下のバー）。スマホは今の列（page）の名前と数を題に出す */
+  /** 右腕の丸の押した先（帯の［右腕］と同じ。開いて入力欄に焦点） */
+  const ORB_ON = { hand: (opener) => openHand(opener, true) };
+
+  /**
+   * 右腕の丸（D6。描くのは入口 c-app.js）。広い幅の流れの列で、席だけの幅（列が隠れる）でない間だけ描き、ほか（スマホ・席だけの幅・流れの列でない）は空にする。
+   * 色は席が閉じていれば accent、開いていれば静かな顔。描けたら true（帯に［右腕］を出さない）、空にした・入口に口が無い・描けなければ false
+   */
+  function renderOrb() {
+    if (!SA.deck || typeof SA.deck.drawOrb !== "function") return false;
+    if (!deckOn() || phone() || (S.deckCols === 0 && S.view === "body")) {
+      SA.deck.drawOrb(null);
+      return false;
+    }
+    return (
+      SA.deck.drawOrb({
+        mark: handMark(),
+        tone: S.view === "body" ? "quiet" : "accent",
+        open: S.handMode === "over" && S.handOver,
+        controls: "v3-hand",
+        on: ORB_ON,
+      }) === true
+    );
+  }
+
+  /**
+   * 上の帯（描くのは入口 c-app.js。流れの列の間だけ）。点は接続の Bot、右腕は印と開閉（スマホの形は［右腕］を出さない。口は下のバー）。スマホは今の列（page）の名前と数を題に出す。
+   * 先に右腕の丸を描き、描けた間は帯に［右腕］を出さない（hand: null。席だけの幅・入口が丸を描けないときだけ出す）
+   */
   function renderBand() {
     if (!deckOn()) return;
+    const orb = renderOrb();
     const bot = connBot();
     SA.deck.drawBand({
       variant: phone() ? "phone" : "wide",
       conn: bot ? { tone: bot.connected ? "ok" : "bad", label: bot.label } : null,
-      hand: { mark: handMark(), open: S.handMode === "over" && S.handOver },
+      hand: orb ? null : { mark: handMark(), open: S.handMode === "over" && S.handOver },
       controls: "v3-hand",
       page: phone() ? S.deckPage : undefined,
       on: BAND_ON,

@@ -474,8 +474,8 @@ function bandHandName(mark) {
 }
 
 /**
- * 上の帯。conn は { tone: "ok"|"bad", label } か null（状態をまだ読めていない）、hand は { mark, open }、controls は右腕のボタンの aria-controls。
- * variant が phone（スマホ。D2）なら［右腕］を出さず（下のバーの物）、［始める］は字のないボタン。ほかは今の形。
+ * 上の帯。conn は { tone: "ok"|"bad", label } か null（状態をまだ読めていない）、hand は { mark, open } か null、controls は右腕のボタンの aria-controls。
+ * variant が phone（スマホ。D2）なら［右腕］を出さず（下のバーの物）、［始める］は字のないボタン。ほかは今の形。hand が無ければ［右腕］を出さない（広い幅の口は右下の丸。D6）。
  * title は { name, count: number|null, tone: "warning"|undefined } か null（今いる列）。phone で name が空でないときだけ「self-agent」の代わりに列の名前と数を出す（列の見出しは出さない）。
  * on: { status(), find(opener), hand(opener), start(opener), more(opener) }
  */
@@ -502,7 +502,7 @@ export function DeckBand({ variant, conn, hand, controls, title, on }) {
       : html`<span class="c-band-name" key="name">self-agent</span>`}
     <span class="c-band-ops" key="ops">
       <span class="c-band-act" data-act="find"><${Button} kind="ghost" size="sm" icon="search" label="探す" onPress=${(event) => on.find(event.currentTarget)} /></span>
-      ${phone
+      ${phone || !hand
         ? null
         : html`<button class="c-band-hand" type="button" data-act="hand" aria-label=${bandHandName(mark)} aria-controls=${filled(controls) ? controls : undefined}
             aria-expanded=${hand && hand.open ? "true" : "false"} onClick=${(event) => on.hand(event.currentTarget)}>

@@ -10,9 +10,10 @@
 // 流れの列と上の帯（D1）は flows.js が SA.deck.draw(state)・shell.js が SA.deck.drawBand(state) で押し込む。幅の計算（SA.deck.fit）は c-deck.js の deckFit
 // スマホの流れの列の下のバー（D2）は #c-foot-root が在るときだけ SA.deck.drawBar(bar)・SA.deck.page(id)・SA.deck.focusBar(act)（指で送った列は bar.on.paged(id) で知らせる）
 // スマホの上の帯の題（今いる列の名前と数）は drawBand の state.page の列を最後に描けた列のモデルから引き、列を描き直して題が変われば帯も描き直す
+// 広い幅の右腕の丸（D6）は #c-orb-root が在るときだけ shell.js が SA.deck.drawOrb(state) で押し込み、焦点は SA.deck.focusOrb()
 import { html, render } from "./c-lib.js";
 import { TopicList, listKey, listModel } from "./c-list.js";
-import { BottomBar, TopBar } from "./c-shell.js";
+import { BottomBar, HandOrb, TopBar } from "./c-shell.js";
 import { talkMouth } from "./c-talk.js";
 import { composerMouth } from "./c-composer.js";
 import { cardsMouth } from "./c-cards.js";
@@ -389,6 +390,8 @@ const deckRoot = document.getElementById("c-deck-root");
 const bandRoot = document.getElementById("c-band-root");
 /** スマホの流れの列の下のバーの入れ物（D2）。無ければ null（下のバーの口を置かない。shell.js はスマホを今の殻のままにする） */
 const footRoot = document.getElementById("c-foot-root");
+/** 広い幅の右腕の丸の入れ物（D6）。無ければ null（丸の口は在るが描けない = false。shell.js は帯の［右腕］を出す） */
+const orbRoot = document.getElementById("c-orb-root");
 
 if (deckRoot && bandRoot) {
   /** 最後に描けた列のモデル（下のバーの列の名前と番の数に使う） */
@@ -600,8 +603,35 @@ if (deckRoot && bandRoot) {
     if (lastBar && lastBar.on && typeof lastBar.on.paged === "function") lastBar.on.paged(near);
   };
 
+  /**
+   * 右腕の丸を描く（D6。広い幅の流れの列の右下）。state は { mark, tone, open, controls, on: { hand(opener) } } か null（空にする）。
+   * 描けた（null で空にできた）なら true、入れ物が無い・描くのに失敗したら false（shell.js は帯の［右腕］を出す）。
+   * 描き直しで丸の焦点が消えたら（null で空にした）、帯の［探す］へ
+   */
+  const drawOrb = (state) => {
+    if (!orbRoot) return false;
+    const before = document.activeElement;
+    const inside = !!before && orbRoot.contains(before);
+    try {
+      render(state === null ? null : html`<${HandOrb} mark=${state.mark} tone=${state.tone} open=${state.open} controls=${state.controls} on=${state.on} />`, orbRoot);
+    } catch (error) {
+      console.error("[web] orb draw failed", error instanceof Error ? error.name : "");
+      return false;
+    }
+    if (inside && !document.contains(before) && !focusOrb()) focusBand("find");
+    return true;
+  };
+
+  /** 右腕の丸にフォーカス。丸が無ければ false */
+  const focusOrb = () => {
+    const b = orbRoot ? orbRoot.querySelector('button[data-act="hand"]') : null;
+    if (!b) return false;
+    b.focus({ preventScroll: true });
+    return true;
+  };
+
   window.SA = window.SA || {};
-  window.SA.deck = { draw: drawDeck, drawBand, fit: deckFit, focusItem, focusBand };
+  window.SA.deck = { draw: drawDeck, drawBand, fit: deckFit, focusItem, focusBand, drawOrb, focusOrb };
   if (footRoot) {
     deckRoot.addEventListener("scroll", onScroll, { capture: true, passive: true });
     Object.assign(window.SA.deck, { drawBar, page, focusBar });

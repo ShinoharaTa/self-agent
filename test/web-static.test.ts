@@ -2682,7 +2682,8 @@ test("web static: 新しい殻の CSS の幅の段は 639 だけ。流れの列�
     if (sel === ":root") continue;
     for (const part of sel.split(",")) assert.match(part.trim(), /^\.v3/, sel);
   }
-  assert.equal(css.match(/^\s*--[a-z0-9-]+:/gm)?.length, 2);
+  // 変数を書くのは :root の 2 つと、丸の出る形の列の下の余白（--c-deck-tail。D6）の上書き 1 つだけ
+  assert.deepEqual(css.match(/^\s*--[a-z0-9-]+:/gm)?.map((d) => d.trim()), ["--v3-list-w:", "--v3-hand-w:", "--c-deck-tail:"]);
 });
 
 test("web static: 新しい殻の ≤639px のナレッジは一覧と中身を縦に並べ、見出しの検索も出す（app.css の古い殻の規則は残す。M8-0）", () => {
@@ -2980,7 +2981,9 @@ type TopState = {
 };
 const deckUrl = new URL("../src/web/static/c-deck.js", import.meta.url).href;
 const { deckFit, DECK } = (await import(deckUrl)) as { deckFit: (width: number, seatOpen: boolean) => { cols: number; side: boolean; seat: number; colW: number }; DECK: Record<string, number> };
-type BandState = { variant?: string; page?: string; conn: { tone: string; label: string } | null; hand: { mark: string | null; open: boolean }; controls: string; on: Record<string, (opener?: unknown) => unknown> };
+type BandState = { variant?: string; page?: string; conn: { tone: string; label: string } | null; hand: { mark: string | null; open: boolean } | null; controls: string; on: Record<string, (opener?: unknown) => unknown> };
+/** 広い幅の右腕の丸（SA.deck.drawOrb の state。D6） */
+type OrbState = { mark: string | null; tone: string; open: boolean; controls: string; on: { hand: (opener: unknown) => unknown } };
 /** スマホの流れの列の下のバー（SA.deck.drawBar の bar。D2） */
 type DeckBarState = { page: string; hand: string | null; controls: string; on: { page: (id: string) => unknown; paged: (id: string) => unknown; hand: (opener: unknown) => unknown } };
 const shellUrl = new URL("../src/web/static/c-shell.js", import.meta.url).href;
@@ -3032,6 +3035,9 @@ function loadShell(
     deck?: boolean;
     noFoot?: boolean;
     deckBar?: (bar: DeckBarState | null) => boolean;
+    /** 右腕の丸（D6）: noOrb なら入口に drawOrb・focusOrb を置かない（古い入口）。orbDraw は drawOrb の答え（既定 true） */
+    noOrb?: boolean;
+    orbDraw?: (st: OrbState | null) => boolean;
   } = {},
 ) {
   // width は .v3 の幅（右腕の形を決める。既定 1,400 = 列。一覧は 280px）
@@ -3101,6 +3107,13 @@ function loadShell(
     bandRoot.append(b);
   }
   band.append(bandRoot);
+  // 右腕の丸の入れ物（opts.deck のときだけ。中は代わりのボタン 1 つ。描けた丸が在る間だけ SA.deck.focusOrb がそこに焦点を置く）
+  const orb = node("div", "v3-orb", "v3-orb");
+  const orbRoot = node("div", "c-orb-root", "v3-slot");
+  const orbButton = node("button");
+  orbButton.setAttribute("data-act", "hand");
+  orbRoot.append(orbButton);
+  orb.append(orbRoot);
   const deckBox = node("div", "v3-deck", "v3-deck");
   const deckRoot = node("div", "c-deck-root", "v3-slot");
   const itemButton = node("button");
@@ -3119,8 +3132,8 @@ function loadShell(
     footRoot.append(b);
   }
   foot.append(footRoot);
-  if (opts.deck && !opts.noFoot) v3.append(band, list, deckBox, foot, main, hand, backdrop, findBackdrop);
-  else if (opts.deck) v3.append(band, list, deckBox, main, hand, backdrop, findBackdrop);
+  if (opts.deck && !opts.noFoot) v3.append(band, orb, list, deckBox, foot, main, hand, backdrop, findBackdrop);
+  else if (opts.deck) v3.append(band, orb, list, deckBox, main, hand, backdrop, findBackdrop);
   else v3.append(list, main, hand, backdrop);
   const body = node("body");
   body.append(v3, node("dialog", "v3-sheet"));
@@ -3548,6 +3561,8 @@ function loadShell(
     bands: [] as BandState[],
     focusItems: [] as string[],
     focusBands: [] as string[],
+    orbs: [] as Array<OrbState | null>,
+    focusOrbs: 0,
     items: new Set<string>(),
     bars: [] as Array<DeckBarState | null>,
     pages: [] as string[],
@@ -3587,6 +3602,25 @@ function loadShell(
         return true;
       },
     };
+    if (!opts.noOrb) {
+      // 丸が在るのは、最後に描いた state が null でなく描けた間だけ
+      let orbShown = false;
+      const orbDraw = opts.orbDraw;
+      Object.assign(SA.deck as Record<string, unknown>, {
+        drawOrb(st: OrbState | null) {
+          deckSeen.orbs.push(st);
+          const ok = orbDraw ? orbDraw(st) : true;
+          orbShown = ok && st !== null;
+          return ok;
+        },
+        focusOrb() {
+          deckSeen.focusOrbs++;
+          if (!orbShown) return false;
+          orbButton.focus();
+          return true;
+        },
+      });
+    }
     if (!opts.noFoot) {
       const deckBar = opts.deckBar;
       Object.assign(SA.deck as Record<string, unknown>, {
@@ -3703,7 +3737,7 @@ function loadShell(
     press,
     app: SA.app as ShellApp,
     topics: SA.topics as Topics,
-    nodes: { v3, ed, listRoot, headOps, searchBox, sheet: ids.get("v3-sheet")!, list, main, topRoot, topButtons, hand, handEd, handShow, backdrop, bottomRoot, bottomHand, bottomMore, band, bandButtons, deckBox, itemButton, findBackdrop, foot, footButtons },
+    nodes: { v3, ed, listRoot, headOps, searchBox, sheet: ids.get("v3-sheet")!, list, main, topRoot, topButtons, hand, handEd, handShow, backdrop, bottomRoot, bottomHand, bottomMore, band, bandButtons, orb, orbButton, deckBox, itemButton, findBackdrop, foot, footButtons },
     deck: deckSeen,
     flows: flowSeen,
     top,
@@ -8106,13 +8140,16 @@ test("web static: 右腕のスクロールは描き直しで位置を保ち（�
   assert.equal(scroll().scrollTop, 1300);
 });
 
-test("web static: 新しい殻（index.html）に右腕の枠と 2 つの口と見出しの入れ物と下のバーの入れ物があり、右腕のための <dialog> は無い", () => {
+test("web static: 新しい殻（index.html）に右腕の枠と 2 つの口と見出しの入れ物と下のバーの入れ物と右腕の丸の入れ物があり、右腕のための <dialog> は無い", () => {
   const html = read(SHELL_HTML);
   assert.match(html, /<div class="v3" id="v3" data-view="list" data-hand="closed" data-hand-mode="over">/);
   assert.match(html, /<\/main>\s*<aside class="v3-hand" id="v3-hand" aria-label="右腕">\s*<button class="btn btn-ghost btn-sm btn-icon-sm v3-hand-show" id="v3-hand-show" type="button" aria-controls="v3-hand-ed" aria-expanded="false"><\/button>\s*<div class="v3-slot" id="c-hand-root"><\/div>\s*<div class="ed v3-hand-ed" id="v3-hand-ed"><\/div>\s*<\/aside>\s*<div class="v3-hand-backdrop" id="v3-hand-backdrop" hidden><\/div>\s*<div class="v3-find-backdrop" id="v3-find-backdrop" hidden><\/div>\s*<\/div>/);
   assert.match(html, /id="c-list-root"><\/div>\s*<div class="v3-slot" id="c-bottom-root"><\/div>\s*<\/nav>/);
-  // 流れの列（D1）: 上の帯は根の最初の子、列は一覧と列 2 の間。どちらも中は部品が描く
-  assert.match(html, /<div class="v3" id="v3"[^>]*>\s*<div class="v3-band" id="v3-band"><div class="v3-slot" id="c-band-root"><\/div><\/div>\s*<nav class="v3-list"/);
+  // 流れの列（D1）: 上の帯は根の最初の子、右腕の丸（D6）は帯のすぐ後ろ（Tab の順は 帯 → 丸 → 列 → 席）、列は一覧と列 2 の間。どれも中は部品が描く
+  assert.match(
+    html,
+    /<div class="v3" id="v3"[^>]*>\s*<div class="v3-band" id="v3-band"><div class="v3-slot" id="c-band-root"><\/div><\/div>\s*<div class="v3-orb" id="v3-orb"><div class="v3-slot" id="c-orb-root"><\/div><\/div>\s*<nav class="v3-list"/,
+  );
   // スマホの流れの列の下のバー（D2）は列の次・列 2 の前（Tab の順は 帯 → 列 → 下のバー）
   assert.match(html, /<\/nav>\s*<div class="v3-deck" id="v3-deck"><div class="v3-slot" id="c-deck-root"><\/div><\/div>\s*<div class="v3-foot" id="v3-foot"><div class="v3-slot" id="c-foot-root"><\/div><\/div>\s*<main class="v3-main"/);
   assert.doesNotMatch(html, /v3-hand-ask|v3-hand-entry|v3-list-foot/);
@@ -11172,6 +11209,12 @@ const lastBand = (h: ReturnType<typeof loadShell>): BandState => {
   return b;
 };
 
+const lastOrb = (h: ReturnType<typeof loadShell>): OrbState => {
+  const o = h.deck.orbs.at(-1);
+  assert.ok(o, "SA.deck.drawOrb が丸を描いていない");
+  return o;
+};
+
 /** 流れの列の殻（話題 ch:1・ch:2 と右腕を読ませた後） */
 async function loadDeck(opts: Parameters<typeof loadShell>[0] = {}) {
   const h = loadShell({ deck: true, ...opts });
@@ -11346,21 +11389,34 @@ test("web static: 流れの列: ［探す］と Ctrl+K で一覧を板にして�
   assert.deepEqual(deckAttrs(h)[2], "closed");
 });
 
-test("web static: 流れの列: 右腕は幅 1400 でも重ねる形で、帯の［右腕］で開き、閉じると帯のボタンへ。下のバーは描かない（drawBar(null)）", async () => {
+test("web static: 流れの列: 右腕は幅 1400 でも重ねる形で、帯に［右腕］は無く右下の丸で開き（焦点は入力欄）、幕・Esc・［畳む］で閉じると丸へ。下のバーは描かない（drawBar(null)）", async () => {
   const h = await loadDeck({ width: 1400 });
   assert.equal(h.nodes.v3.getAttribute("data-hand-mode"), "over");
   assert.equal(h.list.bottoms.at(-1), null);
-  const hand = h.nodes.bandButtons.hand!;
-  lastBand(h).on.hand!(hand);
-  assert.equal(h.nodes.v3.getAttribute("data-hand"), "open");
-  assert.equal(lastBand(h).hand.open, true);
-  assert.equal(lastBand(h).controls, "v3-hand");
-  for (const n of [h.nodes.band, h.nodes.deckBox]) assert.equal((n as unknown as { inert: boolean }).inert, true);
-  h.nodes.backdrop.dispatch("click");
-  assert.equal(h.nodes.v3.getAttribute("data-hand"), "closed");
-  assert.equal(lastBand(h).hand.open, false);
-  assert.equal(h.document.activeElement, hand);
-  for (const n of [h.nodes.band, h.nodes.deckBox]) assert.equal((n as unknown as { inert: boolean }).inert, false);
+  assert.equal(lastBand(h).hand, null);
+  const orb = h.nodes.orbButton;
+  const input = () => h.nodes.handEd.querySelector("textarea.composer-input");
+  const closes: Array<[string, () => void]> = [
+    ["幕", () => h.nodes.backdrop.dispatch("click")],
+    ["Esc", () => h.fireDoc("keydown", keyEvent("Escape", input()!))],
+    ["畳む", () => handClose(h as HandShell).dispatch("click")],
+  ];
+  for (const [how, close] of closes) {
+    lastOrb(h).on.hand(orb);
+    assert.equal(h.nodes.v3.getAttribute("data-hand"), "open", how);
+    assert.equal(lastOrb(h).open, true, how);
+    assert.equal(lastOrb(h).controls, "v3-hand", how);
+    assert.equal(lastBand(h).hand, null, how);
+    assert.equal(lastBand(h).controls, "v3-hand", how);
+    assert.ok(input(), how);
+    assert.equal(h.document.activeElement, input(), how);
+    for (const n of [h.nodes.band, h.nodes.orb, h.nodes.deckBox]) assert.equal((n as unknown as { inert: boolean }).inert, true, how);
+    close();
+    assert.equal(h.nodes.v3.getAttribute("data-hand"), "closed", how);
+    assert.equal(lastOrb(h).open, false, how);
+    assert.equal(h.document.activeElement, orb, how);
+    for (const n of [h.nodes.band, h.nodes.orb, h.nodes.deckBox]) assert.equal((n as unknown as { inert: boolean }).inert, false, how);
+  }
   // スマホに替えても一覧の下のバーは空のまま、列の下のバー（SA.deck.drawBar）に描く
   h.setPhone(true, 390);
   assert.equal(h.list.bottoms.at(-1), null);
@@ -11368,6 +11424,139 @@ test("web static: 流れの列: 右腕は幅 1400 でも重ねる形で、帯の
   assert.ok(bar);
   assert.equal(bar.page, "turn");
   assert.equal(bar.controls, "v3-hand");
+});
+
+test("web static: 流れの列: 右腕の丸に渡す物は 列だけ = accent・席が開いている = quiet（どちらも帯の hand は null）、幅 700 で席 = null で帯に hand、スマホ = null。入口に drawOrb が無い・false を返すと帯に hand が在り、閉じた後の焦点は帯の［右腕］", async () => {
+  const shape = (o: OrbState | null | undefined) => (o === null || o === undefined ? o : { mark: o.mark, tone: o.tone, open: o.open, controls: o.controls });
+  // 列だけ（1400）: accent
+  const h = await loadDeck({ width: 1400 });
+  assert.deepEqual(shape(h.deck.orbs.at(-1)), { mark: null, tone: "accent", open: false, controls: "v3-hand" });
+  assert.equal(lastBand(h).hand, null);
+  // 押した先は開いて入力欄（帯・下のバーと同じ openHand(opener, true)）
+  assert.equal(typeof lastOrb(h).on.hand, "function");
+  // 席が開いている（1440）: quiet。閉じると accent に戻る
+  const w = await loadDeck({ width: 1440 });
+  w.app.open("ch:1");
+  assert.equal(w.nodes.v3.getAttribute("data-view"), "body");
+  assert.deepEqual(shape(w.deck.orbs.at(-1)), { mark: null, tone: "quiet", open: false, controls: "v3-hand" });
+  assert.equal(lastBand(w).hand, null);
+  w.history.back();
+  assert.equal(w.nodes.v3.getAttribute("data-view"), "list");
+  assert.deepEqual(shape(w.deck.orbs.at(-1)), { mark: null, tone: "accent", open: false, controls: "v3-hand" });
+  assert.equal(lastBand(w).hand, null);
+  // 幅 700 で席（列が隠れる）: 丸は空で、帯に［右腕］。席を閉じると丸に戻り、帯の［右腕］は外れる
+  const n = await loadDeck({ width: 700 });
+  assert.equal(shape(n.deck.orbs.at(-1))?.tone, "accent");
+  assert.equal(lastBand(n).hand, null);
+  n.app.open("ch:1");
+  assert.equal(n.nodes.v3.getAttribute("data-deck"), "0");
+  assert.equal(n.deck.orbs.at(-1), null);
+  assert.deepEqual(JSON.parse(JSON.stringify(lastBand(n).hand)), { mark: null, open: false });
+  // 帯の［右腕］で開き、閉じると帯の［右腕］へ
+  lastBand(n).on.hand!(n.nodes.bandButtons.hand);
+  assert.equal(n.nodes.v3.getAttribute("data-hand"), "open");
+  assert.equal(lastBand(n).hand?.open, true);
+  n.nodes.backdrop.dispatch("click");
+  assert.equal(n.document.activeElement, n.nodes.bandButtons.hand);
+  n.history.back();
+  assert.equal(n.nodes.v3.getAttribute("data-view"), "list");
+  assert.equal(shape(n.deck.orbs.at(-1))?.tone, "accent");
+  assert.equal(lastBand(n).hand, null);
+  // スマホ: 丸は空（帯の形は phone で［右腕］を出さない。口は下のバー）
+  const p = await loadDeck({ phone: true, width: 390 });
+  assert.ok(p.deck.orbs.length > 0);
+  assert.ok(p.deck.orbs.every((o) => o === null));
+  assert.equal(lastBand(p).variant, "phone");
+  // 広い幅からスマホへ替えると丸を空に、戻すと描く
+  h.setPhone(true, 390);
+  assert.equal(h.deck.orbs.at(-1), null);
+  h.setPhone(false, 1400);
+  assert.equal(shape(h.deck.orbs.at(-1))?.tone, "accent");
+  assert.equal(lastBand(h).hand, null);
+  // 入口に drawOrb が無い（古い入口）・描けない（false）: 帯に［右腕］が在り、閉じた後の焦点は帯の［右腕］
+  for (const opts of [{ noOrb: true }, { orbDraw: () => false }]) {
+    const label = JSON.stringify(Object.keys(opts));
+    const o = await loadDeck({ width: 1400, ...opts });
+    assert.deepEqual(JSON.parse(JSON.stringify(lastBand(o).hand)), { mark: null, open: false }, label);
+    lastBand(o).on.hand!(o.nodes.bandButtons.hand);
+    assert.equal(lastBand(o).hand?.open, true, label);
+    // 開いたボタンを外して、口へ戻す分かれを通す
+    o.nodes.bandButtons.hand!.remove();
+    o.nodes.backdrop.dispatch("click");
+    assert.equal(o.deck.focusBands.at(-1), "hand", label);
+  }
+});
+
+test("web static: 流れの列: 右腕の丸の入れ物（#v3-orb）は 重ねた右腕・「探す」の板の間 inert で、閉じると外れる。丸の印は あなたの番 > 未読 で、枠が見えている間は未読を出さない（帯・下のバーと同じ値）。閉じた後の焦点は開いたボタンが無ければ SA.deck.focusOrb", async () => {
+  const orbInert = (h: ReturnType<typeof loadShell>) => (h.nodes.orb as unknown as { inert?: boolean }).inert === true;
+  const h = await loadDeck({ width: 1440 });
+  assert.equal(orbInert(h), false);
+  const findBtn = h.nodes.bandButtons.find!;
+  lastBand(h).on.find!(findBtn);
+  assert.equal(h.nodes.v3.getAttribute("data-find"), "open");
+  assert.equal(orbInert(h), true);
+  h.nodes.findBackdrop.dispatch("click");
+  assert.equal(h.nodes.v3.getAttribute("data-find"), "closed");
+  assert.equal(orbInert(h), false);
+  lastOrb(h).on.hand(h.nodes.orbButton);
+  assert.equal(orbInert(h), true);
+  // 開いたボタン（丸）が描き直しで入れ替わっても（入口の focusOrb が今の丸へ）戻す
+  const before = h.deck.focusOrbs;
+  h.nodes.orbButton.remove();
+  h.nodes.backdrop.dispatch("click");
+  assert.equal(orbInert(h), false);
+  assert.equal(h.deck.focusOrbs, before + 1);
+  assert.equal(h.deck.focusBands.includes("hand"), false);
+  // 印
+  const last = { id: 5, at: "2026-11-14T00:00:00.000Z", kind: "agent" };
+  const turn = { kind: "confirm", since: "2026-11-14T00:00:00.000Z", summary: null };
+  const u = loadShell({ deck: true, width: 1400 }) as HandShell;
+  await u.flush();
+  u.store.isUnread = () => true;
+  u.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:1")], { rightHands: [v3Hand({ last })] }));
+  await u.topics.load();
+  assert.equal(lastOrb(u).mark, "unread");
+  lastOrb(u).on.hand(u.nodes.orbButton);
+  assert.equal(lastOrb(u).mark, null);
+  u.nodes.backdrop.dispatch("click");
+  assert.equal(lastOrb(u).mark, "unread");
+  u.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:1")], { rightHands: [v3Hand({ turn, last })] }));
+  await u.topics.load();
+  assert.equal(lastOrb(u).mark, "turn");
+  lastOrb(u).on.hand(u.nodes.orbButton);
+  assert.equal(lastOrb(u).mark, "turn");
+  assert.equal(lastOrb(u).open, true);
+});
+
+test("web static: shell.css の右腕の丸の入れ物（.v3-orb。D6）は 落ち先で display: none、広い幅（side・fold）で列の場所の右下（格子の 1 列目・2 行目・end・--z-sash・下の余白に safe-area）、席が閉じている間だけ右の safe-area、席だけの幅で出さない。position を書かず、--c-deck-tail の上書きは広い幅の .v3-deck だけ", () => {
+  const css = read("shell.css").replace(/\/\*[\s\S]*?\*\//g, "");
+  const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ sel: m[1]!.trim().replace(/\s+/g, " "), body: m[2]!.trim().replace(/\s+/g, " ") }));
+  const orb = rules.filter((r) => r.sel.includes("v3-orb"));
+  assert.deepEqual(
+    orb.map((r) => r.sel),
+    [
+      ".v3-band, .v3-deck, .v3-find-backdrop, .v3-foot, .v3-orb",
+      '.v3[data-deck][data-seat="side"] .v3-orb, .v3[data-deck][data-seat="fold"] .v3-orb',
+      '.v3[data-deck][data-view="list"][data-seat="side"] .v3-orb, .v3[data-deck][data-view="list"][data-seat="fold"] .v3-orb',
+      '.v3[data-deck="0"][data-view="body"] .v3-orb',
+    ],
+  );
+  assert.equal(orb[0]!.body, "display: none;");
+  assert.equal(
+    orb[1]!.body,
+    "display: block; grid-column: 1; grid-row: 2; align-self: end; justify-self: end; z-index: var(--z-sash); margin: 0 var(--space-4) calc(var(--space-4) + env(safe-area-inset-bottom, 0px)) 0;",
+  );
+  assert.equal(orb[2]!.body, "margin-right: calc(var(--space-4) + env(safe-area-inset-right, 0px));");
+  assert.equal(orb[3]!.body, "display: none;");
+  for (const r of orb) assert.doesNotMatch(r.body, /(?:^|;)\s*(?:position|top|right|bottom|left|inset)\s*:/, r.sel);
+  // 列の本体の下の余白: 丸の出る形（side・fold）の .v3-deck だけ、丸 + 上下の余白 + 下の safe-area
+  const tails = rules.filter((r) => r.body.includes("--c-deck-tail"));
+  assert.deepEqual(tails, [
+    {
+      sel: '.v3[data-deck][data-seat="side"] .v3-deck, .v3[data-deck][data-seat="fold"] .v3-deck',
+      body: "--c-deck-tail: calc(var(--c-orb) + var(--space-4) + var(--space-4) + env(safe-area-inset-bottom, 0px));",
+    },
+  ]);
 });
 
 test("web static: 流れの列: 帯の［＋ 始める］は General の始める板、歯車の板は 知識・メモリ・使用量・（dev なら会話ログ）・設定、点は状態の画面", async () => {
@@ -11483,10 +11672,10 @@ test("web static: shell.css の流れの列の規則は .v3[data-deck] 始まり
   const rules = [...block.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ sel: m[1]!.trim().replace(/\s+/g, " "), body: m[2]!.trim() }));
   assert.ok(rules.length >= 10);
   const bare = rules.filter((r) => !r.sel.split(",").every((p) => p.trim().startsWith(".v3[data-deck")));
-  assert.deepEqual(bare, [{ sel: ".v3-band, .v3-deck, .v3-find-backdrop, .v3-foot", body: "display: none;" }]);
+  assert.deepEqual(bare, [{ sel: ".v3-band, .v3-deck, .v3-find-backdrop, .v3-foot, .v3-orb", body: "display: none;" }]);
   const phone = css.slice(css.indexOf("@media (max-width: 639px)"));
   const phoneBlock = phone.slice(0, phone.indexOf("\n}\n") + 3);
-  assert.doesNotMatch(phoneBlock, /data-deck|data-seat|data-find|v3-band|v3-deck|v3-find|v3-foot/);
+  assert.doesNotMatch(phoneBlock, /data-deck|data-seat|data-find|v3-band|v3-deck|v3-find|v3-foot|v3-orb/);
   // 流れの列の規則は media の外（幅の段を足さない）
   assert.ok(end < css.indexOf("@media (max-width: 639px)"));
 });
@@ -11529,7 +11718,7 @@ test("web static: 下のバーの入れ物（.v3-foot。D2）は素の display: 
   const css = read("shell.css").replace(/\/\*[\s\S]*?\*\//g, "");
   const sels = [...css.matchAll(/([^{}]+)\{/g)].map((m) => m[1]!.trim().replace(/\s+/g, " ")).filter((sel) => sel.includes("v3-foot"));
   assert.deepEqual(sels, [
-    ".v3-band, .v3-deck, .v3-find-backdrop, .v3-foot",
+    ".v3-band, .v3-deck, .v3-find-backdrop, .v3-foot, .v3-orb",
     ".v3[data-deck][data-seat=\"full\"] .v3-foot",
     ".v3[data-deck][data-seat=\"full\"][data-view=\"body\"] .v3-band, .v3[data-deck][data-seat=\"full\"][data-view=\"body\"] .v3-deck, .v3[data-deck][data-seat=\"full\"][data-view=\"body\"] .v3-foot",
     ".v3[data-deck].is-keyboard .v3-foot",
