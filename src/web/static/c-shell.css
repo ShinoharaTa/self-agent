@@ -190,7 +190,7 @@
 
 /* ===== 会話の見出し（TopBar。K4）: 1 段。折り返さず、入りきらない語は省く（補足 → 場所 → 題の順に縮む。縮む割合の差で順を作る） ===== */
 
-/* 下の線は枠でなく内側の影（高さがずれない）。上の safe-area は殻の側が持つ */
+/* 下の線は付けない（docs/plan/web-ui-deck.md §4.5）。上の safe-area は殻の側が持つ */
 .c-top {
   display: flex;
   align-items: center;
