@@ -321,9 +321,10 @@ const ACCENT_BIG_MAX = 1;
 
 /**
  * accent の塗りの量（ブラウザの中で動く。page.evaluate に渡すので外の変数を使わない）。見えている要素（上に重なった物の下は除く）のうち、
- * 地（background-color）が --accent の物の画面の中の面積の和が areaMax 以下、44px 角以上の物が bigMax 以下。足りない物の文を返す
+ * 地（background-color）が --accent の物の画面の中の面積の和が areaMax 以下、44px 角以上の物が bigMax 以下。足りない物の文を返す。
+ * 測り方の空振りの守り: 見えている未読の点・accent の数の印・下のバーの右腕は塗りとして数えられている。min 個以上を数えている
  */
-function accentProblems({ label, areaMax, bigMax }: { label: string; areaMax: number; bigMax: number }): string[] {
+function accentProblems({ label, areaMax, bigMax, min = 0 }: { label: string; areaMax: number; bigMax: number; min?: number }): string[] {
   const out: string[] = [];
   const probe = document.createElement("span");
   probe.style.color = "var(--accent)";
@@ -334,24 +335,38 @@ function accentProblems({ label, areaMax, bigMax }: { label: string; areaMax: nu
   const vh = window.innerHeight;
   let area = 0;
   const big: string[] = [];
-  for (const el of document.querySelectorAll<HTMLElement>("body *")) {
-    if (getComputedStyle(el).backgroundColor !== accent) continue;
-    if (!el.checkVisibility({ opacityProperty: true, visibilityProperty: true })) continue;
+  const counted = new Set<Element>();
+  /** 画面の中に見えている分の幅と高さ（見えていなければ null） */
+  const seen = (el: HTMLElement): { w: number; h: number } | null => {
+    if (!el.checkVisibility({ opacityProperty: true, visibilityProperty: true })) return null;
     const r = el.getBoundingClientRect();
     const left = Math.max(r.left, 0);
     const top = Math.max(r.top, 0);
     const w = Math.max(0, Math.min(r.right, vw) - left);
     const h = Math.max(0, Math.min(r.bottom, vh) - top);
-    if (w === 0 || h === 0) continue;
+    if (w === 0 || h === 0) return null;
     // 真ん中で上に在る物が自分・子・親（pointer-events: none の印）でなければ、幕やスレッドの下で見えていない
     const hit = document.elementFromPoint(left + w / 2, top + h / 2);
-    if (hit === null || !(hit === el || el.contains(hit) || hit.contains(el))) continue;
+    if (hit === null || !(hit === el || el.contains(hit) || hit.contains(el))) return null;
+    return { w, h };
+  };
+  for (const el of document.querySelectorAll<HTMLElement>("body *")) {
+    if (getComputedStyle(el).backgroundColor !== accent) continue;
+    const box = seen(el);
+    if (box === null) continue;
+    const { w, h } = box;
+    counted.add(el);
     area += w * h;
     if (w >= 44 && h >= 44) big.push(`${el.tagName.toLowerCase()}.${String(el.className).trim().split(/\s+/)[0] ?? ""}（${Math.round(w)}x${Math.round(h)}）`);
   }
   const share = area / (vw * vh);
   if (share > areaMax) out.push(`accent の塗り（${label}）: 面積が画面の ${(share * 100).toFixed(2)}%（${(areaMax * 100).toFixed(0)}% 以下のはず）`);
   if (big.length > bigMax) out.push(`accent の塗り（${label}）: 44px 角以上が ${big.length} 個（${bigMax} 個以下のはず）: ${big.join("・")}`);
+  // 空振りの守り: accent で塗ると決まっている物が見えていれば、上の数え方で拾えている
+  for (const el of document.querySelectorAll<HTMLElement>('.c-mark[data-state="unread"], .c-badge[data-tone="accent"], .c-bottom-hand')) {
+    if (seen(el) !== null && !counted.has(el)) out.push(`accent の塗り（${label}）: ${el.tagName.toLowerCase()}.${String(el.className).trim().split(/\s+/)[0] ?? ""} が塗りとして数えられていない（地 ${getComputedStyle(el).backgroundColor}。--accent ${accent} のはず）`);
+  }
+  if (counted.size < min) out.push(`accent の塗り（${label}）: 数えた塗りが ${counted.size} 個（${min} 個以上のはず。測り方が空振りしている）`);
   return out;
 }
 
@@ -587,6 +602,8 @@ function cardProblems({ demos, pc, label }: { demos: string[]; pc: boolean; labe
     for (const side of ["Top", "Right", "Bottom"] as const) if (cs[`border${side}Width`] !== "0px") say(`${demo} の ${side} の線の太さ ${cs[`border${side}Width`]}。0px のはず`);
     if (parseFloat(cs.borderTopRightRadius) !== radius) say(`${demo} の右上の角 ${cs.borderTopRightRadius}。${radius}px のはず`);
     if (parseFloat(cs.borderTopLeftRadius) !== 0) say(`${demo} の左上の角 ${cs.borderTopLeftRadius}。0 のはず`);
+    if (parseFloat(cs.borderBottomRightRadius) !== radius) say(`${demo} の右下の角 ${cs.borderBottomRightRadius}。${radius}px のはず`);
+    if (parseFloat(cs.borderBottomLeftRadius) !== 0) say(`${demo} の左下の角 ${cs.borderBottomLeftRadius}。0 のはず`);
     if (cs.backgroundColor !== turnSurface) say(`${demo} の地 ${cs.backgroundColor}。--turn-surface（${turnSurface}）のはず`);
     // カードの中に --warning の字を置かない（ライトの --warning は番の面の上で 4.5 を割る）
     for (const el of [card, ...card.querySelectorAll("*")]) {
@@ -4882,7 +4899,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           await page.waitForSelector("#v3[data-deck] #c-deck-root .c-deck .c-col", { timeout: 5000 });
           await settled(page);
           const problems: string[] = [...(await deckLines(page, vp, "列"))];
-          problems.push(...(await page.evaluate(accentProblems, { label: "列", areaMax: ACCENT_AREA_MAX, bigMax: ACCENT_BIG_MAX })));
+          // スマホの列は下のバーの右腕が accent の塗り（1 つは数える）
+          problems.push(...(await page.evaluate(accentProblems, { label: "列", areaMax: ACCENT_AREA_MAX, bigMax: ACCENT_BIG_MAX, min: vp === "phone" ? 1 : 0 })));
           // スマホの帯の題は今の列（あなたの番）の名前と数で、帯のボタンに重ならない
           if (vp === "phone") problems.push(...bandTitleProblems(await page.evaluate(bandTitleState), `スマホの帯（${theme}）`).map((l) => `流れの列: ${l}`));
           await shot(page, `${p}-a-deck`);

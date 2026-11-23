@@ -4505,6 +4505,11 @@ test("web components: c-deck.css の開いていて番の項目は、地が番�
   assert.deepEqual(declsOf('.c-item[data-turn="true"][data-current="true"]'), ["background: var(--turn-surface)"]);
   assert.ok(declsOf('.c-item[data-current="true"]').includes("border-left-color: var(--accent)"));
   assert.ok(declsOf('.c-item[data-turn="true"]').includes("background: var(--turn-surface)"));
+  // 指を乗せている間の地（--muted）は今までどおり勝つ。リンクの項目の hover は詳細度が同じなので、後ろに在る事で勝つ
+  const all = parseCss(read("c-deck.css"));
+  const open = all.findIndex((r) => r.at.length === 0 && r.selectors.includes('.c-item[data-turn="true"][data-current="true"]'));
+  const hover = all.findIndex((r) => r.at.length > 0 && r.selectors.includes(".c-item:has(> .c-item-link:hover)") && r.body.includes("background: var(--muted)"));
+  assert.ok(open >= 0 && hover > open, `${open} ${hover}`);
 });
 
 test("web components: 新しい殻の CSS（shell.css と c-*.css。c-gallery.css を除く）で accent の塗りを書くのは、accent のボタン・accent の数の印・未読の点 3 つ・下のバーの右腕だけ", () => {
