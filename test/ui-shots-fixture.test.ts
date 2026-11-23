@@ -47,9 +47,10 @@ test("作り物のデータで本物のルートが答え、閉じたらポー�
     const topicsRes = await fetch(`${fixture.url}/api/topics`, { headers: auth });
     assert.equal(topicsRes.status, 200);
     const topics = (await topicsRes.json()) as TopicsJson;
-    // あなたの番（許可の要求と質問）・実行中・プロジェクトの群・General・右腕
-    assert.equal(topics.turns, 2);
-    assert.deepEqual([...topics.turnIds].sort(), [`ch:${fixture.topics.perm}`, `ch:${fixture.topics.q}`].sort());
+    // あなたの番（許可の要求と質問と、上限で止まった「長い会話」）・実行中・プロジェクトの群・General・右腕
+    // 「長い会話」は最後が上限で止まった返事なので番に入る（2 → 3。#457 の L1c PR-3）
+    assert.equal(topics.turns, 3);
+    assert.deepEqual([...topics.turnIds].sort(), [`ch:${fixture.topics.perm}`, `ch:${fixture.topics.q}`, `ch:${fixture.topics.long}`].sort());
     assert.ok(topics.groups.some((group) => group.running >= 1));
     const projects = topics.groups.filter((group) => group.kind === "project").map((group) => group.name);
     assert.deepEqual([...projects].sort(), ["blog-site", "garden-sensor", "kakeibo-app"]);
