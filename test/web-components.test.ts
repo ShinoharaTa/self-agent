@@ -3124,6 +3124,15 @@ test("web components: 入力欄（.c-input）の地は入力欄の欄と同じ -
   }
 });
 
+test("web components: 切り替え（.c-seg）の溝は地（--bg）、選んだ側（.c-seg-label）は板（--surface）。地の上に --muted を直に置かない（ライトで 1.02）", () => {
+  const rules = parseCss(read("c-atoms.css")).filter((r) => r.at.length === 0 && r.selectors.length === 1);
+  const decls = (sel: string): string[] => rules.filter((r) => r.selectors[0] === sel).flatMap((r) => r.body.split(";").map((d) => d.trim()).filter((d) => d !== ""));
+  assert.ok(decls(".c-seg").includes("background: var(--bg)"), decls(".c-seg").join("; "));
+  const checked = decls('.c-seg-item[aria-checked="true"] > .c-seg-label');
+  assert.ok(checked.includes("background: var(--surface)"), checked.join("; "));
+  assert.deepEqual(checked.filter((d) => d.startsWith("background")), ["background: var(--surface)"]);
+});
+
 // ===== カード（c-cards.js。docs/plan/web-ui-components.md §6 の K5） =====
 const cardsUrl = new URL("../src/web/static/c-cards.js", import.meta.url).href;
 const cards = (await import(cardsUrl)) as Record<string, Fn> & { PERMISSION_NOTE: string; SESSION_PERMISSION_NOTE: string; SESSION_QUESTION_NOTE: string };
@@ -3706,6 +3715,19 @@ test("web components: c-cards.js の .value の代入は口の 1 か所だけで
   assert.deepEqual(between.filter((d) => d.startsWith("border")), []);
   // 「その他」の欄は番の面の上の板の地（--muted はライトで番の面と 1.02 になり見分けられない）
   assert.ok(decls(".c-card-other").includes("background: var(--surface)"));
+});
+
+test("web components: 許可のカードの要約の欄（.c-card-code）の地は「その他」の欄と同じ板（--surface。地の --bg はライトで番の面と 1.00 になり見分けられない）で、板と番の面（--turn-surface）の比はダーク・ライトとも 1.15 以上", () => {
+  const rules = parseCss(read("c-cards.css")).filter((r) => r.at.length === 0 && r.selectors.length === 1 && r.selectors[0] === ".c-card-code");
+  const backgrounds = rules.flatMap((r) => r.body.split(";").map((d) => d.trim()).filter((d) => d.startsWith("background")));
+  assert.deepEqual(backgrounds, ["background: var(--surface)"]);
+  const blocks = parseCss(read("tokens.css")).filter((r) => r.body.includes("--turn-surface:"));
+  assert.equal(blocks.length, 4);
+  for (const block of blocks) {
+    const v = new Map([...block.body.matchAll(/(--[a-z0-9-]+):\s*(#[0-9a-f]{6})\b/g)].map((m) => [m[1] ?? "", m[2] ?? ""]));
+    const ratio = contrast(v.get("--surface")!, v.get("--turn-surface")!);
+    assert.ok(ratio >= 1.15, `${block.selectors.join(",")} --surface / --turn-surface ${ratio}`);
+  }
 });
 
 test("web components: c-cards.css のカードの中の字は --text・--text-secondary・--text-muted だけで、番の面（--turn-surface）の上でダーク・ライトとも 4.5 以上。--warning は .c-card の左の線だけ", () => {

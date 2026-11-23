@@ -76,7 +76,7 @@
   margin: 0;
   padding: var(--space-3) var(--space-4);
   border-radius: var(--radius-sm);
-  background: var(--bg);
+  background: var(--surface);
   font-family: var(--font-mono);
   font-size: var(--font-sm);
   line-height: var(--leading-normal);

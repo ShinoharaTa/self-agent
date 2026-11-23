@@ -312,7 +312,7 @@
 }
 
 .c-seg-item[aria-checked="true"] > .c-seg-label {
-  background: var(--muted);
+  background: var(--surface);
   color: var(--text);
   font-weight: var(--weight-semibold);
 }
