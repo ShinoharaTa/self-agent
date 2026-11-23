@@ -253,7 +253,7 @@ D1（PR-1）で 640px 以上は、D2（PR-2）でスマホも上の形になっ�
 | トースト | `translateY(8px)` + opacity（`@starting-style`）。同じ方向に消える。≤639px は上に出るので `translateY(-8px)` | `--dur-short` 200ms / 130ms | `--ease-out` |
 | パレット・タブの切り替え・Alt+数字・Ctrl+B / J | **動かさない** | 0 | — |
 | 一覧の増減・並び替え・絞り込み | 動かさない（流れの列は下の 5 行。#463） | 0 | — |
-| 席が開く・閉じる | 右から 16px の `translateX` + `opacity`。reduced-motion では動かさず切り替える | 200ms（スマホの全面は 300ms） | `--ease-out` |
+| 席が開く | 右から 16px（`--c-deck-seat-in`）の `translateX` + `opacity`。最初の操作の後だけ（読み込みで開いた席は動かさない）。閉じるのはすぐ（閉じるときも動かすかは未決）。reduced-motion では動かさず切り替える（D5 の PR-1） | 200ms（スマホの全面は 300ms） | `--ease-out` |
 | 項目が流れに入る | 上から 4px + `opacity`。同時に 3 件を超えたら動かさない。reduced-motion では動かさない | 200ms | `--ease-out` |
 | 答えた項目が退く | `opacity` の後に消す。下の項目は詰めるだけ（高さは動かさない）。reduced-motion ではすぐ消す | 120ms | `--ease-out` |
 | スマホの列の送り | 指に付いて動く（scroll-snap）。下のバーを押したときは送る。reduced-motion では押したときはすぐ切り替える（指の送りはそのまま） | 押したとき 200ms | `--ease-out` |
