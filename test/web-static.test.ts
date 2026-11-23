@@ -2946,7 +2946,7 @@ type TopState = {
 };
 const deckUrl = new URL("../src/web/static/c-deck.js", import.meta.url).href;
 const { deckFit, DECK } = (await import(deckUrl)) as { deckFit: (width: number, seatOpen: boolean) => { cols: number; side: boolean; seat: number; colW: number }; DECK: Record<string, number> };
-type BandState = { variant?: string; conn: { tone: string; label: string } | null; hand: { mark: string | null; open: boolean }; controls: string; on: Record<string, (opener?: unknown) => unknown> };
+type BandState = { variant?: string; page?: string; conn: { tone: string; label: string } | null; hand: { mark: string | null; open: boolean }; controls: string; on: Record<string, (opener?: unknown) => unknown> };
 /** スマホの流れの列の下のバー（SA.deck.drawBar の bar。D2） */
 type DeckBarState = { page: string; hand: string | null; controls: string; on: { page: (id: string) => unknown; paged: (id: string) => unknown; hand: (opener: unknown) => unknown } };
 const shellUrl = new URL("../src/web/static/c-shell.js", import.meta.url).href;
@@ -11518,6 +11518,35 @@ test("web static: スマホの流れの列: 下のバーは SA.list.drawBar(null
   assert.equal(lastBand(h).variant, "phone");
   h.setPhone(false, 1440);
   assert.equal(lastBand(h).variant, "wide");
+});
+
+test("web static: スマホの流れの列: 帯の state の page は今の列（始め turn・バーの page・指の paged・古い行き先 #/tasks で描き直す。同じ id の paged は描き直さない）。広い幅は undefined", async () => {
+  const h = await loadDeck({ phone: true, width: 390 });
+  assert.equal(lastBand(h).page, "turn");
+  const n = h.deck.bands.length;
+  lastDeckBar(h).on.page("tasks");
+  assert.equal(h.deck.bands.length, n + 1);
+  assert.deepEqual([lastBand(h).variant, lastBand(h).page], ["phone", "tasks"]);
+  lastDeckBar(h).on.paged("feed");
+  assert.equal(h.deck.bands.length, n + 2);
+  assert.equal(lastBand(h).page, "feed");
+  // 同じ id の paged は帯を描き直さない
+  lastDeckBar(h).on.paged("feed");
+  assert.equal(h.deck.bands.length, n + 2);
+  // 古い行き先（hashchange の #/tasks）は列 tasks
+  h.location.hash = "#/tasks";
+  h.fire("hashchange");
+  assert.equal(lastBand(h).page, "tasks");
+  // 広い幅へまたぐと page は undefined、戻すと今の列
+  h.setPhone(false, 1440);
+  assert.deepEqual([lastBand(h).variant, lastBand(h).page], ["wide", undefined]);
+  h.setPhone(true, 390);
+  assert.deepEqual([lastBand(h).variant, lastBand(h).page], ["phone", "tasks"]);
+  // 広い幅で起動しても undefined（バーの列を選ぶ道は無い）
+  const w = await loadDeck();
+  assert.equal(lastBand(w).page, undefined);
+  const wh = await loadDeck({ width: 1440, hash: "#/github", known: (tab) => tab.startsWith("ch:") || tab === "github" });
+  assert.equal(lastBand(wh).page, undefined);
 });
 
 test("web static: スマホの流れの列: 下のバーを描けなければ hand: null で 1 回だけ描き直す。右腕の印は下のバーの hand", async () => {

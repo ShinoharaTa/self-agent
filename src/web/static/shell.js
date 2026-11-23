@@ -448,6 +448,7 @@
     if (deckFull()) {
       SA.deck.page(page);
       renderBottom(handMark());
+      renderBand();
     }
     writeHash();
   }
@@ -1590,12 +1591,14 @@
       S.deckPage = id;
       SA.deck.page(id);
       renderBottom(handMark());
+      if (deckFull()) renderBand();
     },
     // 指・焦点の移動で送られた列（何度来てもよい。ここから SA.deck.page を呼ばない）
     paged: (id) => {
       if (S.deckPage === id) return;
       S.deckPage = id;
       renderBottom(handMark());
+      if (deckFull()) renderBand();
     },
     // 開いて入力欄に焦点（一覧の下のバーの右腕と同じ）
     hand: (opener) => openHand(opener, true),
@@ -1810,7 +1813,7 @@
     more: (opener) => openDeckMore(opener),
   };
 
-  /** 上の帯（描くのは入口 c-app.js。流れの列の間だけ）。点は接続の Bot、右腕は印と開閉（スマホの形は［右腕］を出さない。口は下のバー） */
+  /** 上の帯（描くのは入口 c-app.js。流れの列の間だけ）。点は接続の Bot、右腕は印と開閉（スマホの形は［右腕］を出さない。口は下のバー）。スマホは今の列（page）の名前と数を題に出す */
   function renderBand() {
     if (!deckOn()) return;
     const bot = connBot();
@@ -1819,6 +1822,7 @@
       conn: bot ? { tone: bot.connected ? "ok" : "bad", label: bot.label } : null,
       hand: { mark: handMark(), open: S.handMode === "over" && S.handOver },
       controls: "v3-hand",
+      page: phone() ? S.deckPage : undefined,
       on: BAND_ON,
     });
   }
