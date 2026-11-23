@@ -223,6 +223,7 @@
 | 口 cardsMouth | 同 | render | なし | `{ draw(root, { items, on }), focus(root, id, 問の番号), drop(root) }`。「その他」の欄の ref は根と（id・問の番号）ごとに同じ関数で、**新しい要素にだけ**その時の `otherText` を入れる（同じ要素には書かない）。項目が消えた鍵は覚えを捨てる。focus は要素が無い・hidden なら false。例外は握らない |
 | Composer | `c-composer.js` / `.css` | model（`composerModel(state)` の結果。state は text・count・max・sending・touch・label・placeholder（決まった短い文）・note・sent（送った本文の帯。{ id・text・tone（done・warning・空）・cancel・busy } か null））、on（input(今の値)・send・cancel(送りの id)）、inputRef（textarea を受ける callback の ref。口 `composerMouth` が渡す）。**textarea に値を渡さない**（`value`・`defaultValue` を書かない。最初の本文と送った後の空は口が要素に直に入れる） | なし（下書きは入口と `SA.app.draft`、行数は CSS の写し、IME 中かは `sendKey` が事象から見る） | 1 行 44px・角 full・伸びて最大 6 行。字数は残りが少ないときだけ。送るは accent（D2・D3） |
 | HandHead（右腕の見出し） | `c-hand.js` / `.css` | title、menu（「…」を出すか）、on（menu(押したボタン)・close()） | なし | `header.c-hand-head` > `h2.c-hand-title`（ページの `h1` は列 2 の見出しの 1 つ）・menu のときだけ「…」（`data-act="menu"`）・いつも［畳む］（ghost・sm。`data-act="close"`。読み上げの名前は「<題>を畳む」）。高さ・地・下の線は TopBar と同じで、左の内側は `--c-gutter`。右腕の枠（開く・閉じる・履歴）は部品にしない。中の会話・入力欄・カードは TalkTimeline・Composer・Cards の使い回し |
+| HandOrb（右腕の丸。#463 の D6 で作る。まだ無い） | `c-shell.js` / `.css` | mark（turn・unread・running。ほかは印なし）、tone（accent か、ほかは静か）、open、controls、on（hand(押したボタン)） | なし | `button.c-orb`。直径 `--c-orb`（56）の円に `bot` のアイコン 1 つと印。字・影・動きは無い。名前は `handLabel(mark)`（「右腕に頼む・訊く」）。広い幅の流れの列だけ（`docs/plan/web-ui-deck.md` §6.4） |
 | TermCard（端末のセッションの札） | `c-term.js` / `.css` | `termView(raw)` の返り値 + on（take・pane・recheck） | なし | `section.c-term` > `h2.c-term-title` + `dl.c-term-dl` + `p.c-term-lead` + `p.c-term-note` + `div.c-term-actions`。`termView` は `failed` のときは `check` を見ない。`error` は、つなぎが次の判定が読めたとき・［取り込む］を押し直したときに null に戻す（その間は下の文の先頭に出る。［取り込む］の押せない理由は今の理由）。状態は idle・running・waiting・ended・unknown に限り（needs_input は waiting）、error・activity は空でない文字だけ、RC のリンクは `https://claude.ai/code/` で始まる物だけ |
 | 口 termMouth | `c-term.js` | render | なし | `{ draw(root, raw), drop(root) }`。draw は `termView(raw)` を通して TermCard を描き、drop は根を空にする。例外は握らない |
 | Refs（札。返事の `<#ID>`） | `c-talk.js` / `.css` | refs（`refsOf` を通した id・title・meta。同じ id は先の 1 つだけ）、onOpen(id) | なし | 会話の行の 1 つ（kind `refs`。`talkModel` が state の `fmt.refs` が関数のとき、差し替える前の返事の本文から取り、1 つ以上在れば返事のすぐ後ろに足す。`fmt.reply` が関数なら解析する返事の本文をその結果にする。文字列でない物が返れば元の本文のまま）。札ごとに `div.c-ref`（role・名前は付けない。題を 2 回読ませない）・題（1 行で省く）・meta（空なら出さない）・［開く］（ghost・sm。読み上げの名前は「<題> を開く」。TalkRows は `on.ref(id)`）。会話の列いっぱいで地は付けない。札の間は `--space-2`（sm のボタンの当たりは上下に 4 ずつ広げて 44 なので、間隔 4 だと隣の札の当たりと重なる） |
@@ -255,7 +256,7 @@
 | `--c-row-h` | 44 | 36 | 一覧の行（K3） |
 | `--c-gutter` | 16 | — | 左右の余白 |
 | `--c-list-w` | 280 | — | PC の一覧の幅（K3） |
-| `--c-hand-w` | 360 | — | PC の右腕の幅。まだ使っていない（効いているのは `shell.css` の `--v3-hand-w` で、`shell.js` の `handWidth()` が読む）。K7 で 1 つに |
+| `--c-hand-w` | 360 | — | PC の右腕の幅。まだ使っていない（効いているのは `shell.css` の `--v3-hand-w` で、`shell.js` の `handWidth()` が読む）。K7 で 1 つに。枠は #463 の D6 で残すと決めた（広い幅の枠は 420。D6 の枠の PR（PR-2）で 420 にする） |
 | `--c-card-r` | 10 | — | カードの角（K5。決定） |
 | `--c-btn-sm-h` | 36 | — | Button・IconButton の sm |
 | `--c-round-r` | 22 | 8 | accent のボタンの角（スマホは丸） |
@@ -515,7 +516,7 @@
 - K2 からの申し送り: 板の中に入力欄を置く画面で、iOS のキーボードが出たときに板が持ち上がるか（`.c-sheet` は `app.css` の `dialog` の `--vvh`・`--kb` を使っていない）。→ 起きない（右腕を `.c-sheet` に入れなかった。今の `--vvh` の枠のまま。実機はオーナー）
 - K2 からの申し送り: 知らせの入れ物（`role="status"`・`role="alert"`）は暗黙に atomic なので、足すたびに全部を読み直す見立て。読み上げで確かめて決める。→ 入れ物に `aria-atomic="false"` を付けた（今の `#toast`・`#toast-alert` と同じ。読み上げでは確かめていない）。
 - 申し送り（K6 の後）:
-  - K7（殻の根）へ: 右腕の枠（`aside#v3-hand`・開閉・履歴・inert・背景）と畳んだ細い帯（D16）はまだ `shell.js` と `shell.css`。幅のトークンは `--v3-hand-w`（効いている）と `--c-hand-w`（使っていない）の 2 つが在るので 1 つに。口 `SA.hand` と `#c-hand-root` は殻の部品に入れば消える
+  - K7（殻の根）へ: 右腕の枠（`aside#v3-hand`・開閉・履歴・inert・背景）と畳んだ細い帯（D16）はまだ `shell.js` と `shell.css`。幅のトークンは `--v3-hand-w`（効いている）と `--c-hand-w`（使っていない）の 2 つが在るので 1 つに（枠は #463 の D6 で残すと決めたので、D10 でやる）。口 `SA.hand` と `#c-hand-root` は殻の部品に入れば消える
   - flip の後の片付け（K9）へ: 口が在れば通らなくなった古い道（`chat.js` の `frameHeader`・`composer()`・`frame.replyExtras`、`shell.js` の `handCards`・`handOps`、`shell.css` の `.v3-card`・`.v3-hand .ed-…`、`index.html` の `#dlg-confirm`・`#toast`・`#toast-alert`、`ui.js` の `toastDom`・`confirmDom`）は、古い殻を消す段でまとめて消す。それまでは戻り先として残す
   - 別の issue: 押したカード・［やめる］が消えるとフォーカスが body に落ちる（形の案: カードの口が描く前後でフォーカスを見て、根の中に在った物が document から外れたら「残ったカードの最初の押せるボタン → 無ければ、タッチが主でないときは入力欄、タッチが主のときは会話の入れ物」へ。タッチのときの先はオーナーが決める。キーボードを出さない方を既定に）。右腕を初めて開いたときの焦点（#423）。`cc:` のタブ（［端末］）の古いカード・帯・入力欄（#428: `cc:` のタブは部品にしない。X2 で消す。代わりに端末の行の小さい 1 枚（札）を H3 で部品として作る。`docs/plan/terminal-handover.md` §2.2・§6）。一覧の上の見出し（銘・検索・緑の点・鐘）。知らせの場所を変える（オーナーが既定以外を選んだとき）
   - 要らなかった物: 同じ会話の根を 2 つ持つ仕組み（`set`・根 2 つ）と、板の中の入力欄の iOS のキーボードの対応
