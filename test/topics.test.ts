@@ -768,6 +768,21 @@ test("topicListRows: 上限・失敗で止まった番の話題は stopped の�
   assert.equal(rows.counts.your_turn + stoppedTurns, result.turns);
 });
 
+test("topicListRows: 入口（pinned）は、上限・失敗で止まった番だけでは行にしない（確認の番が在れば出す）", () => {
+  const result = buildTopics(
+    input([
+      seed("ch:1", { title: "#tasks", pinned: true, activityAt: at(3), ...stoppedSeed("max_turns", 3) }),
+      seed("ch:2", { title: "#NAME", pinned: true, activityAt: at(2), turns: [turn("confirm", 0)] }),
+    ]),
+  );
+  const rows = topicListRows(result, LIST_OPTIONS);
+  assert.deepEqual(
+    rows.topics.map((row) => [row.channel_id, row.state]),
+    [["2", "your_turn"]],
+  );
+  assert.equal(rows.counts.your_turn, 1);
+});
+
 test("buildTopics: 完了の話題は種の queued が true でも queued: false", () => {
   const result = buildTopics(input([seed("ch:1", { queued: true, state: "done" }), seed("ch:2", { queued: true })], { done: "general" }));
   const of = (id: string) => result.topics.find((item) => item.id === id)!;

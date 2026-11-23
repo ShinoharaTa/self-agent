@@ -400,10 +400,11 @@ export function topicListRows(
   const items: Array<{ id: string; activityAt: string | null; row: TopicListRow }> = [];
   for (const topic of result.topics) {
     if (topic.state === "done") continue;
-    if (topic.pinned && topic.mark !== "turn" && topic.mark !== "running") continue;
     // 上限・失敗で止まった番は your_turn にせず stopped のまま（topic_list の出力は変えない）
+    const yourTurn = topic.mark === "turn" && !isStoppedTurn(topic.turn);
+    if (topic.pinned && !yourTurn && topic.mark !== "running") continue;
     const state: TopicListRow["state"] =
-      topic.mark === "turn" && !isStoppedTurn(topic.turn)
+      yourTurn
         ? "your_turn"
         : topic.mark === "running"
           ? "running"
