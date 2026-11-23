@@ -167,6 +167,8 @@ function newShellNames(vp: Viewport, theme: Theme, full: boolean): string[] {
     // 流れの列（D1。スマホは D2）: 帯と列の所と、項目から席（スマホはスレッド）を開いた所
     "a-deck",
     "a-deck-seat",
+    // 席が開くときの動き（D5 の PR-1。ダークのスマホと PC）: 動きを止めた 0%・50%・100% のコマ
+    ...(theme === "dark" && vp !== "tablet" ? ["a-deck-seat-0", "a-deck-seat-50", "a-deck-seat-100"] : []),
     // スマホの流れの列（D2。ダークだけ）: 下のバーでタスク・通知へ送った所と、歯車の板
     ...(vp === "phone" && theme === "dark" ? ["a-deck-tasks", "a-deck-feed", "a-deck-more"] : []),
     // 列の中の操作（D1 の PR-2。ダークの PC と、D2 からダークのスマホ）: タスクを［完了］にした直後
@@ -5094,6 +5096,140 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           if (vp === "phone" && theme === "dark") problems.push(...(await phoneDeck(page, p)));
           for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
           if (problems.length > 0) throw new Error(`流れの列の検査で ${problems.length} 件`);
+        });
+      }
+      // 席が開くときの動き（D5 の PR-1。ダークのスマホと PC）: 読み込み（hash）で開いた席は動かず印（data-moves）が無い。最初の操作の後に項目を押すと、
+      // 席（#v3-main）の動きは opacity と transform の 2 つで長さは 200（スマホの全面は 300）。止めて 0%（透明・右 16px）・50%・100%（止まった後と同じ箱）を撮る。動きを減らす設定では動かずに同じ箱（絵なし）
+      if (vp !== "tablet" && theme === "dark") {
+        const frames = [0, 50, 100] as const;
+        await step(`${p} seat-motion`, frames.map((f) => `${p}-a-deck-seat-${f}`), async () => {
+          const OPENER = '#c-deck-root .c-col[data-col="turn"] .c-item[data-turn="true"] button.c-item-main';
+          const problems: string[] = [];
+          const say = (text: string): void => void problems.push(`席の動き: ${text}`);
+          type Box = { left: number; top: number; width: number; height: number; opacity: number };
+          const boxOf = (): Promise<Box | null> =>
+            page.evaluate(() => {
+              const main = document.querySelector<HTMLElement>("#v3-main");
+              if (main === null) return null;
+              const r = main.getBoundingClientRect();
+              return { left: r.left, top: r.top, width: r.width, height: r.height, opacity: Number(getComputedStyle(main).opacity) };
+            });
+          const want = vp === "phone" ? 300 : 200;
+          // 押しても何も起きない所（あなたの番の列の左下。押せる物・項目の上でない）を押して離す
+          const pressBlank = async (): Promise<void> => {
+            const at = await page.evaluate(() => {
+              const col = document.querySelector<HTMLElement>('#c-deck-root .c-col[data-col="turn"]');
+              if (col === null) return null;
+              const r = col.getBoundingClientRect();
+              const x = r.left + 8;
+              const y = r.bottom - 8;
+              const hit = document.elementFromPoint(x, y);
+              return hit === null || hit.closest("button, a, input, textarea, select, .c-item") !== null ? null : { x, y };
+            });
+            if (at === null) throw new Error("押しても何も起きない所が見つからない");
+            await page.mouse.click(at.x, at.y);
+          };
+          // 読み込み（hash）で開いた席: 印が無く、席に動きの規則が当たらない
+          await load(page, `/#/ch/${open}`);
+          await page.waitForSelector('#v3[data-view="body"] #ed textarea', { timeout: 5000 });
+          await settled(page);
+          const loaded = await page.evaluate(() => {
+            const main = document.querySelector<HTMLElement>("#v3-main");
+            return {
+              moves: document.querySelector("#v3")?.getAttribute("data-moves") ?? null,
+              running: main === null ? -1 : main.getAnimations().length,
+              duration: main === null ? "" : getComputedStyle(main).transitionDuration,
+            };
+          });
+          if (loaded.moves !== null || loaded.running !== 0 || loaded.duration !== "0s") say(`読み込みで開いた席が ${JSON.stringify(loaded)}（印なし・動き 0・transition-duration 0s のはず）`);
+          // 最初の操作（あなたの番の列の下の空いた所を指で押す。何も起きない所）の後に項目を押し、席の動きを同じ処理の中で止める
+          await load(page, "/");
+          await page.waitForSelector(OPENER, { timeout: 5000 });
+          await settled(page);
+          await pressBlank();
+          const moves = await page.getAttribute("#v3", "data-moves");
+          if (moves !== "on") say(`最初の操作の後の data-moves が ${String(moves)}（on のはず）`);
+          const started = await page.evaluate((sel: string) => {
+            const opener = document.querySelector<HTMLElement>(sel);
+            const main = document.querySelector<HTMLElement>("#v3-main");
+            if (opener === null || main === null) return null;
+            opener.click();
+            const view = document.querySelector("#v3")?.getAttribute("data-view") ?? null;
+            const anims = main.getAnimations();
+            for (const a of anims) {
+              a.pause();
+              a.currentTime = 0;
+            }
+            return {
+              view,
+              props: anims.map((a) => (a as CSSTransition).transitionProperty ?? "").sort(),
+              durations: anims.map((a) => Number(a.effect?.getTiming().duration)),
+              easings: anims.map((a) => a.effect?.getTiming().easing ?? ""),
+            };
+          }, OPENER);
+          if (started === null) throw new Error("開く項目か #v3-main が無い");
+          if (started.view !== "body") say(`押した直後の data-view が ${String(started.view)}（body のはず）`);
+          if (started.props.length === 0) throw new Error("席の動きが 0 個");
+          if (JSON.stringify(started.props) !== JSON.stringify(["opacity", "transform"])) say(`動いている物が ${started.props.join("・")}（opacity・transform のはず）`);
+          if (started.durations.some((d) => d !== want)) say(`長さが ${started.durations.join("・")}（${want} のはず）`);
+          const boxes: Box[] = [];
+          for (const f of frames) {
+            await page.evaluate((at: number) => {
+              for (const a of document.querySelector<HTMLElement>("#v3-main")?.getAnimations() ?? []) a.currentTime = (Number(a.effect?.getTiming().duration) * at) / 100;
+            }, f);
+            const b = await boxOf();
+            if (b === null) throw new Error("#v3-main が無い");
+            boxes.push(b);
+            await shot(page, `${p}-a-deck-seat-${f}`);
+          }
+          // 100% に置いた動きは終わって一覧から外れる。残っていれば終えて、止まった後の箱と比べる
+          const left = await page.evaluate(() => {
+            const anims = document.querySelector<HTMLElement>("#v3-main")?.getAnimations() ?? [];
+            for (const a of anims) a.finish();
+            return anims.length;
+          });
+          if (left !== 0) say(`100% に置いた後も席の動きが ${left} 個残る（0 個のはず）`);
+          await settled(page);
+          const end = await boxOf();
+          if (end === null) throw new Error("#v3-main が無い");
+          const [b0, b50, b100] = boxes as [Box, Box, Box];
+          const near = (a: number, b: number): boolean => Math.abs(a - b) <= 0.5;
+          const seatIn = await page.evaluate(() => {
+            const probe = document.createElement("div");
+            probe.style.width = "var(--c-deck-seat-in)";
+            document.body.append(probe);
+            const w = probe.getBoundingClientRect().width;
+            probe.remove();
+            return w;
+          });
+          if (seatIn !== 16) say(`--c-deck-seat-in が ${seatIn}px（16 のはず）`);
+          if (b0.opacity > 0.01 || !near(b0.left - end.left, seatIn)) say(`0% が 透明度 ${b0.opacity}・右へ ${b0.left - end.left}px（0・${seatIn} のはず）`);
+          if (!(b50.opacity > 0 && b50.opacity < 1) || !(b50.left - end.left > 0 && b50.left - end.left < seatIn)) say(`50% が 透明度 ${b50.opacity}・右へ ${b50.left - end.left}px（0 と 1・0 と ${seatIn} の間のはず）`);
+          if (b100.opacity !== 1 || !near(b100.left, end.left) || !near(b100.top, end.top) || !near(b100.width, end.width) || !near(b100.height, end.height)) say(`100% の箱 ${JSON.stringify(b100)} が止まった後 ${JSON.stringify(end)} と違う`);
+          for (const b of [b0, b50]) if (!near(b.top, end.top) || !near(b.width, end.width) || !near(b.height, end.height)) say(`途中の箱の縦・幅・高さ ${JSON.stringify(b)} が止まった後 ${JSON.stringify(end)} と違う（動くのは横だけ）`);
+          // 動きを減らす設定: 押しても動きが 0 個で、同じ箱
+          await page.emulateMedia({ reducedMotion: "reduce" });
+          try {
+            await load(page, "/");
+            await page.waitForSelector(OPENER, { timeout: 5000 });
+            await settled(page);
+            await pressBlank();
+            const reduced = await page.evaluate((sel: string) => {
+              const opener = document.querySelector<HTMLElement>(sel);
+              const main = document.querySelector<HTMLElement>("#v3-main");
+              if (opener === null || main === null) return null;
+              opener.click();
+              return { moves: document.querySelector("#v3")?.getAttribute("data-moves") ?? null, view: document.querySelector("#v3")?.getAttribute("data-view") ?? null, running: main.getAnimations().length };
+            }, OPENER);
+            if (reduced === null || reduced.moves !== "on" || reduced.view !== "body" || reduced.running !== 0) say(`動きを減らす設定で押した直後が ${JSON.stringify(reduced)}（印 on・body・動き 0 のはず）`);
+            await settled(page);
+            const r = await boxOf();
+            if (r === null || r.opacity !== 1 || !near(r.left, end.left) || !near(r.top, end.top) || !near(r.width, end.width) || !near(r.height, end.height)) say(`動きを減らす設定の席の箱 ${JSON.stringify(r)} が ${JSON.stringify(end)} と違う`);
+          } finally {
+            await page.emulateMedia({ reducedMotion: null });
+          }
+          for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
+          if (problems.length > 0) throw new Error(`席の動きの検査で ${problems.length} 件`);
         });
       }
       // 列の中の操作（D1 の PR-2。ダークの PC と、D2 からダークのスマホ）: ［完了］の当たり・列から 1 つ消える・知らせと［取り消す］（スマホは知らせが上）・焦点の行き先。
