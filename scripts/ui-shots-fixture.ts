@@ -350,8 +350,8 @@ export async function startFixtureServer(options: { log?: (line: string) => void
     say(tLong, "agent", "鉢の配置の案を作っている途中です。", {
       outcome: "max_turns",
       steps: ["Read data/pots.csv", "Edit data/pots.csv", "Bash npm run layout"],
-      toolCalls: 40,
-      durationMs: 12 * 60_000,
+      toolCalls: 1280,
+      durationMs: 123 * 60_000 + 45_000,
     });
     for (const channelId of [tTalk, tLong]) {
       const rows = history.list(channelId, { limit: 200 });
