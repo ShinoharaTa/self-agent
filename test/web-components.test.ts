@@ -24,7 +24,7 @@ const ALLOWED_VARS: ReadonlySet<string> = new Set([
   "font-xs", "font-sm", "font-base", "leading-normal", "leading-tight", "weight-normal", "weight-medium", "weight-semibold",
   "radius-sm", "radius-md", "radius-lg", "radius-full", "border-width", "ring-width", "dialog-max", "container-max",
   "bg", "surface", "muted", "border", "text", "text-secondary", "text-muted", "primary", "primary-text", "accent", "danger", "success", "warning", "backdrop", "shadow-sm",
-  "dur-micro", "dur-short", "dur-long", "ease-out", "z-toast", "font-mono", "bubble-owner", "bubble-agent", "bubble-inset", "turn-surface",
+  "dur-micro", "dur-short", "dur-long", "ease-out", "z-toast", "font-mono", "bubble-owner", "bubble-agent", "bubble-inset", "turn-surface", "bench",
 ].map((n) => `--${n}`));
 
 /** ファイルごとのセレクタの頭（c-gallery.css は test/web-vendor.test.ts がもっと狭く見ている） */
@@ -233,6 +233,25 @@ test("web components: --turn-surface は tokens.css の色の 4 つの塊に在�
   }
   // 計算の見本（GUIDELINES §2.2 の白と黒）
   assert.equal(Math.round(contrast("#ffffff", "#000000")), 21);
+});
+
+test("web components: --bench（台）は tokens.css の色の 4 つの塊に在り、ダーク・ライトで値が揃い、--text・--text-muted を載せて 4.5 以上、板（--surface）との比はダーク 1.09・ライト 1.15 以上", () => {
+  const blocks = parseCss(read("tokens.css")).filter((r) => r.body.includes("--bench:"));
+  assert.equal(blocks.length, 4);
+  const valuesOf = (r: CssRule): Map<string, string> => new Map([...r.body.matchAll(/(--[a-z0-9-]+):\s*(#[0-9a-f]{6})\b/g)].map((m) => [m[1] ?? "", m[2] ?? ""]));
+  const dark = blocks.filter((r) => r.selectors.includes(':root[data-theme="dark"]') || r.at.some((at) => at.includes("prefers-color-scheme: dark")));
+  const light = blocks.filter((r) => !dark.includes(r));
+  assert.equal(dark.length, 2);
+  assert.equal(light.length, 2);
+  for (const [group, want, apart] of [[dark, "#05060a", 1.09], [light, "#e9edf2", 1.15]] as const) {
+    for (const block of group) {
+      const v = valuesOf(block);
+      const bench = v.get("--bench");
+      assert.equal(bench, want, block.selectors.join(","));
+      for (const name of ["--text", "--text-muted"]) assert.ok(contrast(v.get(name)!, want) >= 4.5, `${name} ${contrast(v.get(name)!, want)}`);
+      assert.ok(contrast(v.get("--surface")!, want) >= apart, `--surface ${contrast(v.get("--surface")!, want)}`);
+    }
+  }
 });
 
 test("web components: animation を書いた c-*.css は reduced-motion で止め、c-sheet.css は下の余白とスマホの幅を持つ", () => {
