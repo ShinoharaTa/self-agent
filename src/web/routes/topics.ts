@@ -133,10 +133,10 @@ const DONE_UNMOVABLE = { reason: "完了した話題は場所を変えられま�
 /** 入口・Claude Code のセッションの種の順番待ち・止まった・右腕の印（どれも見ない） */
 const NO_PROGRESS = { queued: false, lastAgent: null, lastOwnerId: null, lastDividerId: null, byRightHand: false } as const;
 
-/** latestByChannel の行 → 種の lastAgent（at は使わない） */
+/** latestByChannel の行 → 種の lastAgent */
 function lastAgentOf(row: LatestHistory | undefined): TopicSeed["lastAgent"] {
   const agent = row?.lastAgent ?? null;
-  return agent === null ? null : { id: agent.id, outcome: agent.outcome, durationMs: agent.durationMs };
+  return agent === null ? null : { id: agent.id, at: agent.at, outcome: agent.outcome, durationMs: agent.durationMs };
 }
 const MOVING_UNMOVABLE = { reason: "場所を変えています" };
 const CC_DISABLED_UNMOVABLE = { reason: moveRefusalText("cc_disabled") };

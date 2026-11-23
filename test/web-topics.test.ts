@@ -560,13 +560,38 @@ test("web topics: 右腕が始めた話題は byRightHand。最後の agent の�
   const result = await topics(server);
   const topic = byId(result, "ch:206")!;
   assert.deepEqual([topic.byRightHand, topic.ended, topic.tookMs, topic.stopped, topic.queued], [true, "max_turns", 120_000, true, false]);
+  // 上限で止まった話題は あなたの番（since は最後の agent の行の時刻。#457 の L1c PR-3）
+  const agentAt = history.list("206", { limit: 10 }).find((row) => row.kind === "agent")!.at;
+  assert.equal(topic.mark, "turn");
+  assert.deepEqual(topic.turn, { kind: "max_turns", summary: "", since: agentAt, expiresAt: null });
+  assert.equal(result.turnIds.includes("ch:206"), true);
   // last は id・at・kind だけ
   assert.deepEqual(Object.keys(topic.last!).sort(), ["at", "id", "kind"]);
   assert.equal(byId(result, "ch:200")!.byRightHand, false);
   assert.equal(byId(result, "ch:200")!.ended, null);
-  // 後に owner の行が来れば止まっていない
+  // 後に owner の行が来れば止まっていない（番からも外れる）
   history.add({ guildId: GUILD, channelId: "206", kind: "owner", source: "discord", text: "続けて" });
-  assert.equal(byId(await topics(server), "ch:206")!.stopped, false);
+  const after = await topics(server);
+  assert.deepEqual([byId(after, "ch:206")!.stopped, byId(after, "ch:206")!.mark, byId(after, "ch:206")!.turn], [false, null, null]);
+  assert.equal(after.turns, result.turns - 1);
+  assert.equal(after.turnIds.includes("ch:206"), false);
+});
+
+test("web topics: 入口（#tasks）・右腕（#inbox）・Claude Code のチャンネルは、上限・失敗で止まっても あなたの番 が変わらない", async (t) => {
+  const { server, history } = await setup(t, { cc: true });
+  const before = await topics(server);
+  const pick = (result: TopicsResult) => ({
+    tasks: [byId(result, "ch:101")!.mark, byId(result, "ch:101")!.turn],
+    cc: [byId(result, "ch:300")!.mark, byId(result, "ch:300")!.turn],
+    hand: result.rightHands[0]!.turn,
+    turns: result.turns,
+    turnIds: result.turnIds,
+  });
+  for (const [channelId, outcome] of [["101", "max_turns"], ["100", "failed"], ["300", "max_turns"]] as const) {
+    history.add({ guildId: GUILD, channelId, kind: "owner", source: "discord", text: "始め" });
+    history.add({ guildId: GUILD, channelId, kind: "agent", source: "discord", text: "返事", outcome, durationMs: 60_000 });
+  }
+  assert.deepEqual(pick(await topics(server)), pick(before));
 });
 
 test("web topics: 上限で止まった後に区切り（divider）の行が来れば stopped は false。後に notice の行が在るだけなら true のまま", async (t) => {
@@ -576,8 +601,10 @@ test("web topics: 上限で止まった後に区切り（divider）の行が来�
   history.add({ guildId: GUILD, channelId: "206", kind: "agent", source: "discord", text: "返事", outcome: "max_turns", durationMs: 120_000 });
   history.add({ guildId: GUILD, channelId: "206", kind: "notice", source: "system", text: "上限" });
   assert.equal(byId(await topics(server), "ch:206")!.stopped, true);
+  assert.equal(byId(await topics(server), "ch:206")!.mark, "turn");
   history.add({ guildId: GUILD, channelId: "206", kind: "divider", source: "system", text: "新しい会話" });
   assert.equal(byId(await topics(server), "ch:206")!.stopped, false);
+  assert.deepEqual([byId(await topics(server), "ch:206")!.mark, byId(await topics(server), "ch:206")!.turn], [null, null]);
 });
 
 test("web topics: 右腕の最後の行が統括のまとめの notice（source system）のときだけ last.lead が true。ほかの notice・agent の行・system でない同じ文・話題の行には lead の鍵が無い", async (t) => {
