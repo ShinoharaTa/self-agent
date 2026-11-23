@@ -4519,6 +4519,55 @@ test("web components: DeckBand の phone は点・探す・始める・ほかの
   assert.deepEqual(acts(now), ["status", "find", "hand", "start", "more"]);
 });
 
+test("web components: DeckBand の title（phone で name が空でないときだけ h2 data-kind=page に列の名前と数。warning は Badge・ほかは c-band-count・0 と null は数なし。ほかは「self-agent」）", () => {
+  const on = { status: () => undefined, find: () => undefined, hand: () => undefined, start: () => undefined, more: () => undefined };
+  const props = { conn: { tone: "ok", label: "見本の Bot: 接続中" }, hand: { mark: "turn", open: false }, controls: "v3-hand", on };
+  const nameOf = (title: unknown, variant: unknown = "phone"): El => {
+    const names = find(one(html`<${deck.DeckBand} variant=${variant} title=${title} ...${props} />`), "c-band-name");
+    assert.equal(names.length, 1);
+    return names[0]!;
+  };
+  const turn = nameOf({ name: "あなたの番", count: 2, tone: "warning" });
+  assert.deepEqual([turn.type, turn.props["data-kind"], turn.props["aria-label"]], ["h2", "page", "あなたの番 2 件"]);
+  assert.equal(textOf(find(turn, "c-band-title")), "あなたの番");
+  assert.deepEqual(find(turn, "c-badge").map((b) => [textOf(b), b.props["data-tone"]]), [["2", "warning"]]);
+  assert.equal(find(turn, "c-band-count").length, 0);
+  const tasks = nameOf({ name: "タスク", count: 3 });
+  assert.deepEqual([tasks.type, tasks.props["data-kind"], tasks.props["aria-label"]], ["h2", "page", "タスク 3 件"]);
+  assert.deepEqual(find(tasks, "c-band-count").map(textOf), ["3"]);
+  assert.equal(find(tasks, "c-badge").length, 0);
+  for (const count of [0, null, undefined, "3", -1]) {
+    const quiet = nameOf({ name: "通知", count, tone: "warning" });
+    assert.deepEqual([quiet.type, quiet.props["aria-label"], textOf(quiet)], ["h2", "通知", "通知"], String(count));
+    assert.equal(find(quiet, "c-badge").length + find(quiet, "c-band-count").length, 0, String(count));
+  }
+  // phone で title が無い・name が空や文字列でない → 今の span「self-agent」
+  for (const title of [null, undefined, { name: "", count: 2 }, { name: null, count: 2 }, { count: 2 }]) {
+    const plain = nameOf(title);
+    assert.deepEqual([plain.type, plain.props["data-kind"], textOf(plain)], ["span", undefined, "self-agent"], JSON.stringify(title));
+  }
+  // phone でなければ title を渡しても「self-agent」
+  for (const variant of ["wide", null, "tablet"]) {
+    const wide = nameOf({ name: "タスク", count: 3 }, variant);
+    assert.deepEqual([wide.type, wide.props["data-kind"], textOf(wide)], ["span", undefined, "self-agent"], String(variant));
+  }
+});
+
+test("web components: c-deck.css のスマホの帯の題（名前と数を横に並べ、名前は省き数は縮めない）と、paged の列の見出しを出さない", () => {
+  const rules = parseCss(read("c-deck.css"));
+  const body = (sel: string): string => rules.filter((r) => r.at.length === 0 && r.selectors.includes(sel)).map((r) => r.body).join(" ");
+  const page = body('.c-band-name[data-kind="page"]');
+  for (const decl of ["display: flex", "align-items: center", "gap: var(--space-2)", "margin: 0", "font-size: inherit"]) assert.ok(page.includes(decl), decl);
+  assert.ok(body(".c-col-head").includes("gap: var(--space-2)"));
+  const title = body(".c-band-title");
+  for (const decl of ["min-width: 0", "overflow: hidden", "text-overflow: ellipsis", "white-space: nowrap"]) assert.ok(title.includes(decl), decl);
+  assert.ok(body('.c-band-name[data-kind="page"] > :not(.c-band-title)').includes("flex: none"));
+  // 数は列の見出しの数と同じ宣言
+  assert.equal(body(".c-band-count"), body(".c-col-count"));
+  assert.ok(body(".c-band-count").includes("color: var(--text-secondary)"));
+  assert.ok(body('.c-deck[data-paged="true"] .c-col-head').includes("display: none"));
+});
+
 test("web components: c-deck.css の横送り（paged の 4 つと列の 2 つ、列の本体の縦の overscroll）。scroll-behavior・幅の段を書かない", () => {
   const rules = parseCss(read("c-deck.css"));
   const body = (sel: string): string => rules.filter((r) => r.at.length === 0 && r.selectors.includes(sel)).map((r) => r.body).join(" ");

@@ -66,10 +66,16 @@
   line-height: var(--leading-tight);
 }
 
-.c-col-count {
+.c-col-count,
+.c-band-count {
   color: var(--text-secondary);
   font-size: var(--font-sm);
   font-variant-numeric: tabular-nums;
+}
+
+/* スマホ（D2）: 列の名前と数は上の帯の題に出すので、列の見出しは出さない（列の section の aria-label は残る） */
+.c-deck[data-paged="true"] .c-col-head {
+  display: none;
 }
 
 .c-col-body {
@@ -294,6 +300,27 @@
   font-weight: var(--weight-semibold);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* スマホの帯の題（今いる列の名前と数）。名前は入り切らなければ省き、数は縮めない */
+.c-band-name[data-kind="page"] {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  /* h2 の既定の字の大きさを消し、帯の字（今の .c-band-name と同じ）のまま */
+  font-size: inherit;
+}
+
+.c-band-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.c-band-name[data-kind="page"] > :not(.c-band-title) {
+  flex: none;
 }
 
 .c-band-ops {

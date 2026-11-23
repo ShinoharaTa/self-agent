@@ -388,10 +388,15 @@ export function Deck({ model, on }) {
   </div>`;
 }
 
+/** 列の数の出し方（列の見出しとスマホの帯の題で同じ）: 数が 1 以上の数のときだけ数を出し、読み上げは「名前 N 件」か名前だけ */
+function countLabel(name, count) {
+  const counted = typeof count === "number" && count > 0;
+  return { counted, label: counted ? name + " " + count + " 件" : name };
+}
+
 /** 1 本の列。見出し（名前と数）と、縦に送る本体（同じ要素を使い回すので縦の位置が残る） */
 export function Column({ col, on }) {
-  const counted = typeof col.count === "number" && col.count > 0;
-  const label = counted ? col.name + " " + col.count + " 件" : col.name;
+  const { counted, label } = countLabel(col.name, col.count);
   let body;
   if (col.phase === "loading") body = html`<${Loading} key="loading" />`;
   else if (col.sections.length === 0) body = html`<${Empty} key="empty" text=${col.empty} />`;
@@ -471,10 +476,13 @@ function bandHandName(mark) {
 /**
  * 上の帯。conn は { tone: "ok"|"bad", label } か null（状態をまだ読めていない）、hand は { mark, open }、controls は右腕のボタンの aria-controls。
  * variant が phone（スマホ。D2）なら［右腕］を出さず（下のバーの物）、［始める］は字のないボタン。ほかは今の形。
+ * title は { name, count: number|null, tone: "warning"|undefined } か null（今いる列）。phone で name が空でないときだけ「self-agent」の代わりに列の名前と数を出す（列の見出しは出さない）。
  * on: { status(), find(opener), hand(opener), start(opener), more(opener) }
  */
-export function DeckBand({ variant, conn, hand, controls, on }) {
+export function DeckBand({ variant, conn, hand, controls, title, on }) {
   const phone = variant === "phone";
+  const page = phone && title && filled(title.name) ? title : null;
+  const count = page ? countLabel(page.name, page.count) : null;
   const mark = hand && (hand.mark === "turn" || hand.mark === "unread") ? hand.mark : null;
   return html`<header class="c-band">
     ${conn
@@ -482,7 +490,16 @@ export function DeckBand({ variant, conn, hand, controls, on }) {
           <span class="c-band-dot" data-tone=${conn.tone === "ok" ? "ok" : "bad"} aria-hidden="true"></span>
         </button>`
       : null}
-    <span class="c-band-name" key="name">self-agent</span>
+    ${page
+      ? html`<h2 class="c-band-name" key="name" data-kind="page" aria-label=${count.label}>
+          <span class="c-band-title">${page.name}</span>
+          ${count.counted
+            ? page.tone === "warning"
+              ? html`<${Badge} count=${page.count} tone="warning" />`
+              : html`<span class="c-band-count">${page.count}</span>`
+            : null}
+        </h2>`
+      : html`<span class="c-band-name" key="name">self-agent</span>`}
     <span class="c-band-ops" key="ops">
       <span class="c-band-act" data-act="find"><${Button} kind="ghost" size="sm" icon="search" label="探す" onPress=${(event) => on.find(event.currentTarget)} /></span>
       ${phone
