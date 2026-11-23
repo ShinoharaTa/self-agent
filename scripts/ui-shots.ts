@@ -4814,7 +4814,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           if (problems.length > 0) throw new Error(`入口の検査で ${problems.length} 件`);
         });
       }
-      // 流れの列（D1。スマホは D2）: 列の数と幅・はみ出し・番の項目の面と線・帯のボタン。項目から席（スマホはスレッド）を開いて、列と席の幅・開いた項目の印。
+      // 流れの列（D1。スマホは D2）: 列の数と幅・はみ出し・番の項目の面と線・帯のボタン。項目から席（スマホはスレッド）を開いて、列と席の幅・開いた項目の印・席の面（D3。地と台の色・見出しと入力欄の帯の線・欄の地）。
       // ダークのスマホは続けて、スレッドの間の帯とバー・戻る・当たり・帯の名前・下のバーで送った列・通知の列の縦の位置・歯車の板・古い hash・動きを減らす設定（phoneDeck）
       {
         const deckShots = [`${p}-a-deck`, `${p}-a-deck-seat`, ...(vp === "phone" && theme === "dark" ? [`${p}-a-deck-tasks`, `${p}-a-deck-feed`, `${p}-a-deck-more`] : [])];
@@ -4830,6 +4830,40 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           await page.waitForSelector('#v3[data-view="body"] #ed textarea', { timeout: 5000 });
           await settled(page);
           problems.push(...(await deckLines(page, vp, "席")));
+          // 席は 1 枚の板（D3 の PR-1）: 席の地は --surface・台は --bench・見出しの下と入力欄の帯の上に線が無い・欄の地は --muted
+          problems.push(
+            ...(await page.evaluate(() => {
+              const out: string[] = [];
+              const say = (text: string): void => void out.push(`流れの列（席の面）: ${text}`);
+              const probe = document.createElement("span");
+              document.body.append(probe);
+              const colorOf = (v: string): string => {
+                probe.style.color = `var(${v})`;
+                return getComputedStyle(probe).color;
+              };
+              const want = { surface: colorOf("--surface"), bench: colorOf("--bench"), muted: colorOf("--muted") };
+              probe.remove();
+              const cs = (sel: string): CSSStyleDeclaration | null => {
+                const el = document.querySelector(sel);
+                return el === null ? null : getComputedStyle(el);
+              };
+              const main = cs("#v3-main");
+              const shell = cs("#v3");
+              const top = cs("#v3-main .c-top");
+              const composer = cs("#v3-main .c-composer");
+              const input = cs("#v3-main .c-composer-input");
+              if (main === null || shell === null || top === null || composer === null || input === null) {
+                say(`席・殻・見出し・入力欄の帯・欄のどれかが無い（${[main, shell, top, composer, input].map((x) => (x === null ? "無" : "在")).join("・")}）`);
+                return out;
+              }
+              if (main.backgroundColor !== want.surface) say(`席の地 ${main.backgroundColor}（--surface ${want.surface} のはず）`);
+              if (shell.backgroundColor !== want.bench) say(`台の地 ${shell.backgroundColor}（--bench ${want.bench} のはず）`);
+              if (top.boxShadow !== "none") say(`見出しの影 ${top.boxShadow}（none のはず）`);
+              if (composer.borderTopWidth !== "0px") say(`入力欄の帯の上の線 ${composer.borderTopWidth}（0px のはず）`);
+              if (input.backgroundColor !== want.muted) say(`欄の地 ${input.backgroundColor}（--muted ${want.muted} のはず）`);
+              return out;
+            })),
+          );
           const current = await page.evaluate(() => document.querySelectorAll('#c-deck-root .c-item[data-current="true"] > button.c-item-main[aria-current="true"]').length);
           if (current !== 1) problems.push(`流れの列（席）: 開いた項目の印（aria-current）が ${current} 個（1 個のはず）`);
           await shot(page, `${p}-a-deck-seat`);
