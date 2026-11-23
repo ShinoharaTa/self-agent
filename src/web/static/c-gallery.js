@@ -248,10 +248,10 @@ const gGroup = (o) => ({ kind: "project", turns: 0, running: 0, open: 0, done: 0
 const gTurn = (kind, summary) => ({ kind, summary, since: AT, expiresAt: null });
 
 const FULL_DATA = {
-  turns: 2,
-  turnIds: ["ch:1", "ch:20"],
+  turns: 4,
+  turnIds: ["ch:1", "ch:34", "ch:35", "ch:20"],
   groups: [
-    gGroup({ key: "p:a", name: "見本のプロジェクト A", turns: 1, running: 1, open: 11, done: 3 }),
+    gGroup({ key: "p:a", name: "見本のプロジェクト A", turns: 3, running: 1, open: 13, done: 3 }),
     gGroup({ key: "p:b", name: "見本のプロジェクト B", open: 1, done: 60 }),
     gGroup({ key: "p:c", name: "見本のプロジェクト C", done: 1 }),
     gGroup({ key: "p:d", name: "見本のプロジェクト D", hasTopics: false }),
@@ -259,6 +259,8 @@ const FULL_DATA = {
   ],
   topics: [
     gTopic({ id: "ch:1", title: "見本の家計の話題", mark: "turn", turn: gTurn("permission", LONG_SUMMARY) }),
+    gTopic({ id: "ch:34", title: "見本の上限で止まって待つ話題", mark: "turn", turn: gTurn("max_turns", ""), stopped: true, ended: "max_turns" }),
+    gTopic({ id: "ch:35", title: "見本の失敗して待つ話題", mark: "turn", turn: gTurn("failed", ""), stopped: true, ended: "failed" }),
     gTopic({ id: "cc:2", title: "見本の作業中の話題", mark: "running", origin: "cc" }),
     gTopic({ id: "ch:31", title: "見本の順番待ちの話題", queued: true }),
     gTopic({ id: "ch:32", title: "見本の上限で止まった話題", stopped: true, ended: "max_turns" }),
@@ -794,7 +796,7 @@ function Terms() {
 
 const DECK_DATA = {
   ...FULL_DATA,
-  turnIds: ["ch:1", "ch:21", "ch:20"],
+  turnIds: ["ch:1", "ch:21", "ch:34", "ch:35", "ch:20"],
   topics: [
     ...FULL_DATA.topics,
     gTopic({ id: "ch:21", title: "見本の判断待ちの話題", mark: "turn", turn: gTurn("waiting", "") }),

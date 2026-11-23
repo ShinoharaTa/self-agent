@@ -3,13 +3,12 @@
 import { html } from "./c-lib.js";
 import { Badge, Button, Empty, Icon, IconButton, Loading, Mark } from "./c-atoms.js";
 
-/** あなたの番の種類の語（今の topics.js の TURN_LABEL） */
-export const TURN_LABEL = Object.freeze({ permission: "許可", question: "質問", waiting: "判断待ち", confirm: "確認" });
-/** ?done= で出す完了の数（src/app/topics.ts の TOPICS_DONE_MAX） */
-export const DONE_MAX = 50;
-
 /** 止まった話題の終わり方の語（ended の値ごと）。表に無い値は「停止」 */
 export const STOPPED_LABEL = Object.freeze({ max_turns: { text: "上限で停止", tone: "warning" }, failed: { text: "失敗", tone: "warning" }, aborted: { text: "中断", tone: "muted" } });
+/** あなたの番の種類の語（今の topics.js の TURN_LABEL に、上限・失敗で止まった話題の番。その語は STOPPED_LABEL から引く） */
+export const TURN_LABEL = Object.freeze({ permission: "許可", question: "質問", waiting: "判断待ち", confirm: "確認", max_turns: STOPPED_LABEL.max_turns.text, failed: STOPPED_LABEL.failed.text });
+/** ?done= で出す完了の数（src/app/topics.ts の TOPICS_DONE_MAX） */
+export const DONE_MAX = 50;
 const STOPPED_OTHER = Object.freeze({ text: "停止", tone: "muted" });
 const QUEUED_STATE = Object.freeze({ text: "順番待ち", tone: "muted" });
 
