@@ -165,7 +165,7 @@ NAV-1（タブとシート。#48・#49・#52・#53）→ NAV-2（全幅の一覧
 触る: `src/web/static.ts`、`index.html`、`src/web/static/`（manifest・SVG・PNG）、`scripts/make-icons.ts`、`package.json`（`make-icons`）、`test/`。
 1. `static.ts`: `STATIC_NAME` に `png|webmanifest`、`CONTENT_TYPES` に `png: "image/png"`・`webmanifest: "application/manifest+json; charset=utf-8"`。先頭のコメント・`staticFileFor` の JSDoc・`server.ts` の `/static/*` のコメントの拡張子の並びも合わせる。
 2. `scripts/make-icons.ts`: 図形の定義（角丸の正方形の地 `#11141c`、2 本の横線 `#eef0f5`、右下の点 `#6b9aff`）から `app-icon.svg`・`apple-touch-icon.png`（180）・`icon-192.png`・`icon-512.png`・`icon-512-maskable.png`（印は中央 80% の円の中）を `node:zlib` だけで書く（web-ui.md §11.5）。
-3. `manifest.webmanifest`（web-ui.md §11.1。`background_color` `#0b0d14`・`theme_color` `#11141c`）。
+3. `manifest.webmanifest`（web-ui.md §11.1。`background_color` `#0b0d14`（当時。今は `#05060a`。#463）・`theme_color` `#11141c`）。
 4. `index.html`: `rel="manifest"`・`rel="icon"`（`app-icon.svg`）・`apple-touch-icon`・`apple-mobile-web-app-capable`・`apple-mobile-web-app-status-bar-style`・`apple-mobile-web-app-title`。
 5. テスト: `/static/manifest.webmanifest`・`/static/icon-192.png` が認証なしで 200 と正しい Content-Type。`/static/x.json`・`/static/a/b.png`・`/static/.png` は 404。index.html の grep（manifest・theme-color 2 つ・apple-touch-icon・inline なし）。PNG の先頭 8 バイトと IHDR の幅・高さ。maskable の中央 80% の外側が地の色だけ。`make-icons` の出力が commit と一致。
 6. 受け入れ: web-ui.md §11.6。
