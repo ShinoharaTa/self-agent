@@ -1047,8 +1047,10 @@ function sampleData(): Obj {
 }
 
 test("web components: c-list の TURN_LABEL・DONE_MAX・filterWords・topicHits", () => {
-  assert.deepEqual({ ...list.TURN_LABEL }, { permission: "許可", question: "質問", waiting: "判断待ち", confirm: "確認" });
+  assert.deepEqual({ ...list.TURN_LABEL }, { permission: "許可", question: "質問", waiting: "判断待ち", confirm: "確認", max_turns: "上限で停止", failed: "失敗" });
   assert.ok(Object.isFrozen(list.TURN_LABEL));
+  // 上限・失敗で止まった話題の番の語は、止まった話題の語（STOPPED_LABEL）と同じ字
+  for (const k of ["max_turns", "failed"]) assert.equal(list.TURN_LABEL[k], list.STOPPED_LABEL[k]?.text, k);
   assert.equal(list.DONE_MAX, 50);
   assert.deepEqual(list.filterWords("  Foo  bar "), ["foo", "bar"]);
   assert.deepEqual(list.filterWords(""), []);
@@ -1568,6 +1570,22 @@ test("web components: BottomBar の右腕のボタンは controls を渡した�
   assert.equal(handOf(html`<${shell.BottomBar} variant="phone" turns=${0} hand=${null} on=${on} />`).props["aria-controls"], undefined);
   assert.equal(handOf(html`<${shell.BottomBar} variant="phone" turns=${0} hand=${null} controls="" on=${on} />`).props["aria-controls"], undefined);
   assert.equal(handOf(html`<${shell.BottomBar} variant="phone" turns=${0} hand=${null} controls=${3} on=${on} />`).props["aria-controls"], undefined);
+});
+
+test("web components: 上限・失敗で止まった話題の番は「上限で停止」「失敗」（turnWord・行の状態の語・あなたの番の meta と sub）", () => {
+  assert.equal(list.turnWord("max_turns"), "上限で停止");
+  assert.equal(list.turnWord("failed"), "失敗");
+  const ctx = { isUnread: () => false, time: () => "12:00", current: null };
+  assert.deepEqual(list.rowModel(topicOf({ mark: "turn", turn: turnOf("max_turns"), stopped: true, ended: "max_turns" }), ctx).state, { text: "上限で停止", tone: "warning" });
+  assert.deepEqual(list.rowModel(topicOf({ mark: "turn", turn: turnOf("failed"), stopped: true, ended: "failed" }), ctx).state, { text: "失敗", tone: "warning" });
+  const d = sampleData();
+  (d.topics as Obj[])[0] = topicOf({ id: "ch:1", mark: "turn", turn: turnOf("max_turns"), stopped: true, ended: "max_turns" });
+  const item = list.turnItem("ch:1", stateOf(d));
+  assert.equal(item?.meta, "上限で停止・1 分前");
+  // 要約が空なら sub は場所（群の名前）だけ
+  assert.equal(item?.sub, "A");
+  (d.topics as Obj[])[0] = topicOf({ id: "ch:1", mark: "turn", turn: turnOf("failed"), stopped: true, ended: "failed" });
+  assert.deepEqual([list.turnItem("ch:1", stateOf(d))?.meta, list.turnItem("ch:1", stateOf(d))?.sub], ["失敗・1 分前", "A"]);
 });
 
 test("web components: 知らない turn の kind は「あなたの番」の語（行の状態の語と、あなたの番の meta）", () => {
@@ -4181,6 +4199,24 @@ test("web components: turnItems は turnIds の順に話題と右腕（題「右
   assert.deepEqual(deck.turnItems(flowOf({ topics: null })), []);
 });
 
+test("web components: 上限・失敗で止まった話題の番は、列の項目の語が「上限で停止」「失敗」で、要約は空・mark は turn", () => {
+  const topics = {
+    turnIds: ["ch:1", "ch:2"],
+    groups: [{ key: "p:a", name: "A" }],
+    topics: [
+      { id: "ch:1", title: "上限", group: "p:a", mark: "turn", stopped: true, ended: "max_turns", turn: { kind: "max_turns", summary: "", since: "S1", expiresAt: null } },
+      { id: "ch:2", title: "失敗", group: "p:a", mark: "turn", stopped: true, ended: "failed", turn: { kind: "failed", summary: "", since: "S2", expiresAt: null } },
+    ],
+    rightHands: [],
+  };
+  const items = deck.turnItems(flowOf({ topics }));
+  assert.deepEqual(items.map((i) => [i.key, i.kind, i.word, i.place, i.time, i.title, i.summary, i.mark, i.turn, i.target]), [
+    ["turn:ch:1", "max_turns", "上限で停止", "A", "ago:S1", "上限", "", "turn", true, "ch:1"],
+    ["turn:ch:2", "failed", "失敗", "A", "ago:S2", "失敗", "", "turn", true, "ch:2"],
+  ]);
+  assert.ok(items.every((i) => i.ops.length === 0 && i.href === null));
+});
+
 test("web components: runningItems は番の無い作業中の話題だけを新しい順に", () => {
   const topics = {
     turnIds: [],
@@ -4279,8 +4315,8 @@ test("web components: feedItems は GitHub・知らせ・未読の話題を時�
 
 test("web components: itemWord は全部の種類の語（期限の 4 通り（先の日は「タスク」）・知らない種類は あなたの番）", () => {
   const st = flowOf();
-  const words = ["permission", "question", "waiting", "confirm", "running", "reminder", "pr", "issue", "github", "notice", "reply"].map((k) => deck.itemWord(k, {}, st));
-  assert.deepEqual(words, ["許可", "質問", "判断待ち", "確認", "動いている", "リマインド", "PR", "Issue", "GitHub", "知らせ", "返事"]);
+  const words = ["permission", "question", "waiting", "confirm", "max_turns", "failed", "running", "reminder", "pr", "issue", "github", "notice", "reply"].map((k) => deck.itemWord(k, {}, st));
+  assert.deepEqual(words, ["許可", "質問", "判断待ち", "確認", "上限で停止", "失敗", "動いている", "リマインド", "PR", "Issue", "GitHub", "知らせ", "返事"]);
   assert.equal(deck.itemWord("task", { due: "2026-01-01" }, st), "期限切れ");
   assert.equal(deck.itemWord("task", { due: "2026-01-02" }, st), "今日");
   // 先の日は語にせず、日付は右の時刻の所にだけ
