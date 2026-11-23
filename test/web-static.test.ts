@@ -11619,8 +11619,11 @@ test("web static: 流れの列: スマホで起動しても flows.init を 1 回
   assert.equal(f.deck.bars.length, 0);
   f.setPhone(false, 1000);
   assert.equal(f.flows.inits, 1);
+  assert.notEqual(f.deck.orbs.at(-1), null);
   f.setPhone(true, 390);
   assert.deepEqual(deckAttrs(f), [null, null, null]);
+  // 流れの列でなくなったら（落ち先）丸を空にする
+  assert.equal(f.deck.orbs.at(-1), null);
   assert.equal(f.bottom().variant, "phone");
   f.setPhone(false, 1000);
   assert.equal(f.flows.inits, 2);
