@@ -99,20 +99,20 @@
   max-width: none;
 }
 
-/* 会話の見本の入れ物（列の幅いっぱい。地は会話の列と同じ --bg） */
+/* 会話の見本の入れ物（列の幅いっぱい。地は席と同じ --surface） */
 .c-gallery-talk {
   box-sizing: border-box;
   width: 100%;
   border: var(--border-width) solid var(--border);
-  background: var(--bg);
+  background: var(--surface);
 }
 
-/* 入力欄の見本の入れ物（列の幅いっぱい。地は会話の列と同じ --bg）。narrow は幅 320 */
+/* 入力欄の見本の入れ物（列の幅いっぱい。地は席と同じ --surface）。narrow は幅 320 */
 .c-gallery-composer {
   box-sizing: border-box;
   width: 100%;
   border: var(--border-width) solid var(--border);
-  background: var(--bg);
+  background: var(--surface);
 }
 
 .c-gallery-composer-narrow {
@@ -120,13 +120,13 @@
   max-width: 100%;
 }
 
-/* カードの見本の入れ物（列の幅いっぱい。地は会話の列と同じ --bg）。narrow は幅 320 */
+/* カードの見本の入れ物（列の幅いっぱい。地は席と同じ --surface）。narrow は幅 320 */
 .c-gallery-cards {
   box-sizing: border-box;
   width: 100%;
   padding: var(--space-3);
   border: var(--border-width) solid var(--border);
-  background: var(--bg);
+  background: var(--surface);
 }
 
 .c-gallery-cards-narrow {
@@ -134,7 +134,7 @@
   max-width: 100%;
 }
 
-/* 右腕の見本の入れ物（右腕の列と同じ幅。地は会話の列と同じ --bg） */
+/* 右腕の見本の入れ物（右腕の列と同じ幅。地は右腕の枠と同じ --surface） */
 .c-gallery-hand {
   display: flex;
   flex-direction: column;
@@ -142,15 +142,15 @@
   width: var(--c-hand-w);
   max-width: 100%;
   border: var(--border-width) solid var(--border);
-  background: var(--bg);
+  background: var(--surface);
 }
 
-/* 流れの列と上の帯の見本の入れ物（列の幅いっぱい。地は列の間の台と同じ --bg） */
+/* 流れの列と上の帯の見本の入れ物（列の幅いっぱい。地は列の間の台と同じ --bench） */
 .c-gallery-deck {
   box-sizing: border-box;
   width: 100%;
   border: var(--border-width) solid var(--border);
-  background: var(--bg);
+  background: var(--bench);
 }
 
 /* 帯は 640px 以上でだけ出るので、スマホの幅でも縮めずに横に送る（幅は見出しの見本の一番きつい幅と同じ） */

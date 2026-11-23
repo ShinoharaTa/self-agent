@@ -11472,6 +11472,17 @@ test("web static: 下のバーの入れ物（.v3-foot。D2）は素の display: 
   assert.doesNotMatch(read("app.css"), /v3-foot|c-foot/);
 });
 
+test("web static: 流れの列の地は台（.v3[data-deck] に --bench）、席（.v3[data-deck] .v3-main）と右腕の枠（.v3-hand）は板（--surface）", () => {
+  const css = read("shell.css").replace(/\/\*[\s\S]*?\*\//g, "");
+  const bodies = (sel: string): string[] =>
+    [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter((m) => m[1]!.trim().replace(/\s+/g, " ") === sel).map((m) => m[2]!.trim());
+  assert.ok(bodies(".v3[data-deck]").some((b) => /(?:^|;)\s*background: var\(--bench\);/.test(b)), ".v3[data-deck]");
+  assert.ok(bodies(".v3[data-deck] .v3-main").some((b) => /(?:^|;)\s*background: var\(--surface\);/.test(b)), ".v3[data-deck] .v3-main");
+  assert.ok(bodies(".v3-hand").some((b) => /(?:^|;)\s*background: var\(--surface\);/.test(b)), ".v3-hand");
+  // 落ち先（入口に流れの列が無い）の地は今のまま
+  assert.ok(bodies(".v3").some((b) => /(?:^|;)\s*background: var\(--bg\);/.test(b)), ".v3");
+});
+
 // ===== スマホの流れの列（D2）: 上の帯・1 列ずつの横送り・下のバー（shell.js。入口は作り物） =====
 const lastDeckBar = (h: ReturnType<typeof loadShell>): DeckBarState => {
   const b = h.deck.bars.at(-1);

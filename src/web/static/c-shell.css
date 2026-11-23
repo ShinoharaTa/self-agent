@@ -1,7 +1,7 @@
 /* 殻の部品（c-shell.js。docs/plan/web-ui-components.md §6 の K3・K4）: 下のバーと会話の見出し。寸法は tokens.css の --c-*、色は tokens.css の変数、字と間隔は base.css の目盛りだけ */
 
 /* 一覧（スクロールの入れ物）の下の兄弟に置く（重ねない）。下は safe-area の分だけ伸ばす */
-/* 上の線は枠でなく内側の影（枠にすると中身が 1px 減り、広い幅で当たりの箱がはみ出して列がずれる） */
+/* 上の線は持たない（板と台の溝で区切る。docs/plan/web-ui-deck.md §4.5） */
 .c-bottom {
   display: flex;
   flex: none;
@@ -10,7 +10,6 @@
   box-sizing: border-box;
   min-height: calc(var(--c-bottom-h) + env(safe-area-inset-bottom, 0px));
   padding: 0 var(--space-3) env(safe-area-inset-bottom, 0px);
-  box-shadow: inset 0 var(--border-width) 0 0 var(--border);
   background: var(--surface);
   color: var(--text);
   font-size: var(--font-sm);
@@ -108,7 +107,7 @@
 
 /*
  * スマホの流れの列（deck。D2）: 列のボタンは残りを分け合い、右腕は中身の幅。当たりはボタンの四角い箱（角丸なし・地なし）、
- * 見える地は中の .c-bottom-page-in（角丸）。今の列は字の太さと地と aria-current（色だけにしない。差し色は D3）
+ * 見える地は中の .c-bottom-page-in（角丸）。今の列は字の太さと地と aria-current（色だけにしない。差し色は付けない（accent の役は docs/plan/web-ui-deck.md §4.5 の 4 つ））
  */
 .c-bottom[data-variant="deck"] {
   gap: var(--space-1);
@@ -204,7 +203,6 @@
   color: var(--text);
   font-size: var(--font-sm);
   line-height: var(--leading-normal);
-  box-shadow: inset 0 calc(-1 * var(--border-width)) 0 0 var(--border);
   overflow: hidden;
 }
 

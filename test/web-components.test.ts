@@ -383,11 +383,12 @@ test("web components: 下のバーの自前のボタンは当たりの下限を�
   }
 });
 
-test("web components: 下のバーの上の線は高さを食わない（枠でなく内側の影）", () => {
+test("web components: 下のバーは上の線を持たない（板と溝で区切る）", () => {
   const own = parseCss(read("c-shell.css")).filter((r) => r.at.length === 0 && r.selectors.includes(".c-bottom"));
   assert.ok(own.length > 0);
   for (const rule of own) assert.doesNotMatch(rule.body, /(?:^|;)\s*border-top(?:-[a-z]+)?\s*:/);
-  assert.ok(own.some((r) => /(?:^|;)\s*box-shadow:\s*inset\b/.test(r.body)));
+  for (const rule of own) assert.doesNotMatch(rule.body, /(?:^|;)\s*box-shadow\s*:/);
+  assert.ok(own.some((r) => /(?:^|;)\s*background:\s*var\(--surface\)\s*(?:;|$)/.test(r.body)));
 });
 
 test("web components: c-*.css のセレクタのクラスと、c-*.js（と gallery.html）が書くクラスが同じ集まり", () => {
@@ -2947,6 +2948,9 @@ test("web components: 入力欄の欄と写しは 1 つの規則で余白・枠�
   for (const decl of ["font-size: var(--c-font-body)", "line-height: var(--leading-normal)", "color: var(--text)"]) assert.ok(own.some((r) => decls(r).includes(decl)), decl);
   // 帯の地は書かない
   for (const r of own) assert.ok(!props(r).some((p) => p.startsWith("background")), "c-composer の地");
+  // 帯の線も書かない（docs/plan/web-ui-deck.md §4.5）。欄の地は --muted
+  for (const r of rules.filter((x) => x.selectors.includes(".c-composer"))) assert.ok(!props(r).some((p) => p.startsWith("border")), `c-composer の線 ${r.body}`);
+  assert.ok(rules.some((r) => r.at.length === 0 && r.selectors.length === 1 && r.selectors[0] === ".c-composer-input" && decls(r).includes("background: var(--muted)")), "欄の地 --muted");
   const src = stripCssComments(read("c-composer.css"));
   assert.doesNotMatch(src, /\b(?:animation|transition)(?:-[a-z-]+)?\s*:|@keyframes/);
 });
@@ -4457,6 +4461,27 @@ test("web components: c-deck.css は区切りの線（左の線と 0 の外し�
     }
   }
   assert.doesNotMatch(stripCssComments(read("c-deck.css")), /@keyframes|@media \(min-width|1340/);
+});
+
+test("web components: 見出し（c-shell.css の .c-top・c-hand.css の .c-hand-head）と下のバーと入力欄の帯は区切りの線を書かない。残る線は押す所の輪郭と欄の枠だけ", () => {
+  const declsOf = (name: string): { sel: string; decl: string; prop: string }[] =>
+    parseCss(read(name)).flatMap((r) =>
+      r.body.split(";").map((d) => d.trim()).filter((d) => d !== "").map((decl) => ({ sel: r.selectors.join(", "), decl, prop: decl.slice(0, decl.indexOf(":")).trim() })),
+    );
+  // c-hand.css は border・box-shadow を書かない
+  for (const { sel, decl, prop } of declsOf("c-hand.css")) assert.ok(!prop.startsWith("border") && prop !== "box-shadow", `c-hand.css ${sel}: ${decl}`);
+  // c-shell.css の box-shadow は右腕の番の印の輪（区切りでない）だけ。border（border-radius と border: 0 を除く）は場所・モードのボタンと見出しの［右腕］だけ
+  const shell = declsOf("c-shell.css");
+  assert.deepEqual(shell.filter((d) => d.prop === "box-shadow").map((d) => `${d.sel}: ${d.decl}`), ['.c-bottom-hand-mark[data-state="turn"]: box-shadow: 0 0 0 var(--c-mark-ring) var(--primary-text)']);
+  assert.deepEqual(
+    shell.filter((d) => d.prop.startsWith("border") && d.prop !== "border-radius" && d.decl !== "border: 0").map((d) => d.sel),
+    [".c-top-place, .c-top-mode", ".c-top-hand"],
+  );
+  // c-composer.css の border は欄と写しの共通の規則の border・border-radius と、写しの border-color だけ
+  assert.deepEqual(
+    declsOf("c-composer.css").filter((d) => d.prop.startsWith("border")).map((d) => `${d.sel}: ${d.prop}`),
+    [".c-composer-input, .c-composer-mirror: border", ".c-composer-input, .c-composer-mirror: border-radius", ".c-composer-mirror: border-color"],
+  );
 });
 
 test("web components: TopBar の close（true で帯の右端に data-act=close の［閉じる］が 1 つ。false・無しは今と同じ出力、view none は出さない）", () => {
