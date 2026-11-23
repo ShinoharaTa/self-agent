@@ -859,6 +859,13 @@ const deckTasksOnly = (state) => {
   return { ...model, columns: model.columns.filter((c) => c.id === "tasks") };
 };
 
+/** スマホの帯の題（今いる列の名前と数）の見本: あなたの番（warning の数）・タスク（数）・通知（0 なので数なし） */
+const BAND_TITLES = Object.freeze([
+  { demo: "band-phone-turn", title: { name: "あなたの番", count: 2, tone: "warning" } },
+  { demo: "band-phone-tasks", title: { name: "タスク", count: 3 } },
+  { demo: "band-phone-feed", title: { name: "通知", count: 0 } },
+]);
+
 /** 帯と 3 つの列の見本（列は見本の幅で 3 等分。band-phone・deck-paged・deck-phone-ops はスマホの幅の枠で、列は 1 列ずつ横に送る）。押しても何も起きない */
 function Decks() {
   return html`<${Section} name="deck" title="流れの列と上の帯">
@@ -872,6 +879,13 @@ function Decks() {
         <${DeckBand} variant="phone" conn=${{ tone: "ok", label: "見本の Bot: 接続中" }} hand=${{ mark: "turn", open: false }} controls="v3-hand" on=${BAND_ON} />
       </div>
     </div>
+    ${BAND_TITLES.map(
+      (t) => html`<div class="c-gallery-slide" key=${t.demo} data-demo=${t.demo}>
+        <div class="c-gallery-deck c-gallery-phone">
+          <${DeckBand} variant="phone" conn=${{ tone: "ok", label: "見本の Bot: 接続中" }} hand=${{ mark: "turn", open: false }} controls="v3-hand" title=${t.title} on=${BAND_ON} />
+        </div>
+      </div>`,
+    )}
     <div class="c-gallery-deck" data-demo="deck-3"><${Deck} model=${deckModel(deckState())} on=${DECK_ON} /></div>
     <div class="c-gallery-slide" data-demo="deck-ops">
       <div class="c-gallery-deck c-gallery-deck-ops">
