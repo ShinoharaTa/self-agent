@@ -1,9 +1,8 @@
 /* 会話の入力欄（c-composer.js。docs/plan/web-ui-components.md §6 の K5）。寸法は tokens.css の --c-* と calc、色は tokens.css の変数、字と間隔は base.css の目盛りだけ。動きは無い */
 
-/* 帯。地は書かない（列の地のまま）。字と色は自分で持つ（置かれた先からの継承を当てにしない） */
+/* 帯。地も線も書かない（列の地のまま）。字と色は自分で持つ（置かれた先からの継承を当てにしない） */
 .c-composer {
   padding: var(--space-2) var(--c-gutter) var(--space-3);
-  border-top: var(--border-width) solid var(--border);
   color: var(--text);
   font-size: var(--c-font-body);
   line-height: var(--leading-normal);
@@ -75,7 +74,7 @@
 /* フォーカスの輪は base のまま（消さない・枠の太さを変えない） */
 .c-composer-input {
   margin: 0;
-  background: var(--surface);
+  background: var(--muted);
   color: var(--text);
   /* 入力の位置の線は accent（古い CSS の textarea に頼らず自分で持つ） */
   caret-color: var(--accent);
