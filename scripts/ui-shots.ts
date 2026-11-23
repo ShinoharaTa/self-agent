@@ -315,6 +315,46 @@ function noticeHas({ role, text }: { role: "status" | "alert"; text: string }): 
   return text === "" ? now !== "" : now.includes(text);
 }
 
+/** accent の塗りの面積の上限（画面の割合）と、大きな塗り（44px 角以上）の数の上限（D3。docs/plan/web-ui-deck.md §4.5 の差し色） */
+const ACCENT_AREA_MAX = 0.03;
+const ACCENT_BIG_MAX = 1;
+
+/**
+ * accent の塗りの量（ブラウザの中で動く。page.evaluate に渡すので外の変数を使わない）。見えている要素（上に重なった物の下は除く）のうち、
+ * 地（background-color）が --accent の物の画面の中の面積の和が areaMax 以下、44px 角以上の物が bigMax 以下。足りない物の文を返す
+ */
+function accentProblems({ label, areaMax, bigMax }: { label: string; areaMax: number; bigMax: number }): string[] {
+  const out: string[] = [];
+  const probe = document.createElement("span");
+  probe.style.color = "var(--accent)";
+  document.body.append(probe);
+  const accent = getComputedStyle(probe).color;
+  probe.remove();
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  let area = 0;
+  const big: string[] = [];
+  for (const el of document.querySelectorAll<HTMLElement>("body *")) {
+    if (getComputedStyle(el).backgroundColor !== accent) continue;
+    if (!el.checkVisibility({ opacityProperty: true, visibilityProperty: true })) continue;
+    const r = el.getBoundingClientRect();
+    const left = Math.max(r.left, 0);
+    const top = Math.max(r.top, 0);
+    const w = Math.max(0, Math.min(r.right, vw) - left);
+    const h = Math.max(0, Math.min(r.bottom, vh) - top);
+    if (w === 0 || h === 0) continue;
+    // 真ん中で上に在る物が自分・子・親（pointer-events: none の印）でなければ、幕やスレッドの下で見えていない
+    const hit = document.elementFromPoint(left + w / 2, top + h / 2);
+    if (hit === null || !(hit === el || el.contains(hit) || hit.contains(el))) continue;
+    area += w * h;
+    if (w >= 44 && h >= 44) big.push(`${el.tagName.toLowerCase()}.${String(el.className).trim().split(/\s+/)[0] ?? ""}（${Math.round(w)}x${Math.round(h)}）`);
+  }
+  const share = area / (vw * vh);
+  if (share > areaMax) out.push(`accent の塗り（${label}）: 面積が画面の ${(share * 100).toFixed(2)}%（${(areaMax * 100).toFixed(0)}% 以下のはず）`);
+  if (big.length > bigMax) out.push(`accent の塗り（${label}）: 44px 角以上が ${big.length} 個（${bigMax} 個以下のはず）: ${big.join("・")}`);
+  return out;
+}
+
 /** 見本の入力欄の data-demo（ページの順） */
 const COMPOSER_DEMOS = ["empty", "one", "three", "eight", "long-line", "near", "over", "sending", "narrow", "sent-done", "sent-warning", "sent-cancel"];
 
@@ -508,9 +548,9 @@ function termProblems({ demos, takeable, blocked, error, phone, label }: { demos
 }
 
 /**
- * 見本のカードの測り方（ブラウザの中で動く。page.evaluate に渡すので外の変数を使わない）。見本の名前・枠の線と角と地と幅・見出しの字・
+ * 見本のカードの測り方（ブラウザの中で動く。page.evaluate に渡すので外の変数を使わない）。見本の名前・番の面と左の線と角と幅（D3。枠は無い）・見出しの字・カードの中に --warning の字が無い・
  * ボタンの高さと並び（スマホは 2 つが 2 等分・3 つが縦、PC は左から 1 行）・チェックの行と印の大きさ・要約の高さ（PC は 8 行で止まる）・
- * 残り時間の色・待ちの行の role・動いている物（状態の行の送っている間の輪のほかは無い）・narrow の幅・横にはみ出さない・質問の「その他」の欄（見える物と値・スマホの字）と問の間の線と［答える］の押せない印・
+ * 残り時間の色と太さ（急ぎは太さで分ける）・待ちの行の role・動いている物（状態の行の送っている間の輪のほかは無い）・narrow の幅・横にはみ出さない・質問の「その他」の欄（見える物と値・スマホの字）と問の間（線でなく余白）と［答える］の押せない印・
  * 状態の行（role=status が 3 つで aria-busy なし・［やめる］が 2 つ・3 行の高さが同じ）。足りない物の文を返す
  */
 function cardProblems({ demos, pc, label }: { demos: string[]; pc: boolean; label: string }): string[] {
@@ -531,22 +571,28 @@ function cardProblems({ demos, pc, label }: { demos: string[]; pc: boolean; labe
     return c;
   };
   const warning = colorOf("var(--warning)");
-  const surface = colorOf("var(--surface)");
+  const turnSurface = colorOf("var(--turn-surface)");
+  const text = colorOf("var(--text)");
   const root = getComputedStyle(document.documentElement);
   const radius = parseFloat(root.getPropertyValue("--c-card-r"));
   const max = parseFloat(root.getPropertyValue("--c-card-max"));
   if (!(radius > 0) || !(max > 0)) say("--c-card-r・--c-card-max が読めない");
   const sectionRight = section.getBoundingClientRect().right;
-  // 2. 枠
+  // 2. 番の面と左の線（D3。上・右・下の線は無く、左の角は丸めない）
   for (const card of section.querySelectorAll(".c-card")) {
     const demo = card.closest("[data-demo]")?.getAttribute("data-demo") ?? "?";
     const cs = getComputedStyle(card);
-    for (const side of ["Top", "Right", "Bottom", "Left"] as const) {
-      if (cs[`border${side}Color`] !== warning) say(`${demo} の枠の ${side} の色 ${cs[`border${side}Color`]}。--warning（${warning}）のはず`);
-      if (cs[`border${side}Width`] !== "1px") say(`${demo} の枠の ${side} の太さ ${cs[`border${side}Width`]}。1px のはず`);
+    if (cs.borderLeftColor !== warning) say(`${demo} の左の線の色 ${cs.borderLeftColor}。--warning（${warning}）のはず`);
+    if (cs.borderLeftWidth !== "3px") say(`${demo} の左の線の太さ ${cs.borderLeftWidth}。3px のはず`);
+    for (const side of ["Top", "Right", "Bottom"] as const) if (cs[`border${side}Width`] !== "0px") say(`${demo} の ${side} の線の太さ ${cs[`border${side}Width`]}。0px のはず`);
+    if (parseFloat(cs.borderTopRightRadius) !== radius) say(`${demo} の右上の角 ${cs.borderTopRightRadius}。${radius}px のはず`);
+    if (parseFloat(cs.borderTopLeftRadius) !== 0) say(`${demo} の左上の角 ${cs.borderTopLeftRadius}。0 のはず`);
+    if (cs.backgroundColor !== turnSurface) say(`${demo} の地 ${cs.backgroundColor}。--turn-surface（${turnSurface}）のはず`);
+    // カードの中に --warning の字を置かない（ライトの --warning は番の面の上で 4.5 を割る）
+    for (const el of [card, ...card.querySelectorAll("*")]) {
+      if (el.getClientRects().length === 0 || (el.textContent ?? "").trim() === "") continue;
+      if (getComputedStyle(el).color === warning) say(`${demo} の中の ${el.tagName.toLowerCase()}.${el.className}「${(el.textContent ?? "").trim().slice(0, 12)}」の字が --warning`);
     }
-    if (parseFloat(cs.borderTopLeftRadius) !== radius) say(`${demo} の角 ${cs.borderTopLeftRadius}。${radius}px のはず`);
-    if (cs.backgroundColor !== surface) say(`${demo} の地 ${cs.backgroundColor}。--surface（${surface}）のはず`);
     const r = card.getBoundingClientRect();
     if (r.width > max + 0.5) say(`${demo} の幅 ${r.width.toFixed(1)}。${max} 以下のはず`);
     if (card.scrollWidth > card.clientWidth) say(`${demo} のカードが横にはみ出している（${card.scrollWidth} > ${card.clientWidth}）`);
@@ -556,7 +602,7 @@ function cardProblems({ demos, pc, label }: { demos: string[]; pc: boolean; labe
   for (const title of section.querySelectorAll(".c-card-title")) {
     const cs = getComputedStyle(title);
     if (cs.fontSize !== "12px") say(`見出しの字 ${cs.fontSize}。12px のはず`);
-    if (cs.color !== warning) say(`見出しの色 ${cs.color}。--warning のはず`);
+    if (cs.color !== text) say(`見出しの色 ${cs.color}。--text（${text}）のはず`);
   }
   // 4. ボタンの並び
   for (const actions of section.querySelectorAll(".c-card-actions")) {
@@ -599,12 +645,15 @@ function cardProblems({ demos, pc, label }: { demos: string[]; pc: boolean; labe
     if (!near(h, want, 1)) say(`card-perm-long の要約の高さ ${h.toFixed(1)}。${want.toFixed(1)} のはず`);
   } else if (pre.scrollHeight > pre.clientHeight + 1) say(`card-perm-long の要約が切れている（${pre.scrollHeight} > ${pre.clientHeight}）`);
   // 7. 残り時間の色・待ちの行・動き・narrow・横
-  const metaColor = (demo: string): string | null => {
+  const metaStyle = (demo: string): { color: string; weight: string } | null => {
     const meta = section.querySelector(`[data-demo="${demo}"] .c-card-meta`);
-    return meta === null ? null : getComputedStyle(meta).color;
+    return meta === null ? null : { color: getComputedStyle(meta).color, weight: getComputedStyle(meta).fontWeight };
   };
-  if (metaColor("card-perm-urgent") !== warning) say(`card-perm-urgent の残り時間の色 ${metaColor("card-perm-urgent")}。--warning のはず`);
-  if (metaColor("card-perm") === null || metaColor("card-perm") === warning) say("card-perm の残り時間が無いか --warning の色");
+  // 急ぎは色でなく太さで分ける（どちらも --text）
+  const urgent = metaStyle("card-perm-urgent");
+  const calm = metaStyle("card-perm");
+  if (urgent === null || urgent.color !== text || urgent.weight !== "600") say(`card-perm-urgent の残り時間 ${urgent?.color ?? "無い"}・太さ ${urgent?.weight ?? "?"}。--text（${text}）・600 のはず`);
+  if (calm === null || calm.color !== text || calm.weight === "600") say(`card-perm の残り時間 ${calm?.color ?? "無い"}・太さ ${calm?.weight ?? "?"}。--text で 600 でないはず（急ぎと太さで分かれる）`);
   if (section.querySelector('[data-demo="card-note"] .c-note')?.getAttribute("role") !== "status") say("card-note の待ちの行に role=status が無い");
   // 動いてよいのは、状態の行の送っている間の［やめる］の輪だけ
   const spin = (a: Animation): boolean => {
@@ -638,14 +687,15 @@ function cardProblems({ demos, pc, label }: { demos: string[]; pc: boolean; labe
       if (!pc && parseFloat(getComputedStyle(field).fontSize) < 16) say(`card-q-other の「その他」の欄の字 ${getComputedStyle(field).fontSize}。16px 以上のはず`);
     }
   }
-  // 9. 問の間の線（2 問目の上だけ）
+  // 9. 問の間（D3。線でなく余白: 上の線はどちらも 0、2 問目の上の余白が 1 問目より大きい）
   const sets = [...section.querySelectorAll('[data-demo="card-q-two"] fieldset.c-card-q')];
   if (sets.length !== 2) say(`card-q-two の問の数 ${sets.length}。2 のはず`);
   else {
-    const [first, second] = sets.map((f) => getComputedStyle(f).borderTopWidth);
-    if (first !== "0px") say(`card-q-two の 1 問目の上の線 ${first}。0px のはず`);
-    if (second !== "1px") say(`card-q-two の 2 問目の上の線 ${second}。1px のはず`);
-    // 見出しは線の下に在る（線に乗ると、字の右にだけ線が出る）
+    const [first, second] = sets.map((f) => getComputedStyle(f));
+    if (first.borderTopWidth !== "0px") say(`card-q-two の 1 問目の上の線 ${first.borderTopWidth}。0px のはず`);
+    if (second.borderTopWidth !== "0px") say(`card-q-two の 2 問目の上の線 ${second.borderTopWidth}。0px のはず`);
+    if (!(parseFloat(second.paddingTop) > parseFloat(first.paddingTop))) say(`card-q-two の 2 問目の上の余白 ${second.paddingTop}。1 問目（${first.paddingTop}）より大きいはず`);
+    // 見出しは fieldset の上の端に乗らない（乗ると、枠の上の線の位置に字が出る）
     const legend = sets[1].querySelector("legend");
     if (legend && legend.getBoundingClientRect().top < sets[1].getBoundingClientRect().top + 1) say("card-q-two の 2 問目の見出しが上の線に乗っている");
   }
@@ -4565,7 +4615,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
 
   /**
    * 流れの列の検査（D1）: 見える列の数が data-deck と c-deck.js の deckFit と合う・列の幅は 420 以下・席の幅は deckFit と同じ・
-   * 列と項目と帯で字が横にはみ出ない・番の項目の地は --turn-surface で左の線は --warning・帯のボタンは 4 つ（data-act）。足りない物の文
+   * 列と項目と帯で字が横にはみ出ない・番の項目の地は --turn-surface で左の線は --warning・開いている番の項目（D3）の地は --turn-surface で左の線は --accent・帯のボタンは 4 つ（data-act）。足りない物の文
    */
   /**
    * スマホの流れの列（D2。ダークのスマホの段 deck の続き。スレッドを開いた所から）: スレッドの間は帯・列・下のバーが見えない・戻ると列で焦点は押した項目（UI-7）・
@@ -4717,6 +4767,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         };
         const turnSurface = colorOf("--turn-surface");
         const warning = colorOf("--warning");
+        const accent = colorOf("--accent");
         probe.remove();
         const turns = [...deck.querySelectorAll<HTMLElement>('.c-item[data-turn="true"]')].filter((el) => el.dataset.current !== "true");
         if (turns.length === 0) say("番の項目が無い");
@@ -4724,6 +4775,14 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           const cs = getComputedStyle(el);
           if (cs.backgroundColor !== turnSurface) say(`番の項目の地 ${cs.backgroundColor}（--turn-surface ${turnSurface} のはず）`);
           if (cs.borderLeftColor !== warning || cs.borderLeftWidth !== "3px") say(`番の項目の左の線 ${cs.borderLeftWidth} ${cs.borderLeftColor}（3px ${warning} のはず）`);
+        }
+        // 開いている番の項目（D3）: 地は番の面のまま、線は開いている印の --accent。席を開いた所では 1 つ在る
+        const openTurns = [...deck.querySelectorAll<HTMLElement>('.c-item[data-turn="true"][data-current="true"]')];
+        if (seatOpen && openTurns.length !== 1) say(`開いている番の項目が ${openTurns.length} 個（1 個のはず）`);
+        for (const el of openTurns) {
+          const cs = getComputedStyle(el);
+          if (cs.backgroundColor !== turnSurface) say(`開いている番の項目の地 ${cs.backgroundColor}（--turn-surface ${turnSurface} のはず）`);
+          if (cs.borderLeftColor !== accent || cs.borderLeftWidth !== "3px") say(`開いている番の項目の左の線 ${cs.borderLeftWidth} ${cs.borderLeftColor}（3px ${accent} のはず）`);
         }
         // 帯のボタン
         const acts = [...document.querySelectorAll("#c-band-root .c-band-ops [data-act]")].map((el) => el.getAttribute("data-act"));
@@ -4814,7 +4873,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           if (problems.length > 0) throw new Error(`入口の検査で ${problems.length} 件`);
         });
       }
-      // 流れの列（D1。スマホは D2）: 列の数と幅・はみ出し・番の項目の面と線・帯のボタン。項目から席（スマホはスレッド）を開いて、列と席の幅・開いた項目の印・席の面（D3。席と席の中（#ed）の地と台の色・見出しと入力欄の帯の線・欄の地）。
+      // 流れの列（D1。スマホは D2）: 列の数と幅・はみ出し・番の項目の面と線・帯のボタン。項目から席（スマホはスレッド）を開いて、列と席の幅・開いた項目の印（D3 から開いている番の項目の地と線も）・席の面（D3。席と席の中（#ed）の地と台の色・見出しと入力欄の帯の線・欄の地）・列と席の accent の塗りの量（D3）。
       // ダークのスマホは続けて、スレッドの間の帯とバー・戻る・当たり・帯の名前・下のバーで送った列・通知の列の縦の位置・歯車の板・古い hash・動きを減らす設定（phoneDeck）
       {
         const deckShots = [`${p}-a-deck`, `${p}-a-deck-seat`, ...(vp === "phone" && theme === "dark" ? [`${p}-a-deck-tasks`, `${p}-a-deck-feed`, `${p}-a-deck-more`] : [])];
@@ -4823,12 +4882,17 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           await page.waitForSelector("#v3[data-deck] #c-deck-root .c-deck .c-col", { timeout: 5000 });
           await settled(page);
           const problems: string[] = [...(await deckLines(page, vp, "列"))];
+          problems.push(...(await page.evaluate(accentProblems, { label: "列", areaMax: ACCENT_AREA_MAX, bigMax: ACCENT_BIG_MAX })));
           // スマホの帯の題は今の列（あなたの番）の名前と数で、帯のボタンに重ならない
           if (vp === "phone") problems.push(...bandTitleProblems(await page.evaluate(bandTitleState), `スマホの帯（${theme}）`).map((l) => `流れの列: ${l}`));
           await shot(page, `${p}-a-deck`);
-          await page.locator('#c-deck-root .c-col[data-col="turn"] .c-item[data-turn="true"] button.c-item-main').first().click();
+          const opener = page.locator('#c-deck-root .c-col[data-col="turn"] .c-item[data-turn="true"] button.c-item-main').first();
+          const openerBox = await opener.boundingBox();
+          await opener.click();
           await page.waitForSelector('#v3[data-view="body"] #ed textarea', { timeout: 5000 });
           await settled(page);
+          // 開いている番の項目の地（D3）は、押した後の指の hover（--muted）を外して測る。撮る前に指を押した所へ戻す（絵は今までと同じ状態）
+          await page.mouse.move(0, 0);
           problems.push(...(await deckLines(page, vp, "席")));
           // 席は 1 枚の板（D3 の PR-1）: 席の地は --surface・台は --bench・見出しの下と入力欄の帯の上に線が無い・欄の地は --muted
           problems.push(
@@ -4868,6 +4932,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           );
           const current = await page.evaluate(() => document.querySelectorAll('#c-deck-root .c-item[data-current="true"] > button.c-item-main[aria-current="true"]').length);
           if (current !== 1) problems.push(`流れの列（席）: 開いた項目の印（aria-current）が ${current} 個（1 個のはず）`);
+          problems.push(...(await page.evaluate(accentProblems, { label: "席", areaMax: ACCENT_AREA_MAX, bigMax: ACCENT_BIG_MAX })));
+          if (openerBox !== null) await page.mouse.move(openerBox.x + openerBox.width / 2, openerBox.y + openerBox.height / 2);
           await shot(page, `${p}-a-deck-seat`);
           if (vp === "phone" && theme === "dark") problems.push(...(await phoneDeck(page, p)));
           for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
@@ -5067,6 +5133,10 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         await shot(page, `${p}-b-chat-middle`);
         await scrollBottom(page);
         await shot(page, `${p}-b-chat-bottom`);
+        // accent の塗りの量（D3）
+        const accentLines = await page.evaluate(accentProblems, { label: "会話の下", areaMax: ACCENT_AREA_MAX, bigMax: ACCENT_BIG_MAX });
+        for (const line of accentLines) logLines.push(`[v3-${p}] ${line}`);
+        if (accentLines.length > 0) throw new Error(`accent の塗りの検査で ${accentLines.length} 件`);
       });
       // 本番の見出しの段（ダークの 3 組）
       if (theme === "dark") {
