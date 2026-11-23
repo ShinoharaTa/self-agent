@@ -11501,6 +11501,21 @@ test("web static: 流れの列の地は台（.v3[data-deck] に --bench）、席
   assert.ok(bodies(".v3-hand").some((b) => /(?:^|;)\s*background: var\(--bg\);/.test(b)), ".v3-hand");
 });
 
+test("web static: 新しい殻の板（歯車の板 .v3-sheet・始める板 .v3-start）は dialog の枠を外す（border: 0。幕で区切る）。ほかの規則で枠を書き戻さない", () => {
+  const css = read("shell.css").replace(/\/\*[\s\S]*?\*\//g, "");
+  const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ sel: m[1]!.trim().replace(/\s+/g, " "), body: m[2]!.trim() }));
+  for (const sel of [".v3-sheet", ".v3-start"]) {
+    const own = rules.filter((r) => r.sel.split(",").map((x) => x.trim()).includes(sel));
+    assert.ok(own.some((r) => /(?:^|;)\s*border: 0;/.test(r.body)), sel);
+    for (const r of own) {
+      for (const decl of r.body.split(";").map((d) => d.trim()).filter((d) => d !== "")) {
+        const prop = decl.slice(0, decl.indexOf(":")).trim();
+        if (prop.startsWith("border") && prop !== "border-radius") assert.equal(decl, "border: 0", `${r.sel}: ${decl}`);
+      }
+    }
+  }
+});
+
 // ===== スマホの流れの列（D2）: 上の帯・1 列ずつの横送り・下のバー（shell.js。入口は作り物） =====
 const lastDeckBar = (h: ReturnType<typeof loadShell>): DeckBarState => {
   const b = h.deck.bars.at(-1);

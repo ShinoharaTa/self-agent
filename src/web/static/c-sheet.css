@@ -1,8 +1,9 @@
-/* 板・確認・知らせ（c-sheet.js。docs/plan/web-ui-components.md §6 の K2）。幅・地・枠・角・影・背景は base.css の dialog のまま（PC は中央） */
+/* 板・確認・知らせ（c-sheet.js。docs/plan/web-ui-components.md §6 の K2）。幅・地・角・影・背景は base.css の dialog のまま（PC は中央）。板は幕で区切るので枠を付けない（D3） */
 
 /* ===== Sheet ===== */
 .c-sheet {
   padding: 0;
+  border: 0;
   max-height: calc(100dvh - var(--space-8));
   overflow: hidden;
   color: var(--text);
@@ -101,7 +102,6 @@
     max-width: none;
     margin: auto 0 0;
     padding-bottom: env(safe-area-inset-bottom, 0px);
-    border-width: var(--border-width) 0 0;
     border-radius: var(--radius-lg) var(--radius-lg) 0 0;
     opacity: 1;
     transform: translateY(100%);
