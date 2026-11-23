@@ -4771,6 +4771,52 @@ test("web components: DeckBand は点・名前・探す・右腕・始める・�
   assert.equal(find(one(html`<${deck.DeckBand} conn=${{ tone: "bad", label: "x" }} hand=${null} on=${on} />`), "c-band-dot")[0]?.props["data-tone"], "bad");
 });
 
+test("web components: DeckBand の hand が無い（null・undefined。広い幅で右腕の丸を描けた間。D6）なら［右腕］を出さず 点・探す・始める・ほか の順。ほかの出力は hand ありと同じ。phone は hand によらず同じ", () => {
+  const calls: unknown[][] = [];
+  const rec = (name: string) => (o?: unknown): void => void calls.push([name, o]);
+  const on = { status: rec("status"), find: rec("find"), hand: rec("hand"), start: rec("start"), more: rec("more") };
+  const acts = (t: El): unknown[] => {
+    const out: unknown[] = [];
+    const walk = (n: Tree) => {
+      if (typeof n === "string") return;
+      if (n.props["data-act"] !== undefined) out.push(n.props["data-act"]);
+      n.children.forEach(walk);
+    };
+    walk(t);
+    return out;
+  };
+  const conn = { tone: "ok", label: "見本の Bot: 接続中" };
+  const withHand = one(html`<${deck.DeckBand} conn=${conn} hand=${{ mark: "turn", open: false }} controls="v3-hand" on=${on} />`);
+  assert.deepEqual(acts(withHand), ["status", "find", "hand", "start", "more"]);
+  for (const hand of [null, undefined]) {
+    const band = one(html`<${deck.DeckBand} conn=${conn} hand=${hand} controls="v3-hand" on=${on} />`);
+    assert.deepEqual(acts(band), ["status", "find", "start", "more"], String(hand));
+    assert.equal(find(band, "c-band-hand").length, 0, String(hand));
+    assert.equal(find(band, "c-band-hand-mark").length, 0, String(hand));
+    assert.equal(textOf(find(band, "c-band-name")), "self-agent", String(hand));
+    assert.deepEqual(find(band, "c-btn-label").map(textOf), ["探す", "始める"], String(hand));
+    assert.deepEqual(find(band, "c-iconbtn").map((b) => b.props["aria-label"]), ["ほか"], String(hand));
+    // 右腕のほかは hand ありと同じ字
+    assert.equal(textOf(band), textOf(withHand).replace("右腕", ""), String(hand));
+    // phone は hand によらず同じ出力
+    const phone = one(html`<${deck.DeckBand} variant="phone" conn=${conn} hand=${hand} controls="v3-hand" on=${on} />`);
+    const phoneHand = one(html`<${deck.DeckBand} variant="phone" conn=${conn} hand=${{ mark: "turn", open: false }} controls="v3-hand" on=${on} />`);
+    assert.deepEqual(acts(phone), acts(phoneHand), String(hand));
+    assert.equal(textOf(phone), textOf(phoneHand), String(hand));
+  }
+  assert.deepEqual(calls, []);
+});
+
+test("web components: 流れの列の本体（.c-col-body）の下の余白は var(--c-deck-tail)（tokens.css の既定は var(--space-2) = 今の 8。丸の出る広い幅は shell.css が上書き。D6）", () => {
+  assert.match(read("tokens.css"), /\n {2}--c-deck-tail: var\(--space-2\);\n/);
+  const body = parseCss(read("c-deck.css")).filter((r) => r.selectors.includes(".c-col-body") && r.at.length === 0);
+  assert.equal(body.length, 1);
+  const pads = body[0]!.body.split(";").map((d) => d.trim()).filter((d) => d.startsWith("padding"));
+  assert.deepEqual(pads, ["padding-bottom: var(--c-deck-tail)"]);
+  // 上書きは c-deck.css の中に無い（スマホ・落ち先・見本は既定のまま）
+  assert.equal((stripCssComments(read("c-deck.css")).match(/--c-deck-tail/g) ?? []).length, 1);
+});
+
 test("web components: c-deck.css は区切りの線（左の線と 0 の外し・角丸のほかの border）・gradient・半透明・影・動きを書かない", () => {
   const rules = parseCss(read("c-deck.css"));
   assert.ok(rules.length > 0);
@@ -5153,7 +5199,7 @@ test("web components: 入口の下のバーの 3 つの口（drawBar・page・fo
   const guard = app.lastIndexOf("if (footRoot) {", at);
   assert.ok(guard > 0 && app.slice(guard, at).split("{").length === app.slice(guard, at).split("}").length + 1, "口を足すのが if (footRoot) の中でない");
   assert.equal([...app.matchAll(/window\.SA\.deck = /g)].length, 1);
-  assert.match(app, /window\.SA\.deck = \{ draw: drawDeck, drawBand, fit: deckFit, focusItem, focusBand \};/);
+  assert.match(app, /window\.SA\.deck = \{ draw: drawDeck, drawBand, fit: deckFit, focusItem, focusBand, drawOrb, focusOrb \};/);
   assert.equal([...app.matchAll(/addEventListener\("scroll"/g)].length, 1);
   assert.match(app.slice(guard, at), /deckRoot\.addEventListener\("scroll", onScroll, \{ capture: true, passive: true \}\);/);
   // 下のバーは deck の形で、列の名前は列のモデルから（入口に列の名前を書かない）

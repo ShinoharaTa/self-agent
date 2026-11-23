@@ -893,12 +893,17 @@ const BAND_TITLES = Object.freeze([
   { demo: "band-phone-feed", title: { name: "通知", count: 0 } },
 ]);
 
-/** 帯と 3 つの列の見本（列は見本の幅で 3 等分。band-phone・deck-paged・deck-phone-ops はスマホの幅の枠で、列は 1 列ずつ横に送る）。押しても何も起きない */
+/** 帯と 3 つの列の見本（列は見本の幅で 3 等分。band-no-hand は丸を描けた広い幅の帯（［右腕］なし）。band-phone・deck-paged・deck-phone-ops はスマホの幅の枠で、列は 1 列ずつ横に送る）。押しても何も起きない */
 function Decks() {
   return html`<${Section} name="deck" title="流れの列と上の帯">
     <div class="c-gallery-slide" data-demo="band">
       <div class="c-gallery-deck c-gallery-band">
         <${DeckBand} conn=${{ tone: "ok", label: "見本の Bot: 接続中" }} hand=${{ mark: "turn", open: false }} controls="v3-hand" on=${BAND_ON} />
+      </div>
+    </div>
+    <div class="c-gallery-slide" data-demo="band-no-hand">
+      <div class="c-gallery-deck c-gallery-band">
+        <${DeckBand} conn=${{ tone: "ok", label: "見本の Bot: 接続中" }} hand=${null} controls="v3-hand" on=${BAND_ON} />
       </div>
     </div>
     <div class="c-gallery-slide" data-demo="band-phone">
