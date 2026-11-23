@@ -344,7 +344,7 @@ export function channelRoutes(deps: ChannelRouteDeps): Route[] {
         const describe = cc?.describe();
         for (const guild of guilds) {
           if (!guild.setUp) continue;
-          // last は id・at・kind だけ（latestByChannel の lastAgent・lastOwnerId は出さない）
+          // last は id・at・kind だけ（latestByChannel の lastAgent・lastOwnerId・lastDividerId は出さない）
           const latest = new Map(
             [...history.latestByChannel(guild.id)].map(([channelId, row]) => [channelId, { id: row.id, at: row.at, kind: row.kind }]),
           );
