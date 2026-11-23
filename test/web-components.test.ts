@@ -2949,7 +2949,7 @@ test("web components: 入力欄の欄と写しは 1 つの規則で余白・枠�
   // 帯の地は書かない
   for (const r of own) assert.ok(!props(r).some((p) => p.startsWith("background")), "c-composer の地");
   // 帯の線も書かない（docs/plan/web-ui-deck.md §4.5）。欄の地は --muted
-  for (const r of rules.filter((x) => x.selectors.includes(".c-composer"))) assert.ok(!props(r).some((p) => p.startsWith("border")), `c-composer の線 ${r.body}`);
+  for (const r of rules.filter((x) => x.selectors.includes(".c-composer"))) assert.ok(!props(r).some((p) => p.startsWith("border") || p === "box-shadow"), `c-composer の線 ${r.body}`);
   assert.ok(rules.some((r) => r.at.length === 0 && r.selectors.length === 1 && r.selectors[0] === ".c-composer-input" && decls(r).includes("background: var(--muted)")), "欄の地 --muted");
   const src = stripCssComments(read("c-composer.css"));
   assert.doesNotMatch(src, /\b(?:animation|transition)(?:-[a-z-]+)?\s*:|@keyframes/);

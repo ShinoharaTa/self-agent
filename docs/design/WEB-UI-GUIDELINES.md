@@ -90,7 +90,7 @@
 | `--success` | 5.0 | 5.4 | 4.7 |
 | `--warning` | 4.9 | 5.3 | 4.6 |
 
-- 吹き出し: `--text` on `--bubble-owner` 12.7 / 13.4（ダーク / ライト）。地との差は `--bubble-owner` 1.34 / 1.23、`--bubble-agent` 1.16 / 1.15（色の差だけで見分け、枠は付けない）。`--bubble-agent` の上は `--text` 14.6 / 14.4・`--text-secondary` 7.8 / 6.1・`--text-muted` 5.4 / 4.4（ダーク / ライト）、ライトの `--accent` 4.8。ライトの `--text-muted` が 4.5 を割るので、Bot の吹き出しの上に `--text-muted` は置かない（実行中の直近の手順・手順の 1 行は `--text-secondary`、今の手順は `--text`。#118）。
+- 吹き出し: `--text` on `--bubble-owner` 12.7 / 13.4（ダーク / ライト）。地との差は `--bubble-owner` 1.34 / 1.23、`--bubble-agent` 1.16 / 1.15（`--bg` の上。色の差だけで見分け、枠は付けない）。流れの列の形の席は板（`--surface`）なので、その上では `--bubble-owner` 1.27 / 1.32、`--bubble-agent` 1.10 / 1.23。`--bubble-agent` の上は `--text` 14.6 / 14.4・`--text-secondary` 7.8 / 6.1・`--text-muted` 5.4 / 4.4（ダーク / ライト）、ライトの `--accent` 4.8。ライトの `--text-muted` が 4.5 を割るので、Bot の吹き出しの上に `--text-muted` は置かない（実行中の直近の手順・手順の 1 行は `--text-secondary`、今の手順は `--text`。#118）。
 - `--primary-text` on `--primary` 16.2 / 16.5、on `--accent` 6.7 / 5.5、on `--danger` 5.8 / 5.1（ボタンの文字）。
 - `--border` は飾りの線（1.2〜1.5）で、入力欄の枠にも使う。枠だけで欄を識別させない（ラベルと地の色の差で分かる）。フォーカスの輪（`--accent`）は地に対して 5.1 以上（3:1 を満たす） [hallmark]
 - 台 `--bench`: `--text` 17.8 / 15.1・`--text-muted` 6.6 / 4.6（ダーク / ライト）。板（`--surface`）との比は 1.10 / 1.18（`--bg` は 1.05 / 1.07 で、列と席の見分けに足りなかった）。ライトでは `--muted`・`--turn-surface` と 1.02 / 1.00 で見分けられないので、台の上に直に置くのは板だけ（字も置かない）。ライトの `--bench` は `#e6eaf0` まで暗くすると `--text-muted` が 4.46 で割るので、これより暗くしない。

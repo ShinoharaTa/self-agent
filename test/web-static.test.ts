@@ -2728,7 +2728,7 @@ test("web static: 新しい殻は上の安全域を .v3 の 1 か所で持ち、
   assert.ok(over.includes("top: env(safe-area-inset-top, 0px);"));
   assert.ok(!over.includes("top: 0;"));
   assert.ok(phoneRule(hand).includes("top: calc(var(--space-8) + env(safe-area-inset-top, 0px));"));
-  assert.equal(css.match(/safe-area-inset-top/g)?.length, 5);
+  assert.equal(css.match(/safe-area-inset-top/g)?.length, 7);
 });
 
 test("web static: 新しい殻のライトのステータスバーの帯は古い殻と同じ決定（standalone のときだけ --primary）", () => {
@@ -2739,7 +2739,23 @@ test("web static: 新しい殻のライトのステータスバーの帯は古�
   const block = css.slice(at, css.indexOf("\n}", at) + 2);
   const flat = block.replace(/\s+/g, " ");
   assert.ok(flat.includes(`.v3:is(:root[data-theme="light"] *) { background: ${band} var(--bg); }`), flat);
-  assert.ok(flat.includes(`@media (prefers-color-scheme: light) { .v3:is(:root:not([data-theme]) *) { background: ${band} var(--bg); } }`), flat);
+  // 流れの列の形（data-deck）は台（--bench）。地をまとめて書く上の規則が .v3[data-deck]（shell.css）に勝つので、同じ場所に data-deck の版を置く（D3）
+  assert.ok(flat.includes(`.v3[data-deck]:is(:root[data-theme="light"] *) { background: ${band} var(--bench); }`), flat);
+  assert.ok(
+    flat.includes(
+      `@media (prefers-color-scheme: light) { .v3:is(:root:not([data-theme]) *) { background: ${band} var(--bg); } .v3[data-deck]:is(:root:not([data-theme]) *) { background: ${band} var(--bench); } }`,
+    ),
+    flat,
+  );
+  // 地（background）を書く .v3 の規則は、どれも data-deck の版を持つ（持たないと、その条件でだけ台が --bg に戻る）
+  const grounds = [...css.matchAll(/([^{}@]+)\{([^{}]*)\}/g)]
+    .map((m) => ({ sel: m[1]!.trim().replace(/\s+/g, " "), body: m[2]! }))
+    .filter((r) => /^\.v3(?::is\(.*\))?$/.test(r.sel) && /(?:^|;)\s*background\s*:/.test(r.body));
+  assert.equal(grounds.length, 3);
+  for (const r of grounds) {
+    const deck = r.sel.replace(/^\.v3/, ".v3[data-deck]");
+    assert.ok(css.replace(/\s+/g, " ").includes(`${deck} { `), deck);
+  }
   assert.ok(at < css.indexOf("@media (max-width: 639px)"));
   assert.ok(!block.includes("dark"));
   // 古い殻（app.css の .wb-titlebar）と同じ値
