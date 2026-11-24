@@ -8198,6 +8198,10 @@ test("web static: 流れの列の形の開いた右腕の枠は、広い幅は�
   // 幅: 落ち先の形の列は --v3-hand-w（360）のまま、流れの列の形の枠は --c-hand-w（420）
   assert.match(css, /--v3-hand-w: 360px;/);
   assert.match(read("tokens.css"), /\n {2}--c-hand-w: 420px;\n/);
+  // 見本のページの一覧の入れ物とスマホの幅の枠（390）は、枠の幅に付いて広がらない（見本だけのトークン）
+  assert.match(read("tokens.css"), /\n {2}--c-gallery-pane-w: 360px;\n/);
+  assert.equal(read("c-gallery.css").match(/var\(--c-hand-w\)/g)?.length, 1);
+  assert.equal(read("c-gallery.css").match(/var\(--c-gallery-pane-w\)/g)?.length, 2);
 });
 
 // ===== 右腕の枠のレビューの直し（M3b。#357） =====
