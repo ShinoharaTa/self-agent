@@ -482,6 +482,43 @@
   border-top: 0;
 }
 
+/*
+ * 右腕の枠と幕が出るとき（display: none・hidden から出る）だけ動かす（D6 の PR-4）。広い幅は右から、スマホは下から --c-deck-seat-in + 透明 → 定位置。幕は透明 → 定位置。
+ * data-moves="on" は席と同じ印（最初の操作の後）。閉じるのはすぐ。丸は動かさない。reduced-motion では base.css が止める
+ */
+.v3[data-deck][data-moves="on"][data-hand="open"] .v3-hand {
+  transition-property: opacity, transform;
+  transition-duration: var(--dur-short);
+  transition-timing-function: var(--ease-out);
+}
+
+.v3[data-deck][data-moves="on"][data-hand="open"] .v3-hand-backdrop {
+  transition-property: opacity;
+  transition-duration: var(--dur-short);
+  transition-timing-function: var(--ease-out);
+}
+
+@starting-style {
+  .v3[data-deck][data-moves="on"][data-hand="open"] .v3-hand {
+    opacity: 0;
+    transform: translateX(var(--c-deck-seat-in));
+  }
+
+  .v3[data-deck][data-moves="on"][data-hand="open"] .v3-hand-backdrop {
+    opacity: 0;
+  }
+
+  .v3[data-deck][data-moves="on"][data-seat="full"][data-hand="open"] .v3-hand {
+    transform: translateY(var(--c-deck-seat-in));
+  }
+}
+
+/* スマホの枠と幕は long */
+.v3[data-deck][data-moves="on"][data-seat="full"][data-hand="open"] .v3-hand,
+.v3[data-deck][data-moves="on"][data-seat="full"][data-hand="open"] .v3-hand-backdrop {
+  transition-duration: var(--dur-long);
+}
+
 /* スマホの流れの列（data-seat="full"。D2）: 上の帯 / 1 列ずつ横に送る列 / 下のバー。スレッド（data-view="body"）は列の上に重ねる */
 .v3[data-deck][data-seat="full"] {
   grid-template-rows: var(--c-deck-band-h) minmax(0, 1fr) auto;
