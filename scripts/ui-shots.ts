@@ -2695,9 +2695,12 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     return lines;
   }
 
+  /** 作り物の右腕のまとめの知らせの <#ID> の話題の題（出た順。ui-shots-fixture.ts の tB1・tG3） */
+  const LEAD_REF_TITLES = ["記事の下書き", "ファームウェアの更新手順を README に書く。古い手順は消して、写真も撮り直す前提で"];
+
   /**
    * 段 c: 開いた右腕の中が部品（見出し・会話・札・入力欄）で描かれている。phone ならスマホで下のバーから開いた後（畳んで開き直し、焦点が入力欄に在るかも見る）。
-   * 絵を撮った後に呼ぶ。最後に札の［開く］を押すので、呼んだ後は列 2 にその話題が開いている。足りない物の文を返す
+   * 絵を撮った後に呼ぶ。まとめの知らせの札の［開く］を押して右腕を開き直した後、最後に返事の札の［開く］を押すので、呼んだ後は列 2 にその話題が開いている。足りない物の文を返す
    */
   async function handPartsLines(page: Page, vp: Viewport, phone: boolean): Promise<string[]> {
     const lines: string[] = [];
@@ -2717,7 +2720,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       }
     }
     lines.push(
-      ...(await page.evaluate(() => {
+      ...(await page.evaluate((want: string[]) => {
         const out: string[] = [];
         const count = (sel: string): number => document.querySelectorAll(sel).length;
         // 1. 古い道の物が無く、部品が 1 つずつ
@@ -2727,9 +2730,24 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         const titles = [...document.querySelectorAll("#c-hand-root .c-hand-head h2")].map((el) => (el.textContent ?? "").trim());
         if (count("#c-hand-root .c-hand-head") !== 1 || titles.join() !== "右腕") out.push(`右腕: 見出し ${count("#c-hand-root .c-hand-head")} 個・題 ${JSON.stringify(titles)}（1 つで「右腕」のはず）`);
         if (count("h1") > 1) out.push(`右腕: ページの h1 が ${count("h1")} 個`);
-        // 3. 札は作り物のデータの 2 つ。返事の本文に <# が残らない
-        if (count("#v3-hand-ed .c-ref") !== 2) out.push(`右腕: 札が ${count("#v3-hand-ed .c-ref")} 個（2 のはず）`);
+        // 3. 札は作り物のデータの 4 つ（まとめの知らせの下に 2 つ・最後の返事の下に 2 つ。D6 の PR-3）。返事の本文に <# が残らない
+        if (count("#v3-hand-ed .c-ref") !== 4) out.push(`右腕: 札が ${count("#v3-hand-ed .c-ref")} 個（4 のはず）`);
+        if (count("#v3-hand-ed .c-msg + .c-refs .c-ref") !== 2) out.push(`右腕: 返事の下の札が ${count("#v3-hand-ed .c-msg + .c-refs .c-ref")} 個（2 のはず）`);
         if ([...document.querySelectorAll("#v3-hand-ed .c-bubble")].some((el) => (el.textContent ?? "").includes("<#"))) out.push("右腕: 返事の本文に <# が残っている");
+        // 3b. まとめの知らせ（「終わりました」）のすぐ次が札の入れ物で、札は作り物の 2 つの話題（知らせの <#ID> の順）。知らせの本文に <# が残らない
+        {
+          const notices = [...document.querySelectorAll("#v3-hand-ed .c-notice")].filter((el) => (el.textContent ?? "").includes("終わりました"));
+          if (notices.length !== 1) out.push(`右腕: まとめの知らせが ${notices.length} 個（1 のはず）`);
+          for (const el of notices) {
+            if ((el.textContent ?? "").includes("<#")) out.push("右腕: まとめの知らせの本文に <# が残っている");
+            const next = el.nextElementSibling;
+            if (next === null || !next.classList.contains("c-refs")) out.push(`右腕: まとめの知らせのすぐ次が ${next === null ? "なし" : next.className}（.c-refs のはず）`);
+            else {
+              const titles = [...next.querySelectorAll(".c-ref .c-ref-title")].map((t) => (t.textContent ?? "").trim());
+              if (JSON.stringify(titles) !== JSON.stringify(want)) out.push(`右腕: まとめの知らせの札の題が ${JSON.stringify(titles)}（${JSON.stringify(want)} のはず）`);
+            }
+          }
+        }
         // 札の後: 右腕も席と同じ形（D4）: 自分の発言は 1 つ以上で左寄せの --muted の面（余白 10/14・下の地と違う色）、返事は 1 つ以上で地が透明・余白 0
         {
           const talkEl = document.querySelector("#v3-hand-ed .c-talk");
@@ -2778,7 +2796,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         if (input === null || input.placeholder !== "右腕に頼む・訊く") out.push(`右腕: 入力欄の placeholder が ${JSON.stringify(input?.placeholder ?? null)}`);
         if (count("#v3-hand-ed > [data-composer] .c-composer-count-text") !== 0) out.push("右腕: 空の入力欄に字数が出ている");
         return out;
-      })),
+      }, LEAD_REF_TITLES)),
     );
     // 4. 当たり
     lines.push(...(await page.evaluate(hitProblems, { min: HIT_MIN[vp], scopes: "#c-hand-root, #v3-hand-ed", targets: "button, textarea", toast: false })).map((l) => `右腕: ${l}`));
@@ -2793,10 +2811,30 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       await escSheet(page);
       if (!(await activeIs(page, MENU))) lines.push("右腕: 「…」の板を閉じた後の焦点が「…」に無い");
     }
-    // 8. 札の［開く］で、列 2 にその話題が開く（スマホは右腕が閉じる）
-    const ref = await page.evaluate(() => (document.querySelector("#v3-hand-ed .c-ref .c-ref-title")?.textContent ?? "").trim());
+    // 8a. まとめの知らせの札の［開く］で、列 2 にその話題が開き、流れの列の形（とスマホ）は右腕が閉じる（D6 の PR-3）。押した後は 8 の前に右腕を開き直す
+    const NOTICE_REF = "#v3-hand-ed .c-notice + .c-refs .c-ref";
+    const leadRef = await page.evaluate((sel: string) => (document.querySelector(`${sel} .c-ref-title`)?.textContent ?? "").trim(), NOTICE_REF);
+    if (leadRef !== "") {
+      await page.locator(`${NOTICE_REF} > button.c-btn`).first().click();
+      await page.waitForFunction((t: string) => (document.querySelector("#c-top-root .c-top-title")?.textContent ?? "").trim() === t, leadRef, { timeout: 5000 }).catch(() => undefined);
+      await settled(page);
+      const now = await page.evaluate(() => (document.querySelector("#c-top-root .c-top-title")?.textContent ?? "").trim());
+      if (now !== leadRef) lines.push(`右腕: まとめの知らせの札の［開く］の後の列 2 の題が「${now}」（「${leadRef}」のはず）`);
+      if ((vp === "phone" || (await deckOn(page))) && (await page.getAttribute("#v3", "data-hand")) !== "closed") lines.push("右腕: まとめの知らせの札の［開く］の後も右腕が開いている");
+      // 段 c の初めと同じ開き方で開き直す
+      await load(page, "/");
+      if (phone) await page.click(BAR_HAND);
+      else {
+        const show = await handShow(page);
+        if ((await page.getAttribute(show, "aria-expanded")) !== "true") await page.click(show);
+      }
+      await page.waitForSelector("#v3-hand-ed .c-msg + .c-refs .c-ref", { timeout: 5000 }).catch(() => undefined);
+      await settled(page);
+    }
+    // 8. 返事の札の［開く］で、列 2 にその話題が開く（スマホは右腕が閉じる）
+    const ref = await page.evaluate(() => (document.querySelector("#v3-hand-ed .c-msg + .c-refs .c-ref .c-ref-title")?.textContent ?? "").trim());
     if (ref !== "") {
-      await page.locator("#v3-hand-ed .c-ref > button.c-btn").first().click();
+      await page.locator("#v3-hand-ed .c-msg + .c-refs .c-ref > button.c-btn").first().click();
       await page.waitForFunction((t: string) => (document.querySelector("#c-top-root .c-top-title")?.textContent ?? "").trim() === t, ref, { timeout: 5000 }).catch(() => undefined);
       await settled(page);
       const now = await page.evaluate(() => (document.querySelector("#c-top-root .c-top-title")?.textContent ?? "").trim());
