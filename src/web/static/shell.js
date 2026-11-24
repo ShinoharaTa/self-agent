@@ -1134,7 +1134,7 @@
     SA.chat.markSeenShown();
   }
 
-  /** 席が開くときの動き（shell.css の [data-moves="on"]。D5 の PR-1）は最初の操作（pointerdown か keydown）の後だけ。読み込みで開いた席（hash）は動かさない。付けた後は外さない */
+  /** 席が開くとき・右腕の枠と幕が出るときの動き（shell.css の [data-moves="on"]。D5 の PR-1・D6 の PR-4）は最初の操作（pointerdown か keydown）の後だけ。読み込みで開いた席（hash）は動かさない。付けた後は外さない */
   function movesOn() {
     refs.v3.setAttribute("data-moves", "on");
   }
