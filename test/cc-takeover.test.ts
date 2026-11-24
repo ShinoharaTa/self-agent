@@ -168,7 +168,7 @@ function setup(t: TestContext, options: Options = {}) {
   const lookup: PaneLookup = {
     ok: true,
     find: () => undefined,
-    sendable: (target) => (target.pid === PID ? { ok: true, pane: { paneId: "%1" } as never } : { ok: false, reason: "not_in_tmux" }),
+    sendable: (target) => (target.pid === PID ? { ok: true, pane: { paneId: "%1", panePid: SHELL_PID } as never } : { ok: false, reason: "not_in_tmux" }),
     pane: () => undefined,
   };
   const registry = {
@@ -1442,17 +1442,32 @@ test("takeable(): ペインを撮る前に、撮らなくても断られるも�
   assert.equal(probes, 1);
 });
 
-test("takeable(): ペインを撮る口には、そのペインとそのセッションの claude の pid を渡す（前面の組の見分け。#502）", async (t) => {
+test("takeable(): ペインを撮る口には、そのペインとそのセッションの claude の pid とペインの pane_pid を渡す（ペインの端末の前面の組の見分け。#502）", async (t) => {
   const s = setup(t);
-  const calls: Array<[string, number]> = [];
+  const calls: Array<[string, number, number]> = [];
   const takeover = s.make({
-    probePane: async (paneId, pid) => {
-      calls.push([paneId, pid]);
+    probePane: async (paneId, pid, panePid) => {
+      calls.push([paneId, pid, panePid]);
       return { ok: true, state: "idle" };
     },
   });
   assert.deepEqual((await takeover.takeable()).map((row) => row.sessionId), [S1]);
-  assert.deepEqual(calls, [["%1", PID]]);
+  assert.deepEqual(calls, [["%1", PID, SHELL_PID]]);
+});
+
+test("見張り: main.ts は取り込みの probePane に、セッションの pid とペインの pane_pid で前面の組を読む front を渡す（#502）", () => {
+  const source = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+  assert.match(source, /\n {2}const frontOf = procForeground\(\);\n/);
+  const takeover = source.match(/new CcTakeover\(\{[\s\S]*?\n {2}\}\);/)?.[0];
+  assert.ok(takeover !== undefined);
+  const probeLine = takeover.match(/\n {4}probePane: [^\n]*/)?.[0];
+  assert.ok(probeLine !== undefined);
+  assert.match(probeLine, /probePane: \(paneId, pid, panePid\) => probePaneState\(\{/);
+  assert.match(probeLine, /front: \(\) => frontOf\(pid, panePid\)/);
+  // 送信の側も同じ読み手
+  const sender = source.match(/new CcSender\(\{[\s\S]*?\n {2}\}\);/)?.[0];
+  assert.ok(sender !== undefined);
+  assert.match(sender, /\n {4}frontOf,\n/);
 });
 
 test("propose・takeable: 準備ができていなければ一覧を読まずに not_ready・空", async (t) => {

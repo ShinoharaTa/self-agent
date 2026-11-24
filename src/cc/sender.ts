@@ -2,7 +2,7 @@
 // cc_sends に queued で積み、待ち行列（起動後は CC_SEND_RETRY_MS ごと。積んだときはすぐ）が古い順に 1 件ずつ試す（アプリ全体で同時に 1 つ）。
 // SDK のツール cc_send（CC7）は propose で Discord の確認待ち（awaiting_confirm）の行を作り、[送る]（confirm）で queued にする。
 // 試すたびに一覧（registry）の pid から送り先のペインを引き直し（祖先の関係で当たったものだけ。前面が claude かは見ず、not_claude は待つ（#284）。panes.ts の
-// findSendablePane。前面が claude かは名前か、claude の pid が端末の前面の組に居るか（frontOf。#502）で probePaneState が見分ける）、probePaneState が idle（2 回）のときだけ load-buffer → paste-buffer -p -d → 0.5 秒後に pasteLanded → Enter → 2 秒後に確かめる。
+// findSendablePane。前面が claude かは名前か、claude の pid がペインの端末と同じ端末の前面の組に居るか（frontOf。#502）で probePaneState が見分ける）、probePaneState が idle（2 回）のときだけ load-buffer → paste-buffer -p -d → 0.5 秒後に pasteLanded → Enter → 2 秒後に確かめる。
 // 貼れたか確かめられなければ Enter を押さず unconfirmed（やり直さない）。複数行が 1 行目で送信されたように見えるのが別の送信で
 // CC_MULTILINE_DETECT_LIMIT 回続いたら cc_state.multiline_ok を false にして #system に 1 行、以後は改行を空白に置き換えて送る
 // （戻すのは npm run cc-dry-run -- --reset-multiline）。idle でなければ積んだまま待ち、SELF_AGENT_CC_SEND_WAIT_MIN 分で gave_up。
@@ -120,8 +120,8 @@ export type CcSenderDeps = {
   cfg: Pick<Config, "ccSendWaitMin" | "allowedGuildIds">;
   registry: Pick<CcRegistry, "snapshot">;
   panes: Pick<CcPaneResolver, "lookup">;
-  /** pid が端末の前面のプロセスの組に居るか（panes.ts の procForeground。#502）。無ければ名前（pane_current_command）だけで見分ける */
-  frontOf?: ForegroundReader;
+  /** claude の pid がペインの端末と同じ端末の前面のプロセスの組に居るか（panes.ts の procForeground。#502）。分からなければ名前（pane_current_command）だけで見分ける */
+  frontOf: ForegroundReader;
   tmux: Pick<Tmux, "listPanes" | "listClients" | "capturePane" | "loadBuffer" | "pasteBuffer" | "deleteBuffer" | "sendEnter">;
   sends: Pick<
     CcSendStore,
@@ -521,12 +521,13 @@ export class CcSender {
     }
     const { frontOf } = this.deps;
     const pid = view.pid;
+    const panePid = target.pane.panePid;
     const probe = await probePaneState({
       tmux,
       paneId: target.pane.paneId,
       now: () => now().getTime(),
       sleep: this.sleep,
-      front: () => frontOf?.(pid),
+      front: () => frontOf(pid, panePid),
     });
     if (!probe.ok) {
       sends.noteAttempt(id, probe.reason);
