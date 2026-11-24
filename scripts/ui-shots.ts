@@ -2830,7 +2830,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       }
       await page.waitForSelector("#v3-hand-ed .c-msg + .c-refs .c-ref", { timeout: 5000 }).catch(() => undefined);
       await settled(page);
-    }
+    } else lines.push("右腕: まとめの知らせの札が無い（［開く］を押せない）");
     // 8. 返事の札の［開く］で、列 2 にその話題が開く（スマホは右腕が閉じる）
     const ref = await page.evaluate(() => (document.querySelector("#v3-hand-ed .c-msg + .c-refs .c-ref .c-ref-title")?.textContent ?? "").trim());
     if (ref !== "") {
@@ -2840,7 +2840,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       const now = await page.evaluate(() => (document.querySelector("#c-top-root .c-top-title")?.textContent ?? "").trim());
       if (now !== ref) lines.push(`右腕: 札の［開く］の後の列 2 の題が「${now}」（「${ref}」のはず）`);
       if (vp === "phone" && (await page.getAttribute("#v3", "data-hand")) !== "closed") lines.push("右腕: スマホで札の［開く］の後も右腕が開いている");
-    }
+    } else lines.push("右腕: 返事の札が無い（まとめの知らせの札の後に開き直した右腕で［開く］を押せない）");
     return lines;
   }
 
