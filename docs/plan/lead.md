@@ -138,7 +138,7 @@
 - 対象は設定の範囲（`SELF_AGENT_LEAD_SCOPE`。既定 `all` = 話題の全部のターン。`long` = 右腕・GitHub 経由の最初の一言か 2 分以上か done 以外。`right_hand` = 右腕が始めた話題）。入口（#inbox・#tasks・#<NAME>）と要約・予約した依頼のターンは `handleTurn` の事象を出さないので除く。
 - 鳴らし方（`SELF_AGENT_LEAD_RING`。既定 `long` = 上限・失敗で止まったか、2 分以上かかって終わったターンが在るとき。中断と `pinged` のターンは数えない）。鳴らす物と鳴らさない物が 1 通に混ざれば、その 1 通を鳴らす（mention は先頭に 1 つ）。止める env は `SELF_AGENT_LEAD_NOTIFY=0`。
 - まとめ方: 最初の事象から 60 秒待ち（延ばさない）、その間の分をサーバーごとに 1 通に（同じ話題は後の 1 つ）。文は決まった形（「終わりました: <#ID>（4 分）」「止まりました: <#ID>（上限。［続ける］が要ります）」「残り: 動いている 1・順番待ち 1・あなたの番 1」）。**担当の返事の本文は入れない**。1 通 10 行まで、超えたら件数。出せたら #inbox の history に notice 1 行（source system）。
-- Web: collector が右腕の `last` に、最後の行がまとめの notice（source system・`isLeadText`）なら `lead: true` を付け、`isUnread` が未読に数える。右腕の会話では、まとめの notice の `<#ID>` を返事と同じ `namedText` で話題の名前にし、部品の notice（`.c-notice`）は改行をそのまま出す。札（［開く］）は付けない。
+- Web: collector が右腕の `last` に、最後の行がまとめの notice（source system・`isLeadText`）なら `lead: true` を付け、`isUnread` が未読に数える。右腕の会話では、まとめの notice の `<#ID>` を返事と同じ `namedText` で話題の名前にし、部品の notice（`.c-notice`）は改行をそのまま出す。右腕の枠では、まとめの `<#ID>` にも返事と同じ札（［開く］。先頭 5 つ）を付ける（#463 の D6 PR-3）。
 - まとめの後に別の知らせが #inbox の最後に来ると、右腕の未読の点は消える（知らせは未読に数えない今の決まりのまま）。
 - 消えた話題の ID は `<#ID>` のまま出る（返事と同じ）。
 - 知らせの行は改行をそのまま出す（部品の会話の全部の知らせ。場所を変えた要点・Claude Code の返事の写しなども複数行になる）。
