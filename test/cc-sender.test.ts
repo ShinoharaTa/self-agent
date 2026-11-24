@@ -1,6 +1,6 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { CcPaneResolver } from "../src/cc/panes.ts";
+import { CcPaneResolver, type ForegroundReader } from "../src/cc/panes.ts";
 import type { CcSessionView, CcSnapshot } from "../src/cc/registry.ts";
 import {
   CC_ENTER_CHECK_DELAY_MS,
@@ -69,9 +69,9 @@ type Phase = "before" | "pasted" | "entered";
 
 /**
  * 本物の CcSender・CcPaneResolver・createTmux（偽の execFile）・一時 SQLite。claude（S1 の pid 500）の親 400 が %1 の pane_pid。
- * capture-pane は phase（貼る前・貼った後・Enter の後）ごとに screens の画面を返す
+ * capture-pane は phase（貼る前・貼った後・Enter の後）ごとに screens の画面を返す。frontOf は前面の組の見分け（#502。省略可）
  */
-function setup(t: TestContext) {
+function setup(t: TestContext, options: { frontOf?: ForegroundReader } = {}) {
   const db = tempDb(t);
   const clock = { now: BASE };
   const now = (): Date => new Date(clock.now);
@@ -126,6 +126,7 @@ function setup(t: TestContext) {
     cfg: { ccSendWaitMin: 120, allowedGuildIds: ["g1", "g2"] },
     registry,
     panes,
+    frontOf: options.frontOf,
     tmux,
     sends,
     sessions,
@@ -298,6 +299,39 @@ test("前面が claude でないペイン（コマンド実行中）には積ん
   await sender.idle();
   assert.equal(sends.get(result.send.id)?.state, "delivered");
   assert.ok(actions().length > 0);
+});
+
+test("名前が bash のペインでも、claude の pid が前面の組に居れば（frontOf が true）入力待ちで貼って delivered（包みの bash の起動の形。#502）", async (t) => {
+  const asked: number[] = [];
+  const { env, sender, sends, actions, commands } = setup(t, {
+    frontOf: (pid) => {
+      asked.push(pid);
+      return true;
+    },
+  });
+  env.panes = [paneLine("%1", 400, "bash"), paneLine("%2", 410)].join("\n");
+  env.screens.pasted = shown("包みの中へ");
+  const result = await sender.submit({ sessionId: S1, text: "包みの中へ", origin: "web" });
+  assert.ok(result.ok);
+  await sender.idle();
+  const row = sends.get(result.send.id)!;
+  assert.deepEqual([row.state, row.paneId], ["delivered", "%1"]);
+  assert.deepEqual(actions(), ["load-buffer", "paste-buffer", "send-keys"]);
+  assert.ok(commands.some((args) => args.join(" ") === "send-keys -t %1 Enter"));
+  // 読むのはそのセッション（S1）の claude の pid で、撮るたびに読む
+  assert.deepEqual(asked, [500, 500]);
+});
+
+test("名前が bash のペインで frontOf が false・無しなら、今までどおり積んで待つ（not_claude。#284・#502）", async (t) => {
+  for (const frontOf of [(): boolean => false, (): undefined => undefined, undefined]) {
+    const { env, sender, sends, actions } = setup(t, { frontOf });
+    env.panes = [paneLine("%1", 400, "bash"), paneLine("%2", 410)].join("\n");
+    const result = await sender.submit({ sessionId: S1, text: "後で", origin: "web" });
+    assert.ok(result.ok);
+    await sender.idle();
+    assert.deepEqual([sends.get(result.send.id)?.state, sends.get(result.send.id)?.lastPaneState], ["queued", "not_claude"]);
+    assert.deepEqual(actions(), []);
+  }
 });
 
 test("積んだ後に送り先が一覧から消えたら failed にして送らない（前面が claude でないだけなら待つ）", async (t) => {

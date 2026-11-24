@@ -41,6 +41,40 @@ export function procParentPid(procDir: string = "/proc"): ParentPidReader {
   };
 }
 
+/** pid が端末の前面のプロセスの組に居るか。分からなければ undefined（#502） */
+export type ForegroundReader = (pid: number) => boolean | undefined;
+
+/**
+ * /proc/<pid>/stat の中身から、そのプロセスが端末の前面のプロセスの組に居るか（純関数。#502）。parseStatParentPid と同じく最後の `)` の後ろから
+ * 読む（`<state> <ppid> <pgrp> <session> <tty_nr> <tpgid> …`）。pgrp・tpgid がどちらも 1 以上なら pgrp === tpgid、tpgid が -1（端末なし）・0 は false。
+ * 形が合わない・欄が足りなければ undefined
+ */
+export function parseStatForeground(stat: string): boolean | undefined {
+  const close = stat.lastIndexOf(")");
+  if (close < 0) return undefined;
+  const fields = stat.slice(close + 1).trim().split(/\s+/);
+  const pgrp = fields[2];
+  const tpgid = fields[5];
+  if (pgrp === undefined || tpgid === undefined || !/^-?\d{1,10}$/.test(pgrp) || !/^-?\d{1,10}$/.test(tpgid)) return undefined;
+  const group = Number(pgrp);
+  const front = Number(tpgid);
+  if (!Number.isSafeInteger(group) || !Number.isSafeInteger(front)) return undefined;
+  if (group < 1 || front < 1) return false;
+  return group === front;
+}
+
+/** /proc/<pid>/stat から、端末の前面のプロセスの組に居るかを読む。読めなければ undefined（procDir はテスト用。#502） */
+export function procForeground(procDir: string = "/proc"): ForegroundReader {
+  return (pid) => {
+    if (!Number.isSafeInteger(pid) || pid < 1) return undefined;
+    try {
+      return parseStatForeground(readFileSync(join(procDir, String(pid), "stat"), "utf8"));
+    } catch {
+      return undefined;
+    }
+  };
+}
+
 /** pid の祖先（親から順に depth 段まで）。1 以下（init・不明）に着いたら止める */
 export function ancestorPids(pid: number, parentOf: ParentPidReader, depth: number): number[] {
   const result: number[] = [];

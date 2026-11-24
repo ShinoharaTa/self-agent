@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   AGENT_LIST_MAX_ROWS,
+  classifyMeta,
   classifyPane,
   classifyScreen,
   comparableScreen,
@@ -354,6 +355,18 @@ test("classifyPane: 画面を見る前の状態（gone・not_claude・copy_mode�
   assert.equal(classifyPane({ pane: pane({ currentCommand: "bash" }) }, EMPTY, undefined, NOW), "not_claude");
 });
 
+test("classifyMeta: 名前が claude でなくても、claude の pid が前面の組に居れば（claudeFront）次の見分けへ進む（#502）", () => {
+  const shell = pane({ currentCommand: "bash" });
+  assert.equal(classifyMeta({ pane: shell, claudeFront: true }, NOW), undefined);
+  assert.equal(classifyMeta({ pane: pane({ currentCommand: "bash", inMode: true }), claudeFront: true }, NOW), "copy_mode");
+  assert.equal(classifyMeta({ pane: shell, claudeFront: true, lastClientActivityAt: NOW - 1000 }, NOW), "owner_active");
+  assert.equal(classifyMeta({ pane: pane({ currentCommand: "bash", dead: true }), claudeFront: true }, NOW), "gone");
+  // 印が無い・偽なら今までどおり not_claude
+  assert.equal(classifyMeta({ pane: shell }, NOW), "not_claude");
+  assert.equal(classifyMeta({ pane: shell, claudeFront: false }, NOW), "not_claude");
+  assert.equal(classifyPane({ pane: shell, claudeFront: true }, EMPTY, EMPTY, NOW), "idle");
+});
+
 test("classifyPane: 2 回撮る。2 回目で変化があれば busy、2 回目が idle でなければその状態", () => {
   assert.equal(classifyPane(META, EMPTY, EMPTY, NOW), "idle");
   assert.equal(classifyPane(META, PLACEHOLDER, PLACEHOLDER, NOW), "idle");
@@ -545,4 +558,40 @@ test("probePaneState: 撮らずに決まる状態・ペインが無い・サー�
   assert.deepEqual(await probePaneState({ tmux: elsewhere.tmux, paneId: "%1", now: () => NOW, sleep }), { ok: true, state: "idle" });
   const noServer = fakeTmux({ panes: { ok: false, reason: "no_server" }, captures: [] });
   assert.deepEqual(await probePaneState({ tmux: noServer.tmux, paneId: "%1", now: () => NOW, sleep }), { ok: false, reason: "no_server" });
+});
+
+test("probePaneState: 名前が bash でも front が true なら入力待ちの画面 2 回で idle。false・undefined・投げるなら not_claude（#502）", async () => {
+  const sleep = async (): Promise<void> => {};
+  const wrapped = fakeTmux({ captures: [EMPTY, EMPTY] });
+  let reads = 0;
+  const front = (): boolean => {
+    reads += 1;
+    return true;
+  };
+  assert.deepEqual(await probePaneState({ tmux: wrapped.tmux, paneId: "%2", now: () => NOW, sleep, front }), { ok: true, state: "idle" });
+  // 撮るたびに読む
+  assert.equal(reads, 2);
+  assert.equal(wrapped.calls.filter((call) => call.startsWith("capture")).length, 2);
+  for (const value of [false, undefined]) {
+    const shell = fakeTmux({ captures: [EMPTY, EMPTY] });
+    assert.deepEqual(await probePaneState({ tmux: shell.tmux, paneId: "%2", now: () => NOW, sleep, front: () => value }), {
+      ok: true,
+      state: "not_claude",
+    });
+    assert.ok(!shell.calls.some((call) => call.startsWith("capture")));
+  }
+  const throwing = fakeTmux({ captures: [EMPTY, EMPTY] });
+  const broken = (): boolean => {
+    throw new Error("read failed");
+  };
+  assert.deepEqual(await probePaneState({ tmux: throwing.tmux, paneId: "%2", now: () => NOW, sleep, front: broken }), { ok: true, state: "not_claude" });
+});
+
+test("probePaneState: front は撮るたびに読み直す。1 回目が true・2 回目が false なら not_claude（#502）", async () => {
+  const shell = fakeTmux({ captures: [EMPTY, EMPTY] });
+  const answers = [true, false];
+  const result = await probePaneState({ tmux: shell.tmux, paneId: "%2", now: () => NOW, sleep: async () => {}, front: () => answers.shift() });
+  assert.deepEqual(result, { ok: true, state: "not_claude" });
+  assert.deepEqual(answers, []);
+  assert.equal(shell.calls.filter((call) => call.startsWith("capture")).length, 1);
 });

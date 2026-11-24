@@ -1442,6 +1442,19 @@ test("takeable(): ペインを撮る前に、撮らなくても断られるも�
   assert.equal(probes, 1);
 });
 
+test("takeable(): ペインを撮る口には、そのペインとそのセッションの claude の pid を渡す（前面の組の見分け。#502）", async (t) => {
+  const s = setup(t);
+  const calls: Array<[string, number]> = [];
+  const takeover = s.make({
+    probePane: async (paneId, pid) => {
+      calls.push([paneId, pid]);
+      return { ok: true, state: "idle" };
+    },
+  });
+  assert.deepEqual((await takeover.takeable()).map((row) => row.sessionId), [S1]);
+  assert.deepEqual(calls, [["%1", PID]]);
+});
+
 test("propose・takeable: 準備ができていなければ一覧を読まずに not_ready・空", async (t) => {
   const s = setup(t, { ended: true });
   const takeover = s.make({ ready: () => false });

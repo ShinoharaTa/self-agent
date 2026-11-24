@@ -2,6 +2,8 @@
 // 判定は純関数（classifyPane）で、撮るのは probePaneState。idle を得たら 1.5 秒後にもう一度撮り、画面が 1 文字も変わらず、また idle なら確定
 // バックグラウンドのエージェントが在ると、Claude Code はフッターの下に一覧（`● main` の行と `◯ <名前>` の行）を出す。一覧は入力欄を
 // 下から押し上げ、動いているエージェントの行は時間・トークンの数が毎秒変わるので、入力欄を探す所と 2 回の撮り比べでは一覧を読み飛ばす（footerBounds。#456・#447）
+// pane_current_command が claude でなくても、claude の pid が端末の前面のプロセスの組に居れば claude の画面として見分ける（包みの bash が組の先頭の
+// 起動の形 `bash -c 'claude …; exec $SHELL'`。#502）
 import { setTimeout as sleepMs } from "node:timers/promises";
 import type { Tmux, TmuxPane } from "./tmux.ts";
 
@@ -80,6 +82,8 @@ export type PaneMeta = {
   pane: TmuxPane | undefined;
   /** そのセッションに付いているクライアントの最後の活動（ミリ秒）のうち最も新しいもの。クライアントが無ければ undefined */
   lastClientActivityAt?: number;
+  /** claude の pid が端末の前面のプロセスの組に居る（#502）。分からなければ無し */
+  claudeFront?: boolean;
 };
 
 type Token = { kind: "text"; text: string } | { kind: "sgr"; params: string } | { kind: "other" };
@@ -355,11 +359,14 @@ export function pasteSubmittedEarly(beforeRaw: string, afterRaw: string, text: s
   return stripAnsi(afterRaw).replace(/\s/g, "").includes(first);
 }
 
-/** 画面を撮らずに決まる状態（gone・not_claude・copy_mode・owner_active）。どれでもなければ undefined */
+/**
+ * 画面を撮らずに決まる状態（gone・not_claude・copy_mode・owner_active）。どれでもなければ undefined。
+ * not_claude は名前が claude でなく、claude の pid も前面の組に居ない（claudeFront が true でない）とき（包みの bash の起動の形。#502）
+ */
 export function classifyMeta(meta: PaneMeta, now: number): PaneState | undefined {
   const { pane } = meta;
   if (pane === undefined || pane.dead) return "gone";
-  if (pane.currentCommand !== CLAUDE_COMMAND) return "not_claude";
+  if (pane.currentCommand !== CLAUDE_COMMAND && meta.claudeFront !== true) return "not_claude";
   if (pane.inMode) return "copy_mode";
   if (meta.lastClientActivityAt !== undefined && now - meta.lastClientActivityAt < OWNER_ACTIVE_MS) return "owner_active";
   return undefined;
@@ -404,6 +411,11 @@ export type ProbeOptions = {
   now?: () => number;
   /** 既定は timers/promises の setTimeout */
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * claude の pid が端末の前面のプロセスの組に居るか（panes.ts の procForeground。#502）。ペインの情報を読むたびに呼び、true のときだけ
+   * meta の claudeFront にする（名前が claude でない包みの bash の起動の形でも見分ける）。無い・投げたら無しとして扱う
+   */
+  front?: () => boolean | undefined;
 };
 
 /** ペインの情報とクライアントの活動を取る */
@@ -433,8 +445,20 @@ export async function probePaneState(options: ProbeOptions): Promise<ProbeResult
     return { ok: false, reason: result.reason };
   };
 
-  const first = await readMeta(tmux, paneId);
-  if (!first.ok) return first;
+  // 前面の組の印はペインの情報を読むたびに読み直す（#502）
+  const withFront = (meta: PaneMeta): PaneMeta => {
+    let front: boolean | undefined;
+    try {
+      front = options.front?.();
+    } catch {
+      front = undefined;
+    }
+    return front === true ? { ...meta, claudeFront: true } : meta;
+  };
+
+  const read1 = await readMeta(tmux, paneId);
+  if (!read1.ok) return read1;
+  const first = { meta: withFront(read1.meta) };
   const byMeta = classifyMeta(first.meta, now());
   if (byMeta !== undefined) return { ok: true, state: byMeta };
   const shot1 = await capture();
@@ -444,8 +468,9 @@ export async function probePaneState(options: ProbeOptions): Promise<ProbeResult
   if (state1 !== "idle") return { ok: true, state: state1 };
 
   await sleep(SECOND_CAPTURE_DELAY_MS);
-  const second = await readMeta(tmux, paneId);
-  if (!second.ok) return second;
+  const read2 = await readMeta(tmux, paneId);
+  if (!read2.ok) return read2;
+  const second = { meta: withFront(read2.meta) };
   const byMeta2 = classifyMeta(second.meta, now());
   if (byMeta2 !== undefined) return { ok: true, state: byMeta2 };
   const shot2 = await capture();
