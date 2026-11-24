@@ -177,6 +177,8 @@ function newShellNames(vp: Viewport, theme: Theme, full: boolean): string[] {
     ...(vp === "pc" && theme === "dark" ? ["a-deck-rem"] : []),
     // 席だけの幅（幅 700 で席を開いた。D6。ダークの PC だけ）: 丸が無く、帯に［右腕］が出た所
     ...(vp === "pc" && theme === "dark" ? ["a-deck-solo"] : []),
+    // ［広げる］で右腕の会話を席に開いた所（D6 の PR-6b。ダークの PC だけ。タブレットは検査だけ）
+    ...(vp === "pc" && theme === "dark" ? ["c-hand-seat"] : []),
     "b-chat-top",
     "b-chat-middle",
     "b-chat-bottom",
@@ -2841,6 +2843,86 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       if (now !== ref) lines.push(`右腕: 札の［開く］の後の列 2 の題が「${now}」（「${ref}」のはず）`);
       if (vp === "phone" && (await page.getAttribute("#v3", "data-hand")) !== "closed") lines.push("右腕: スマホで札の［開く］の後も右腕が開いている");
     } else lines.push("右腕: 返事の札が無い（まとめの知らせの札の後に開き直した右腕で［開く］を押せない）");
+    return lines;
+  }
+
+  /** 右腕の見出しの［広げる］（入口 c-app.js の HandHead。D6 の PR-6b） */
+  const HAND_SEAT = '#c-hand-root [data-act="seat"] button';
+
+  /**
+   * ［広げる］で右腕の会話を席に開く（D6 の PR-6b。広い幅の流れの列の、列が見える幅）: 丸で開いた枠の見出しに［広げる］が 1 つ（名前「広げる」）で、押すと枠は閉じ、
+   * 席に右腕の会話が 1 つ（右腕の入れ物には 0）・席の題「右腕」・札 4 つ・入力欄の placeholder は枠と同じ・帯と丸と列は押せ・焦点は席の入力欄。
+   * 丸を押しても枠は開かず、焦点は席の入力欄。席を閉じた後の丸は枠を開く（会話は枠の 1 つだけ）。shotName が在れば席の絵を撮る
+   */
+  async function handSeatLines(page: Page, shotName: string | null): Promise<string[]> {
+    const lines: string[] = [];
+    const say = (text: string): void => void lines.push(`［広げる］: ${text}`);
+    const talks = (): Promise<{ seat: number; hand: number }> =>
+      page.evaluate(() => ({ seat: document.querySelectorAll("#ed .c-talk").length, hand: document.querySelectorAll("#v3-hand-ed .c-talk").length }));
+    await load(page, "/");
+    await page.click(ORB);
+    await page.waitForSelector('#v3[data-hand="open"]', { timeout: 5000 });
+    await page.waitForSelector("#v3-hand-ed textarea", { timeout: 5000 });
+    await settled(page);
+    const button = await page.evaluate((sel: string) => {
+      const found = [...document.querySelectorAll(sel)];
+      return { count: found.length, name: found[0]?.getAttribute("aria-label") ?? null };
+    }, HAND_SEAT);
+    if (button.count !== 1 || button.name !== "広げる") {
+      say(`枠の見出しの［広げる］が ${button.count} 個・名前 ${JSON.stringify(button.name)}（1 つで「広げる」のはず）`);
+      return lines;
+    }
+    const placeholder = await page.getAttribute("#v3-hand-ed textarea", "placeholder");
+    await page.click(HAND_SEAT);
+    await page.waitForSelector('#v3[data-hand="closed"][data-view="body"]', { timeout: 5000 });
+    await page.waitForSelector("#ed .c-talk", { timeout: 5000 });
+    await page.waitForSelector("#ed textarea", { timeout: 5000 });
+    await settled(page);
+    const seat = await page.evaluate(() => {
+      const count = (sel: string): number => document.querySelectorAll(sel).length;
+      const inert = ["#v3-band", "#v3-orb", "#v3-deck", "#v3-main"].filter((sel) => (document.querySelector(sel) as HTMLElement | null)?.inert === true);
+      return {
+        titles: [...document.querySelectorAll("#c-top-root .c-top-title")].map((el) => (el.textContent ?? "").trim()),
+        place: count("#c-top-root .c-top-place-text"),
+        refs: count("#ed .c-ref"),
+        head: count("#c-hand-root .c-hand-head"),
+        placeholder: document.querySelector("#ed textarea")?.getAttribute("placeholder") ?? null,
+        inert,
+        orbs: count('#c-orb-root button.c-orb[data-act="hand"]'),
+      };
+    });
+    const first = await talks();
+    if (first.seat !== 1 || first.hand !== 0) say(`席の会話が ${first.seat} 個・右腕の入れ物の会話が ${first.hand} 個（1 と 0 のはず。同じチャンネルを 2 か所に描かない）`);
+    if (seat.titles.join() !== "右腕") say(`席の題が ${JSON.stringify(seat.titles)}（「右腕」のはず）`);
+    if (seat.place !== 0) say(`席の見出しに場所が ${seat.place} 個（0 のはず）`);
+    if (seat.refs !== 4) say(`席の札が ${seat.refs} 個（4 のはず。枠と同じ）`);
+    if (seat.head !== 0) say(`枠の見出しが残っている（${seat.head} 個）`);
+    if (seat.placeholder !== placeholder) say(`席の入力欄の placeholder が ${JSON.stringify(seat.placeholder)}（枠と同じ ${JSON.stringify(placeholder)} のはず）`);
+    if (seat.inert.length > 0) say(`押せない物が在る（${seat.inert.join("・")}）`);
+    if (seat.orbs !== 1) say(`丸が ${seat.orbs} 個（1 のはず）`);
+    if (!(await activeIs(page, "#ed textarea"))) say(`押した後の焦点が席の入力欄に無い（${await activeTag(page)}）`);
+    lines.push(...(await page.evaluate(accentProblems, { label: "席の右腕", areaMax: ACCENT_AREA_MAX, bigMax: ACCENT_BIG_MAX })));
+    if (shotName !== null) await shot(page, shotName);
+    // 席に右腕が出ている間の丸: 枠は開かず、焦点は席の入力欄
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await page.click(ORB);
+    await settled(page);
+    if ((await page.getAttribute("#v3", "data-hand")) !== "closed") say("席に右腕が出ている間の丸で枠が開いた");
+    if (!(await activeIs(page, "#ed textarea"))) say(`席に右腕が出ている間の丸の後の焦点が席の入力欄に無い（${await activeTag(page)}）`);
+    // 席を閉じた後の丸は枠を開く（会話は枠の 1 つだけ）
+    await page.evaluate(() => history.back());
+    await page.waitForSelector('#v3[data-view="list"]', { timeout: 5000 });
+    await settled(page);
+    if ((await page.getAttribute("#v3", "data-hand")) !== "closed") say("席を閉じたら枠が開いた");
+    await page.click(ORB);
+    await page.waitForSelector('#v3[data-hand="open"]', { timeout: 5000 });
+    await page.waitForSelector("#v3-hand-ed .c-talk", { timeout: 5000 });
+    await settled(page);
+    const after = await talks();
+    if (after.seat !== 0 || after.hand !== 1) say(`席を閉じた後に開いた枠: 席の会話が ${after.seat} 個・枠の会話が ${after.hand} 個（0 と 1 のはず）`);
+    await page.keyboard.press("Escape");
+    await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
+    await settled(page);
     return lines;
   }
 
@@ -5874,6 +5956,14 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           });
         }
       }
+      // タブレット: ［広げる］で右腕の会話を席に開く検査だけ（絵は撮らない。D6 の PR-6b）。--only では席の絵（a-deck-seat）と一緒に回す。右腕を開くので、この組の最後の段
+      if (vp === "tablet") {
+        await step(`${p} seat-hand`, [`${p}-a-deck-seat`], async () => {
+          const problems = await handSeatLines(page, null);
+          for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
+          if (problems.length > 0) throw new Error(`［広げる］の検査で ${problems.length} 件`);
+        });
+      }
       if (!full) return;
       await step(`${p} b2`, [`${p}-b-chat-permission`, `${p}-b-chat-question`], async () => {
         await load(page, `/#/ch/${perm}`);
@@ -5911,6 +6001,12 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         await settled(page);
         // 丸で開いた枠の焦点は枠の中（最初に開いた枠は中身を読み込む前なので、入力欄か［畳む］。openHand の今の決まり。読み込んだ後に開いた入力欄は下の 2 回目で見る）
         if (vp !== "phone" && (await deckOn(page)) && !(await activeIs(page, "#v3-hand *"))) orbLines.push(`右腕の丸: 丸で開いた枠の焦点が枠の中に無い（${await activeTag(page)}）`);
+        // 枠の見出しの［広げる］は広い幅の流れの列だけ（D6 の PR-6b）。スマホには無い
+        {
+          const seats = await page.evaluate((sel: string) => document.querySelectorAll(sel).length, HAND_SEAT);
+          const want = vp !== "phone" && (await deckOn(page)) ? 1 : 0;
+          if (seats !== want) orbLines.push(`右腕の［広げる］が ${seats} 個（${want} のはず）`);
+        }
         // 流れの列の形の枠は 帯の下から・幅 420・線なし（D6 の PR-2。落ち先の形は見ない）
         if (await deckOn(page)) orbLines.push(...(await handFrameLines(page, vp)));
         await shot(page, handName);
@@ -6010,11 +6106,35 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
             await settled(page);
             const back = await count();
             if (back.orbs !== 1 || back.hands !== 0 || back.tone !== "accent") say(`席を閉じた後の丸が ${back.orbs} 個（顔 ${String(back.tone)}）・帯の［右腕］が ${back.hands} 個（丸 1 つ accent・帯 0 のはず）`);
+            // ［広げる］で席に右腕を開くと席が全面（丸なし・帯の［右腕］1 つ）で、帯の［右腕］は枠を開かず席の入力欄へ（D6 の PR-6b）
+            await page.click(ORB);
+            await page.waitForSelector('#v3[data-hand="open"]', { timeout: 5000 });
+            await page.waitForSelector("#v3-hand-ed textarea", { timeout: 5000 });
+            await settled(page);
+            await page.click(HAND_SEAT);
+            await page.waitForSelector('#v3[data-hand="closed"][data-view="body"] #ed textarea', { timeout: 5000 });
+            await settled(page);
+            const seated = await count();
+            if (seated.deck !== "0" || seated.orbs !== 0 || seated.hands !== 1) say(`［広げる］の後の data-deck が ${String(seated.deck)}・丸が ${seated.orbs} 個・帯の［右腕］が ${seated.hands} 個（0・0・1 のはず）`);
+            await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+            await page.click(bandButton("hand"));
+            await settled(page);
+            if ((await page.getAttribute("#v3", "data-hand")) !== "closed") say("席に右腕が出ている間の帯の［右腕］で枠が開いた");
+            if (!(await activeIs(page, "#ed textarea"))) say(`席に右腕が出ている間の帯の［右腕］の後の焦点が席の入力欄に無い（${await activeTag(page)}）`);
+            await page.evaluate(() => history.back());
+            await page.waitForSelector('#v3[data-view="list"]', { timeout: 5000 });
+            await settled(page);
           } finally {
             await page.setViewportSize(VIEWPORTS.pc.viewport);
           }
           for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
           if (problems.length > 0) throw new Error(`席だけの幅の検査で ${problems.length} 件`);
+        });
+        // ［広げる］で右腕の会話を席に開く（D6 の PR-6b）。右腕を開くので段 c の後に置く
+        await step(`${p} seat-hand`, [`${p}-c-hand-seat`], async () => {
+          const problems = await handSeatLines(page, `${p}-c-hand-seat`);
+          for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
+          if (problems.length > 0) throw new Error(`［広げる］の検査で ${problems.length} 件`);
         });
       }
       await step(`${p} e`, [`${p}-e-start-dialog`], async () => {
