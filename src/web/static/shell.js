@@ -908,13 +908,14 @@
     return true;
   }
 
-  /** 口の印（あなたの番 > 未読 で 1 つ。見えている右腕には未読を出さない） */
+  /** 口の印（あなたの番 > 未読 > 作業中 で 1 つ。見えている右腕には未読・作業中を出さない。作業中は右腕のチャンネルに実行中のターンが在る間） */
   function handMark() {
     const data = SA.topics.data();
     const hand = data && data.rightHands[0];
     if (!hand) return null;
     if (hand.turn) return "turn";
     if (!handVisible() && SA.store.isUnread({ id: handChannelId(), last: hand.last })) return "unread";
+    if (!handVisible() && SA.store.runningOf(handChannelId()) !== null) return "running";
     return null;
   }
 
@@ -923,10 +924,11 @@
     return el("span", { class: "dot " + (mark === "turn" ? "dot-warn" : "dot-unread"), "aria-hidden": "true" });
   }
 
-  /** 畳んだ帯の口の中身（印が前と同じなら触らない）と、下のバー・見出しの右腕の印 */
+  /** 畳んだ帯の口の中身（印が前と同じなら触らない）と、下のバー・見出しの右腕の印。畳んだ帯の口は作業中を印なしとして扱う */
   function renderHandEntries() {
     const mark = handMark();
-    const sig = String(mark);
+    const showMark = mark === "running" ? null : mark;
+    const sig = String(showMark);
     const fill = (id, build) => {
       const b = $(id);
       if (!b || b.getAttribute("data-sig") === sig) return;
@@ -934,10 +936,10 @@
       build(b);
     };
     fill("v3-hand-show", (b) => {
-      const label = "右腕を開く" + (mark ? "（" + HAND_MARK_TEXT[mark] + "）" : "");
+      const label = "右腕を開く" + (showMark ? "（" + HAND_MARK_TEXT[showMark] + "）" : "");
       b.setAttribute("aria-label", label);
       b.setAttribute("title", label);
-      b.replaceChildren(...[icon("bot"), handDot(mark)].filter(Boolean));
+      b.replaceChildren(...[icon("bot"), handDot(showMark)].filter(Boolean));
     });
     // 下のバーは毎回（件数は印と別に変わる）
     renderBottom(mark);

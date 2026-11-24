@@ -3357,6 +3357,8 @@ function loadShell(
     status: opts.status === undefined ? {} : opts.status,
     notices: null,
     isUnread: (_c: { id: string; last: unknown }) => false,
+    // 実行中のターン（api.js の store.runningOf。右腕の口の作業中の印）。既定は無し
+    runningOf: (_channelId: string | null): unknown => null,
     syncReads: (reads: unknown, ids: string[]) => {
       syncs.push({ reads: JSON.parse(JSON.stringify(reads ?? null)), ids: JSON.parse(JSON.stringify(ids)) });
       return true;
@@ -3772,7 +3774,7 @@ function loadShell(
     flush,
     fire,
     scroll,
-    store: SA.store as { status: unknown; notices: unknown; load: Record<string, unknown>; isUnread: (c: { id: string; last: unknown }) => boolean },
+    store: SA.store as { status: unknown; notices: unknown; load: Record<string, unknown>; isUnread: (c: { id: string; last: unknown }) => boolean; runningOf: (channelId: string | null) => unknown },
     document,
   };
 }
@@ -8096,6 +8098,71 @@ test("web static: 右腕の口の印は あなたの番 > 未読 で 1 つ、見
   assert.deepEqual(p.bottom().items[1], { act: "hand", label: "右腕に頼む・訊く", name: "右腕に頼む・訊く（あなたの番）", mark: "turn" });
 });
 
+test("web static: 右腕の口の印は あなたの番 > 未読 > 作業中 で 1 つ。作業中は右腕のチャンネルに実行中のターンが在り枠が見えていない間だけで、畳んだ帯の口は印なし", async () => {
+  const last = { id: 5, at: "2026-11-14T00:00:00.000Z", kind: "agent" };
+  const turn = { kind: "confirm", since: "2026-11-14T00:00:00.000Z", summary: null };
+  const run = { channelId: "900", turnSeq: 1 };
+  const dots = (n: DomNode) => n.querySelectorAll("span.dot").map((d) => d.getAttribute("class"));
+  // 番が在れば番（未読・作業中でも）
+  const t = loadShell({ width: 900 }) as HandShell;
+  await t.flush();
+  t.store.isUnread = () => true;
+  t.store.runningOf = () => run;
+  t.api.reply = () => Promise.resolve(v3Result([], { rightHands: [v3Hand({ turn, last })] }));
+  await t.topics.load();
+  assert.equal(t.bottomState().hand, "turn");
+  assert.equal(t.nodes.handShow.getAttribute("aria-label"), "右腕を開く（あなたの番）");
+  // 未読が在れば未読（作業中でも）
+  const u = loadShell({ width: 900 }) as HandShell;
+  await u.flush();
+  u.store.isUnread = () => true;
+  u.store.runningOf = () => run;
+  u.api.reply = () => Promise.resolve(v3Result([], { rightHands: [v3Hand({ last })] }));
+  await u.topics.load();
+  assert.equal(u.bottomState().hand, "unread");
+  assert.equal(u.nodes.handShow.getAttribute("aria-label"), "右腕を開く（未読）");
+  // どちらも無く、右腕のチャンネルに実行中のターンが在り枠が見えていない: 作業中（畳んだ帯の口は印なし・名前も足さない）
+  const r = loadShell({ width: 900 }) as HandShell;
+  await r.flush();
+  const asked: unknown[] = [];
+  r.store.runningOf = (id) => {
+    asked.push(id);
+    return id === "900" ? run : null;
+  };
+  r.api.reply = () => Promise.resolve(v3Result([], { rightHands: [v3Hand({ last })] }));
+  await r.topics.load();
+  r.app.open("tasks");
+  assert.equal(asked.at(-1), "900");
+  assert.equal(r.bottomState().hand, "running");
+  assert.equal(r.lastTop().hand, "running");
+  assert.equal(r.nodes.handShow.getAttribute("aria-label"), "右腕を開く");
+  assert.equal(r.nodes.handShow.getAttribute("title"), "右腕を開く");
+  assert.deepEqual(dots(r.nodes.handShow), []);
+  // 枠が見えている間は出さない。畳むと出る
+  r.nodes.handShow.dispatch("click");
+  assert.equal(r.bottomState().hand, null);
+  assert.equal(r.lastTop().hand, null);
+  r.nodes.backdrop.dispatch("click");
+  assert.equal(r.bottomState().hand, "running");
+  // 実行中のターンが終わる（runningOf が null）と、/api/running の変化と同じ道（refreshSidebar）で消える
+  r.store.runningOf = () => null;
+  r.app.refreshSidebar();
+  assert.equal(r.bottomState().hand, null);
+  assert.equal(r.lastTop().hand, null);
+  assert.equal(r.nodes.handShow.getAttribute("aria-label"), "右腕を開く");
+  // 始まると同じ道で出る
+  r.store.runningOf = () => run;
+  r.app.refreshSidebar();
+  assert.equal(r.bottomState().hand, "running");
+  // スマホの下のバーの右腕のボタンは「（作業中）」
+  const p = loadShell({ phone: true }) as HandShell;
+  await p.flush();
+  p.store.runningOf = () => run;
+  p.api.reply = () => Promise.resolve(v3Result([], { rightHands: [v3Hand({ last })] }));
+  await p.topics.load();
+  assert.deepEqual(p.bottom().items[1], { act: "hand", label: "右腕に頼む・訊く", name: "右腕に頼む・訊く（作業中）", mark: "running" });
+});
+
 test("web static: スマホの一覧で右腕を閉じた後、開いたボタンが文書に無ければ下のバーの右腕のボタンへ焦点を戻す", async () => {
   // (a) 開いたボタンが消えた: SA.list.focusHand で下のバーの右腕のボタン
   const h = await loadHand({ phone: true });
@@ -11612,6 +11679,43 @@ test("web static: 流れの列: 右腕の丸の入れ物（#v3-orb）は 重ね�
   lastOrb(u).on.hand(u.nodes.orbButton);
   assert.equal(lastOrb(u).mark, "turn");
   assert.equal(lastOrb(u).open, true);
+});
+
+test("web static: 流れの列: 右腕の作業中の印は丸（両方の顔）・帯の［右腕］・スマホの列の下のバーに渡り、枠が見えている間は出さない。番・未読が在ればそちら", async () => {
+  const run = { channelId: "900", turnSeq: 1 };
+  // 列だけ（accent）と席が開いている（quiet）
+  const h = await loadDeck({ width: 1440 });
+  h.store.runningOf = (id) => (id === "900" ? run : null);
+  h.app.refreshSidebar();
+  assert.deepEqual([lastOrb(h).mark, lastOrb(h).tone], ["running", "accent"]);
+  h.app.open("ch:1");
+  assert.deepEqual([lastOrb(h).mark, lastOrb(h).tone], ["running", "quiet"]);
+  h.history.back();
+  lastOrb(h).on.hand(h.nodes.orbButton);
+  assert.equal(lastOrb(h).mark, null);
+  h.nodes.backdrop.dispatch("click");
+  assert.equal(lastOrb(h).mark, "running");
+  // 未読が在れば未読
+  h.store.isUnread = () => true;
+  h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:1"), v3Topic("ch:2")], { rightHands: [v3Hand({ last: { id: 5, at: "2026-11-14T00:00:00.000Z", kind: "agent" } })] }));
+  await h.topics.load();
+  assert.equal(lastOrb(h).mark, "unread");
+  // 幅 700 で席（帯に［右腕］）
+  const n = await loadDeck({ width: 700 });
+  n.store.runningOf = (id) => (id === "900" ? run : null);
+  n.app.open("ch:1");
+  assert.deepEqual(JSON.parse(JSON.stringify(lastBand(n).hand)), { mark: "running", open: false });
+  lastBand(n).on.hand!(n.nodes.bandButtons.hand);
+  assert.deepEqual(JSON.parse(JSON.stringify(lastBand(n).hand)), { mark: null, open: true });
+  // スマホの列の下のバー
+  const p = await loadDeck({ phone: true, width: 390 });
+  p.store.runningOf = (id) => (id === "900" ? run : null);
+  p.app.refreshSidebar();
+  assert.equal(p.deck.bars.at(-1)?.hand, "running");
+  // 実行中のターンが無ければ印なし
+  p.store.runningOf = () => null;
+  p.app.refreshSidebar();
+  assert.equal(p.deck.bars.at(-1)?.hand, null);
 });
 
 test("web static: shell.css の右腕の丸の入れ物（.v3-orb。D6）は 落ち先で display: none、広い幅（side・fold）で列の場所の右下（格子の 1 列目・2 行目・end・--z-sash・下の余白に safe-area）、席が閉じている間だけ右の safe-area、席だけの幅で出さない。position を書かず、--c-deck-tail の上書きは広い幅の .v3-deck だけ", () => {
