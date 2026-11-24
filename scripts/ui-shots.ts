@@ -5469,18 +5469,22 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           {
             const sayHand = (text: string): void => void problems.push(`右腕の枠の動き: ${text}`);
             const HAND_OPEN = vp === "phone" ? BAR_HAND : ORB;
-            type HandStart = { moves: string | null; hand: string | null; frame: string[]; frameDur: number[]; frameEase: string[]; back: string[]; backDur: number[]; backEase: string[]; orb: number; shift: ShiftState; ease: string };
-            type ShiftState = { rootLeft: number; bodyLeft: number; v3Left: number; innerW: number; clientW: number; scrollW: number };
-            /** 画面が横にずれていないか（ページ・body・#v3 の scrollLeft が 0、送りの棒が出ていない（innerWidth = clientWidth）。after では はみ出しも残らない） */
+            type HandStart = { moves: string | null; hand: string | null; frame: string[]; frameDur: number[]; frameEase: string[]; back: string[]; backDur: number[]; backEase: string[]; orb: number; shift: ShiftState; ease: string; from: { opacity: string; transform: string; backOpacity: string } };
+            type ShiftState = { rootLeft: number; bodyLeft: number; v3Left: number; rootTop: number; bodyTop: number; v3Top: number; innerW: number; clientW: number; scrollW: number; innerH: number; clientH: number; scrollH: number };
+            /** 画面が横にも縦にもずれていないか（ページ・body・#v3 の scrollLeft・scrollTop が 0、送りの棒が出ていない（innerWidth = clientWidth・innerHeight = clientHeight）。after では はみ出しも残らない） */
             const shiftLines = (st: ShiftState, when: string, after: boolean): string[] =>
-              st.rootLeft !== 0 || st.bodyLeft !== 0 || st.v3Left !== 0 || st.innerW !== st.clientW || (after && st.scrollW > st.clientW)
-                ? [`${when}の横のずれ・送りの棒が ${JSON.stringify(st)}（scrollLeft は全部 0・innerWidth = clientWidth${after ? "・scrollWidth ≦ clientWidth" : ""} のはず）`]
+              st.rootLeft !== 0 || st.bodyLeft !== 0 || st.v3Left !== 0 || st.rootTop !== 0 || st.bodyTop !== 0 || st.v3Top !== 0 || st.innerW !== st.clientW || st.innerH !== st.clientH || (after && (st.scrollW > st.clientW || st.scrollH > st.clientH))
+                ? [`${when}のずれ・送りの棒が ${JSON.stringify(st)}（scrollLeft・scrollTop は全部 0・innerWidth = clientWidth・innerHeight = clientHeight${after ? "・scrollWidth ≦ clientWidth・scrollHeight ≦ clientHeight" : ""} のはず）`]
                 : [];
+            // いまのずれを読む式は、ページの中の 3 か所に同じ形で書く（ページの中の関数は外の物を使えない）
             const shiftNow = (): Promise<ShiftState> =>
               page.evaluate(() => {
                 const root = document.documentElement;
-                return { rootLeft: root.scrollLeft, bodyLeft: document.body.scrollLeft, v3Left: document.querySelector("#v3")?.scrollLeft ?? -1, innerW: window.innerWidth, clientW: root.clientWidth, scrollW: root.scrollWidth };
+                const v3 = document.querySelector("#v3");
+                return { rootLeft: root.scrollLeft, bodyLeft: document.body.scrollLeft, v3Left: v3?.scrollLeft ?? -1, rootTop: root.scrollTop, bodyTop: document.body.scrollTop, v3Top: v3?.scrollTop ?? -1, innerW: window.innerWidth, clientW: root.clientWidth, scrollW: root.scrollWidth, innerH: window.innerHeight, clientH: root.clientHeight, scrollH: root.scrollHeight };
               });
+            /** 出始めの枠のずれ（広い幅は右から・スマホは下から --c-deck-seat-in） */
+            const FROM = vp === "phone" ? `matrix(1, 0, 0, 1, 0, ${seatIn})` : `matrix(1, 0, 0, 1, ${seatIn}, 0)`;
             /** 口を押し、同じ処理の中で枠・幕・丸の動きと横のずれを読む（止めない） */
             const pressHand = (): Promise<HandStart | null> =>
               page.evaluate((sel: string) => {
@@ -5500,6 +5504,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
                 const f = of(hand);
                 const b = of(back);
                 const root = document.documentElement;
+                const v3 = document.querySelector("#v3");
                 return {
                   moves: document.querySelector("#v3")?.getAttribute("data-moves") ?? null,
                   hand: document.querySelector("#v3")?.getAttribute("data-hand") ?? null,
@@ -5510,8 +5515,9 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
                   backDur: b.durations,
                   backEase: b.easings,
                   orb: document.querySelector<HTMLElement>("#v3-orb")?.getAnimations({ subtree: true }).length ?? 0,
-                  shift: { rootLeft: root.scrollLeft, bodyLeft: document.body.scrollLeft, v3Left: document.querySelector("#v3")?.scrollLeft ?? -1, innerW: window.innerWidth, clientW: root.clientWidth, scrollW: root.scrollWidth },
+                  shift: { rootLeft: root.scrollLeft, bodyLeft: document.body.scrollLeft, v3Left: v3?.scrollLeft ?? -1, rootTop: root.scrollTop, bodyTop: document.body.scrollTop, v3Top: v3?.scrollTop ?? -1, innerW: window.innerWidth, clientW: root.clientWidth, scrollW: root.scrollWidth, innerH: window.innerHeight, clientH: root.clientHeight, scrollH: root.scrollHeight },
                   ease: getComputedStyle(root).getPropertyValue("--ease-out"),
+                  from: { opacity: getComputedStyle(hand).opacity, transform: getComputedStyle(hand).transform, backOpacity: getComputedStyle(back).opacity },
                 };
               }, HAND_OPEN);
             // 読み込み（右腕のチャンネルの hash）で開いた枠: 印が無く、枠と幕に動きの規則が当たらない
@@ -5547,6 +5553,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
             if ([...started.frameDur, ...started.backDur].some((d) => d !== want)) sayHand(`長さが 枠 ${started.frameDur.join("・")}・幕 ${started.backDur.join("・")}（${want} のはず）`);
             if (tight(started.ease) === "" || [...started.frameEase, ...started.backEase].some((e) => tight(e) !== tight(started.ease))) sayHand(`曲線が ${[...started.frameEase, ...started.backEase].join("・")}（--ease-out の ${started.ease.trim()} のはず）`);
             if (started.orb !== 0) sayHand(`開く間の丸の動きが ${started.orb} 個（0 のはず）`);
+            // 出始めの向きと量（広い幅は右へ・スマホは下へ --c-deck-seat-in、透明。幕は透明）
+            if (started.from.opacity !== "0" || started.from.transform !== FROM || started.from.backOpacity !== "0") sayHand(`出始めの枠・幕が ${JSON.stringify(started.from)}（透明・${FROM}・幕も透明のはず）`);
             for (const line of shiftLines(started.shift, "押した直後", false)) sayHand(line);
             await settled(page);
             const end = await page.evaluate(() => {
@@ -5578,6 +5586,30 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
               )
               .then((h) => h.jsonValue() as Promise<{ display: string; running: number }>, () => null);
             if (closed === null || closed.display !== "none" || closed.running !== 0) sayHand(`Esc で閉じた直後が ${JSON.stringify(closed)}（closed・display none・動き 0 のはず）`);
+            await settled(page);
+            // 入力欄でなく［畳む］に焦点が行く道（右腕のタブを開く。あなたの番 の右腕の項目・「探す」の行・hash と同じ）: 動きの間、［畳む］は画面の外へはみ出しているが、焦点で画面を送らない
+            const byTab = await page.evaluate(
+              (tab: string) => {
+                (window as unknown as { SA: { app: { open: (id: string) => void } } }).SA.app.open(tab);
+                const hand = document.querySelector<HTMLElement>("#v3-hand");
+                const root = document.documentElement;
+                const v3 = document.querySelector("#v3");
+                const active = document.activeElement;
+                return {
+                  hand: document.querySelector("#v3")?.getAttribute("data-hand") ?? null,
+                  running: hand === null ? 0 : hand.getAnimations().length,
+                  close: active !== null && active.closest('#v3-hand [data-act="close"]') !== null,
+                  shift: { rootLeft: root.scrollLeft, bodyLeft: document.body.scrollLeft, v3Left: v3?.scrollLeft ?? -1, rootTop: root.scrollTop, bodyTop: document.body.scrollTop, v3Top: v3?.scrollTop ?? -1, innerW: window.innerWidth, clientW: root.clientWidth, scrollW: root.scrollWidth, innerH: window.innerHeight, clientH: root.clientHeight, scrollH: root.scrollHeight },
+                };
+              },
+              handTab,
+            );
+            if (byTab.hand !== "open" || byTab.running === 0 || !byTab.close) sayHand(`右腕のタブを開いた直後が ${JSON.stringify({ hand: byTab.hand, running: byTab.running, close: byTab.close })}（open・動きあり・焦点は［畳む］のはず）`);
+            for (const line of shiftLines(byTab.shift, "右腕のタブを開いた直後（焦点は［畳む］）", false)) sayHand(line);
+            await settled(page);
+            for (const line of shiftLines(await shiftNow(), "右腕のタブを開いて動きが終わった後", true)) sayHand(line);
+            await page.keyboard.press("Escape");
+            await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
             await settled(page);
             // 動きを減らす設定: 押しても枠と幕の動きが 0 個
             await page.emulateMedia({ reducedMotion: "reduce" });

@@ -722,12 +722,12 @@ if (handRoot) {
     return true;
   };
 
-  /** 見出しのボタン（close・menu）にフォーカス。無ければ false */
+  /** 見出しのボタン（close・menu）にフォーカス。無ければ false。送らない（枠が出る動きの間、枠は画面の外へはみ出している。席の見出しと同じ） */
   const focusHand = (what) => {
     if (what !== "close" && what !== "menu") return false;
     const b = handButton(what);
     if (!b) return false;
-    b.focus();
+    b.focus({ preventScroll: true });
     return true;
   };
 
