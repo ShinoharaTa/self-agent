@@ -2376,7 +2376,7 @@ test("web components: talkModel: fmt.reply は Bot の返事の本文だけを�
   assert.deepEqual(talk.refsOf([{ id: "a", title: "A" }, { id: "a", title: "A2" }, { id: "b", title: "B" }]), [{ id: "a", title: "A", meta: "" }, { id: "b", title: "B", meta: "" }]);
 });
 
-test("web components: Refs と HandHead は Node で呼べる: 札は role も名前も持たず（題を 2 回読ませない）・meta が空なら span を作らない・［開く］の名前は「<題> を開く」で onOpen(id)（TalkRows の札の行は on.ref(id)。無ければ何もしない）。見出しは h2 と data-act（menu は menu のときだけ）・［畳む］の名前は「<題>を畳む」で on.close()", async () => {
+test("web components: Refs と HandHead は Node で呼べる: 札は role も名前も持たず（題を 2 回読ませない）・meta が空なら span を作らない・［開く］の名前は「<題> を開く」で onOpen(id)（TalkRows の札の行は on.ref(id)。無ければ何もしない）。見出しは h2 と data-act（menu は menu のときだけ。seat のときだけ題と「…」の間にアイコンだけの［広げる］で on.seat(押した要素)）・［畳む］の名前は「<題>を畳む」で on.close()", async () => {
   // press は後ろ（カードの節）で宣言されるので、ここでは自前で押す
   const tap = (b: El | undefined): void => (b?.props.onClick as (e: unknown) => void)(fakeEvent());
   const opened: unknown[] = [];
@@ -2422,6 +2422,34 @@ test("web components: Refs と HandHead は Node で呼べる: 札は role も�
     const bare = one(html`<${hand.HandHead} title="右腕" menu=${menu} on=${handOn} />`);
     assert.deepEqual(bare.children.map((c) => (c as El).props["data-act"]), [undefined, "close"]);
     assert.equal(find(bare, "c-iconbtn").length, 0);
+  }
+  // seat（#463 の D6）: 無い・偽なら今の並び（上の断言と同じ）、真なら 題・広げる・…・畳む
+  for (const seat of [false, undefined]) {
+    const plainHead = one(html`<${hand.HandHead} title="右腕" menu=${true} seat=${seat} on=${handOn} />`);
+    assert.deepEqual(plainHead.children.map((c) => (c as El).props["data-act"]), [undefined, "menu", "close"]);
+    assert.equal(find(plainHead, "c-iconbtn").length, 1);
+    assert.deepEqual(keysOf((hand.HandHead({ title: "右腕", menu: true, seat, on: handOn }) as VNode).props.children), ["title", "menu", "close"]);
+  }
+  const seatCalls: unknown[][] = [];
+  const seatOn = { ...handOn, seat: (...a: unknown[]) => void seatCalls.push(["seat", ...a]) };
+  const seatHead = one(html`<${hand.HandHead} title="右腕" menu=${true} seat=${true} on=${seatOn} />`);
+  assert.deepEqual(seatHead.children.map((c) => [(c as El).type, (c as El).props.class, (c as El).props["data-act"]]), [["h2", "c-hand-title", undefined], ["span", "c-hand-act", "seat"], ["span", "c-hand-act", "menu"], ["span", "c-hand-act", "close"]]);
+  assert.deepEqual(keysOf((hand.HandHead({ title: "右腕", menu: true, seat: true, on: seatOn }) as VNode).props.children), ["title", "seat", "menu", "close"]);
+  const seatBtns = find(seatHead.children[1] as El, "c-iconbtn");
+  assert.equal(seatBtns.length, 1);
+  const seatBtn = seatBtns[0] as El;
+  // アイコンだけ（字は出さない）。名前は「広げる」、アイコンは app の sprite の maximize
+  assert.deepEqual([seatBtn.type, seatBtn.props.type, seatBtn.props["aria-label"], seatBtn.props.title, textOf(seatBtn)], ["button", "button", "広げる", "広げる", ""]);
+  assert.equal(((find(seatBtn, "c-icon")[0] as El).children[0] as El).props.href, "/static/icons-app.svg#maximize");
+  assert.match(readFileSync(join(STATIC_DIR, "icons-app.svg"), "utf8"), /<symbol id="maximize"/);
+  const seatEv = fakeEvent();
+  (seatBtn.props.onClick as (e: unknown) => void)(seatEv);
+  assert.deepEqual(seatCalls, [["seat", seatEv.currentTarget]]);
+  // menu が偽で seat が真なら 題・広げる・畳む
+  for (const menu of [false, undefined]) {
+    const seatBare = one(html`<${hand.HandHead} title="右腕" menu=${menu} seat=${true} on=${seatOn} />`);
+    assert.deepEqual(seatBare.children.map((c) => (c as El).props["data-act"]), [undefined, "seat", "close"]);
+    assert.equal(find(seatBare, "c-iconbtn").length, 1);
   }
 });
 

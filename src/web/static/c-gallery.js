@@ -783,7 +783,13 @@ const HAND_TURNS = [
 ];
 const HAND_ON = { older() {}, toggleSteps() {}, toggleRunSteps() {}, stop() {}, continue() {}, ref() {} };
 
-/** 右腕の見本（右腕の列と同じ 360px の箱）。押しても何も起きない */
+/** 右腕の見出しの［広げる］の見本（seat。menu あり・なしの 2 つ） */
+const HAND_SEATS = [
+  { demo: "hand-seat", menu: true },
+  { demo: "hand-seat-bare", menu: false },
+];
+
+/** 右腕の見本（右腕の列と同じ 360px の箱）と、見出しだけの［広げる］の見本。押しても何も起きない */
 function Hands() {
   const model = talkModel({ channelId: "g-hand", turns: HAND_TURNS, hasMore: false, running: null, stopping: false, openSteps: new Set(), runStepsOpen: false, fmt: HAND_FMT, on: HAND_ON }, parseBlocks);
   return html`<${Section} name="hand" title="右腕">
@@ -791,6 +797,11 @@ function Hands() {
       <${HandHead} title="右腕" menu=${true} on=${{ menu() {}, close() {} }} />
       <${TalkTimeline} model=${model} on=${HAND_ON} />
     </div>
+    ${HAND_SEATS.map(
+      ({ demo, menu }) => html`<div data-demo=${demo} key=${demo}><div class="c-gallery-hand">
+        <${HandHead} title="右腕" menu=${menu} seat=${true} on=${{ seat() {}, menu() {}, close() {} }} />
+      </div></div>`,
+    )}
   <//>`;
 }
 
