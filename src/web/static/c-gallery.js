@@ -789,7 +789,7 @@ const HAND_SEATS = [
   { demo: "hand-seat-bare", menu: false },
 ];
 
-/** 右腕の見本（右腕の列と同じ 360px の箱）と、見出しだけの［広げる］の見本。押しても何も起きない */
+/** 右腕の見本（右腕の枠と同じ幅（`--c-hand-w`）の箱）と、見出しだけの［広げる］の見本。押しても何も起きない */
 function Hands() {
   const model = talkModel({ channelId: "g-hand", turns: HAND_TURNS, hasMore: false, running: null, stopping: false, openSteps: new Set(), runStepsOpen: false, fmt: HAND_FMT, on: HAND_ON }, parseBlocks);
   return html`<${Section} name="hand" title="右腕">
