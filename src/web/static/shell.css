@@ -467,6 +467,21 @@
   display: none;
 }
 
+/*
+ * 流れの列の形の開いた枠は 帯の下から・幅 --c-hand-w（420）・線なし（幕で区切る）。落ち先の形の枠は --v3-hand-w（360）のまま。
+ * 広い幅（side・fold。席だけの幅も）は上端を席の上端に揃えて左の線を、スマホ（full）は上の線を外す
+ */
+.v3[data-deck][data-seat="side"][data-hand-mode="over"][data-hand="open"] .v3-hand,
+.v3[data-deck][data-seat="fold"][data-hand-mode="over"][data-hand="open"] .v3-hand {
+  top: calc(env(safe-area-inset-top, 0px) + var(--c-deck-band-h) + var(--space-2));
+  width: min(var(--c-hand-w), 100%);
+  border-left: 0;
+}
+
+.v3[data-deck][data-seat="full"][data-hand-mode="over"][data-hand="open"] .v3-hand {
+  border-top: 0;
+}
+
 /* スマホの流れの列（data-seat="full"。D2）: 上の帯 / 1 列ずつ横に送る列 / 下のバー。スレッド（data-view="body"）は列の上に重ねる */
 .v3[data-deck][data-seat="full"] {
   grid-template-rows: var(--c-deck-band-h) minmax(0, 1fr) auto;

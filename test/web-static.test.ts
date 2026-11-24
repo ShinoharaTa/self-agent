@@ -2733,7 +2733,8 @@ test("web static: 新しい殻は上の安全域を .v3 の 1 か所で持ち、
   assert.ok(over.includes("top: env(safe-area-inset-top, 0px);"));
   assert.ok(!over.includes("top: 0;"));
   assert.ok(phoneRule(hand).includes("top: calc(var(--space-8) + env(safe-area-inset-top, 0px));"));
-  assert.equal(css.match(/safe-area-inset-top/g)?.length, 5);
+  // 6 つ目は流れの列の形の広い幅の枠の上端（帯の下から。D6 の PR-2）
+  assert.equal(css.match(/safe-area-inset-top/g)?.length, 6);
 });
 
 test("web static: 新しい殻のライトのステータスバーの帯は古い殻と同じ決定（standalone のときだけ --primary）", () => {
@@ -8167,6 +8168,36 @@ test("web static: 新しい殻（index.html）に右腕の枠と 2 つの口と�
   assert.match(css, /\.v3-hand-backdrop \{[^}]*z-index: var\(--z-drawer-backdrop\);[^}]*background: var\(--backdrop\);/);
   const phone = css.slice(css.indexOf("@media (max-width: 639px)"));
   assert.match(phone, /\.v3\[data-hand-mode="over"\]\[data-hand="open"\] \.v3-hand \{[^}]*top: calc\(var\(--space-8\) \+ env\(safe-area-inset-top, 0px\)\);[^}]*padding-bottom: env\(safe-area-inset-bottom, 0px\);/);
+});
+
+test("web static: 流れの列の形の開いた右腕の枠は、広い幅は帯の下から・幅 --c-hand-w（420）・左の線なし、スマホは上の線なしで、落ち先の形の線と幅（--v3-hand-w の 360）は残る（D6 の PR-2）", () => {
+  const css = read("shell.css").replace(/\/\*[\s\S]*?\*\//g, "");
+  const rules = [...css.matchAll(/([^{}@]+)\{([^{}]*)\}/g)].map((m) => ({ sel: m[1]!.trim().replace(/\s+/g, " "), body: m[2]!.trim() }));
+  const open = '[data-hand-mode="over"][data-hand="open"] .v3-hand';
+  // 広い幅: 席の形 side・fold の 2 つ（640〜739 の席だけの幅も、data-seat はこのどちらか）。スマホ（full）は含まない
+  const wide = rules.filter((r) => r.sel.split(",").some((p) => p.trim() === `.v3[data-deck][data-seat="side"]${open}`));
+  assert.equal(wide.length, 1);
+  assert.deepEqual(
+    wide[0]!.sel.split(",").map((p) => p.trim()),
+    [`.v3[data-deck][data-seat="side"]${open}`, `.v3[data-deck][data-seat="fold"]${open}`],
+  );
+  assert.ok(!wide[0]!.sel.includes('[data-seat="full"]'), wide[0]!.sel);
+  const top = /(?:^|;)\s*top:\s*([^;]+);/.exec(wide[0]!.body)?.[1] ?? "";
+  for (const part of ["env(safe-area-inset-top", "var(--c-deck-band-h)", "var(--space-2)"]) assert.ok(top.includes(part), `${part} in ${top}`);
+  assert.equal(top, "calc(env(safe-area-inset-top, 0px) + var(--c-deck-band-h) + var(--space-2))");
+  assert.match(wide[0]!.body, /(?:^|;)\s*width: min\(var\(--c-hand-w\), 100%\);/);
+  assert.match(wide[0]!.body, /(?:^|;)\s*border-left: 0;/);
+  // スマホ: 上の線を外すだけ
+  const phone = rules.filter((r) => r.sel === `.v3[data-deck][data-seat="full"]${open}`);
+  assert.equal(phone.length, 1);
+  assert.equal(phone[0]!.body, "border-top: 0;");
+  // 落ち先の形の線は残る（列の左の線と、スマホの枠の上の線）
+  assert.match(css, /\n\.v3-hand \{[^}]*border-left: var\(--border-width\) solid var\(--border\);/);
+  const phoneCss = css.slice(css.indexOf("@media (max-width: 639px)"));
+  assert.match(phoneCss, /\n {2}\.v3\[data-hand-mode="over"\]\[data-hand="open"\] \.v3-hand \{[^}]*border-top: var\(--border-width\) solid var\(--border\);/);
+  // 幅: 落ち先の形の列は --v3-hand-w（360）のまま、流れの列の形の枠は --c-hand-w（420）
+  assert.match(css, /--v3-hand-w: 360px;/);
+  assert.match(read("tokens.css"), /\n {2}--c-hand-w: 420px;\n/);
 });
 
 // ===== 右腕の枠のレビューの直し（M3b。#357） =====
