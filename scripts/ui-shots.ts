@@ -6209,7 +6209,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     if (lines.length > 0) throw new Error(`カードの見本の検査で ${lines.length} 件`);
   }
 
-  /** 見本の右腕（--c-hand-w = 420px の箱）: 見出しと札の形、横にはみ出さない事、当たり（PC でも 44）。足りない物は 1 行ずつ console.log に書き、1 つでもあれば投げて段を失敗にする */
+  /** 見本の右腕（--c-hand-w = 420px の箱）: 見出しと札の形、見出しの［広げる］の 2 つの見本、横にはみ出さない事、当たり（PC でも 44）。足りない物は 1 行ずつ console.log に書き、1 つでもあれば投げて段を失敗にする */
   async function checkHands(page: Page, label: string): Promise<void> {
     const lines = await page.evaluate(() => {
       const out: string[] = [];
@@ -6274,6 +6274,38 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         if (r.left < b.left - 0.5 || r.right > b.right + 0.5) out.push(`右腕: ${el.className} が箱の外（${r.left.toFixed(1)}〜${r.right.toFixed(1)}、箱 ${b.left.toFixed(1)}〜${b.right.toFixed(1)}）`);
       }
       for (const el of box.querySelectorAll(".c-ref-title, .c-hand-title")) if (el.scrollWidth > el.clientWidth + 1 && getComputedStyle(el).textOverflow !== "ellipsis") out.push(`右腕: ${el.className} が省かれずにはみ出している`);
+      // 見出しの［広げる］の見本（seat。#463 の D6）: 並びは 題・広げる・（…）・畳む、［広げる］はアイコンだけで名前「広げる」、題と次のボタンの間に在り、どれも箱の中、題は省かれない（当たりは下の hitProblems が節ごと測る）
+      for (const [demo, want] of [["hand-seat", "seat,menu,close"], ["hand-seat-bare", "seat,close"]] as const) {
+        const seatBox = document.querySelector(`[data-section="hand"] [data-demo="${demo}"] .c-gallery-hand`);
+        if (seatBox === null) {
+          out.push(`右腕: ${demo} の見本の箱が無い`);
+          continue;
+        }
+        const seatActs = [...seatBox.querySelectorAll(".c-hand-head [data-act]")].map((el) => el.getAttribute("data-act"));
+        if (seatActs.join(",") !== want) out.push(`右腕: ${demo} の見出しのボタン ${seatActs.join(",")}（${want} のはず）`);
+        const buttons = seatBox.querySelectorAll(".c-hand-head [data-act] > button").length;
+        if (buttons !== want.split(",").length) out.push(`右腕: ${demo} の見出しのボタンが ${buttons}（${want.split(",").length} のはず）`);
+        const seatBtn = seatBox.querySelector('.c-hand-head [data-act="seat"] > button');
+        const title = seatBox.querySelector(".c-hand-head h2.c-hand-title");
+        const next = seatBox.querySelector('.c-hand-head [data-act="seat"] + [data-act]');
+        if (seatBtn === null || title === null || next === null) {
+          out.push(`右腕: ${demo} の［広げる］・題・次のボタンのどれかが無い`);
+          continue;
+        }
+        if (seatBtn.getAttribute("aria-label") !== "広げる") out.push(`右腕: ${demo} の［広げる］の名前が ${JSON.stringify(seatBtn.getAttribute("aria-label"))}（「広げる」のはず）`);
+        if ((seatBtn.textContent ?? "").trim() !== "" || seatBtn.querySelectorAll("svg").length !== 1) out.push(`右腕: ${demo} の［広げる］がアイコン 1 つだけでない`);
+        const tr = title.getBoundingClientRect();
+        const sr = seatBtn.getBoundingClientRect();
+        const nr = next.getBoundingClientRect();
+        if (sr.left < tr.right - 0.5 || sr.right > nr.left + 0.5) out.push(`右腕: ${demo} の［広げる］（${sr.left.toFixed(1)}〜${sr.right.toFixed(1)}）が題の右端 ${tr.right.toFixed(1)} と次のボタンの左端 ${nr.left.toFixed(1)} の間に無い`);
+        if (title.scrollWidth > title.clientWidth + 1 || tr.width < 1) out.push(`右腕: ${demo} の題が押し出されている（${title.scrollWidth} > ${title.clientWidth}）`);
+        if (seatBox.scrollWidth > seatBox.clientWidth) out.push(`右腕: ${demo} の箱が横にはみ出している（${seatBox.scrollWidth} > ${seatBox.clientWidth}）`);
+        const sb = seatBox.getBoundingClientRect();
+        for (const el of seatBox.querySelectorAll(".c-hand-head, .c-hand-act, .c-hand-title")) {
+          const r = el.getBoundingClientRect();
+          if (r.left < sb.left - 0.5 || r.right > sb.right + 0.5) out.push(`右腕: ${demo} の ${el.className} が箱の外（${r.left.toFixed(1)}〜${r.right.toFixed(1)}、箱 ${sb.left.toFixed(1)}〜${sb.right.toFixed(1)}）`);
+        }
+      }
       return out;
     });
     lines.push(...(await page.evaluate(hitProblems, { min: 44, scopes: '[data-section="hand"]', targets: "button", toast: false })).map((line) => `右腕: ${line}`));
