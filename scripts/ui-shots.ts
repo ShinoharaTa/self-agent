@@ -2637,9 +2637,10 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
 
   /**
    * 段 c: 流れの列の形の開いた右腕の枠（D6 の PR-2）。広い幅は 上端 = 帯（#v3-band）の下端 + 8・幅 420・右端 = 画面の右端・左の線 0・帯と重ならない・
-   * 右下の丸の中心を引くと丸でも丸の子でもない（枠の中か幕）。スマホは上の線 0。枠を開いて settled の後に呼ぶ。落ち先の形では呼ばない。足りない物の文を返す
+   * 右下の丸の中心を引くと丸でも丸の子でもない（枠の中か幕。orb が false なら丸の無い画面 = 席だけの幅 なので見ない）。スマホは上の線 0。
+   * どちらも枠が開いていて幅が在る事を先に見る。枠を開いて settled の後に呼ぶ。落ち先の形では呼ばない。足りない物の文を返す
    */
-  async function handFrameLines(page: Page, vp: Viewport): Promise<string[]> {
+  async function handFrameLines(page: Page, vp: Viewport, orb = true): Promise<string[]> {
     const got = await page.evaluate((orbSel: string) => {
       const hand = document.querySelector<HTMLElement>("#v3-hand");
       const band = document.querySelector<HTMLElement>("#v3-band");
@@ -2662,6 +2663,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
                 : `${el.tagName.toLowerCase()}${el.id === "" ? "" : "#" + el.id}.${el.classList[0] ?? ""}`;
       }
       return {
+        open: document.querySelector('#v3[data-hand="open"]') !== null,
         top: h.top,
         right: h.right,
         width: h.width,
@@ -2675,6 +2677,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       };
     }, ORB);
     if (got === null) return ["右腕の枠: #v3-hand か帯（#v3-band）が無い"];
+    if (!got.open || got.width <= 0) return [`右腕の枠: 枠が開いていない（data-hand が open でないか、幅 ${got.width.toFixed(1)}）`];
     const lines: string[] = [];
     if (vp === "phone") {
       if (got.topLine !== "0px") lines.push(`右腕の枠: スマホの枠の上の線が ${got.topLine}（0 のはず）`);
@@ -2685,7 +2688,9 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     if (Math.abs(got.right - got.vw) > 0.5) lines.push(`右腕の枠: 枠の右端 ${got.right.toFixed(1)} が画面の右端 ${got.vw} でない`);
     if (got.left !== "0px") lines.push(`右腕の枠: 枠の左の線が ${got.left}（0 のはず）`);
     if (got.top < got.bandBottom - 0.5) lines.push(`右腕の枠: 帯（${got.bandTop.toFixed(1)}〜${got.bandBottom.toFixed(1)}）と枠（上端 ${got.top.toFixed(1)}）が重なる`);
-    if (!got.orb) lines.push("右腕の枠: 右腕の丸が DOM に無い（丸の上の当たりを見られない）");
+    if (!orb) {
+      if (got.orb) lines.push("右腕の枠: 丸の無いはずの画面に右腕の丸が在る");
+    } else if (!got.orb) lines.push("右腕の枠: 右腕の丸が DOM に無い（丸の上の当たりを見られない）");
     else if (got.orbHit !== "ok") lines.push(`右腕の枠: 枠を開いた間に丸の中心で引いた要素が ${got.orbHit}（枠の中か幕のはず）`);
     return lines;
   }
@@ -5741,6 +5746,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
               const inside = round === 1 ? "#v3-hand *" : "#v3-hand-ed textarea";
               if (!(await activeIs(page, inside))) after.push(`右腕の丸: 席が開いている間に丸で開いた枠（${round} 回目）の焦点が${round === 1 ? "枠の中" : "入力欄"}に無い（${await activeTag(page)}）`);
               if ((await page.getAttribute(ORB, "aria-expanded")) !== "true") after.push(`右腕の丸: 枠が開いているのに aria-expanded が true でない（${round} 回目）`);
+              // 席が開いている間の枠も同じ形で、丸（枠の左）は幕の下
+              if (round === 2) after.push(...(await handFrameLines(page, vp)));
               await page.keyboard.press("Escape");
               await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
               await settled(page);
@@ -5788,6 +5795,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
             await settled(page);
             // 最初に開いた枠は中身を読み込む前なので、焦点は入力欄か［畳む］（openHand の今の決まり。読み込んだ後に開くと入力欄。段 c の 2 回目で見る）
             if (!(await activeIs(page, "#v3-hand *"))) say(`帯の［右腕］で開いた枠の焦点が枠の中に無い（${await activeTag(page)}）`);
+            // 席だけの幅（data-seat は fold）でも枠は 帯の下から・幅 420・左の線なし。丸は無い
+            for (const line of await handFrameLines(page, vp, false)) say(line);
             await page.keyboard.press("Escape");
             await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
             await settled(page);
@@ -5997,7 +6006,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     if (lines.length > 0) throw new Error(`カードの見本の検査で ${lines.length} 件`);
   }
 
-  /** 見本の右腕（360px の箱）: 見出しと札の形、横にはみ出さない事、当たり（PC でも 44）。足りない物は 1 行ずつ console.log に書き、1 つでもあれば投げて段を失敗にする */
+  /** 見本の右腕（--c-hand-w = 420px の箱）: 見出しと札の形、横にはみ出さない事、当たり（PC でも 44）。足りない物は 1 行ずつ console.log に書き、1 つでもあれば投げて段を失敗にする */
   async function checkHands(page: Page, label: string): Promise<void> {
     const lines = await page.evaluate(() => {
       const out: string[] = [];
