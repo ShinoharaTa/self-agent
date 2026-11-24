@@ -175,8 +175,8 @@ export type CcTakeoverDeps = {
   registry: Pick<CcRegistry, "tick" | "snapshot">;
   /** 共存の間だけ（X3 で外す）。ペインを引く口。panes か probePane が無ければ、生きているセッションはすべて not_in_tmux で断る（§3.4） */
   panes?: Pick<CcPaneResolver, "lookup">;
-  /** 共存の間だけ（X3 で外す）。ペインを撮って状態を返す（tmux/pane-state.ts の probePaneState） */
-  probePane?: (paneId: string) => Promise<ProbeResult>;
+  /** 共存の間だけ（X3 で外す）。ペインを撮って状態を返す（tmux/pane-state.ts の probePaneState。pid はそのセッションの claude で、前面の組の見分けに使う。#502） */
+  probePane?: (paneId: string, pid: number) => Promise<ProbeResult>;
   dirs: Pick<ClaudeDirs, "sessionFile">;
   takeovers: CcTakeoverStore;
   /** 共存の間だけ（X3 で外す）。取り込んだセッションの cc のチャンネルを deleted にして案内する（§3.2）。無ければ何もしない */
@@ -956,7 +956,7 @@ export class CcTakeover {
       if (!lookup.ok) return lookup.reason === "no_server" ? "not_in_tmux" : "failed";
       const target = lookup.sendable({ pid: view.pid, tmux: view.tmux });
       if (!target.ok) return "not_in_tmux";
-      const probe = await probePane(target.pane.paneId);
+      const probe = await probePane(target.pane.paneId, view.pid);
       return probe.ok ? probe.state : "failed";
     } catch {
       return "failed";

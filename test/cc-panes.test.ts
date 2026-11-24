@@ -9,7 +9,9 @@ import {
   findSendablePane,
   findSessionPane,
   paneIdOfHint,
+  parseStatForeground,
   parseStatParentPid,
+  procForeground,
   procParentPid,
 } from "../src/cc/panes.ts";
 import type { TmuxPane, TmuxResult } from "../src/tmux/tmux.ts";
@@ -60,6 +62,37 @@ test("procParentPid: <procDir>/<pid>/stat を読む。無い・不正な pid は
   assert.equal(parentOf(4322), undefined);
   assert.equal(parentOf(0), undefined);
   assert.equal(parentOf(-1), undefined);
+});
+
+test("parseStatForeground: pgrp（3 つ目）と tpgid（6 つ目）が同じなら true。違う・tpgid が -1・0 は false。形が合わなければ undefined（#502）", () => {
+  // 包みの bash の組に居る claude（組の先頭は bash）でも、組が前面なら true
+  assert.equal(parseStatForeground("4321 (claude) S 4300 4300 4300 34816 4300 4194560"), true);
+  assert.equal(parseStatForeground("4321 (claude) S 4300 4321 4300 34816 4321 4194560"), true);
+  // 子（Bash のツールのコマンドなど）が別の組で前面に居る
+  assert.equal(parseStatForeground("4321 (claude) S 4300 4321 4300 34816 4400 4194560"), false);
+  assert.equal(parseStatForeground("4321 (claude) S 4300 4321 4300 0 -1 4194560"), false);
+  assert.equal(parseStatForeground("4321 (claude) S 4300 4321 4300 0 0 4194560"), false);
+  assert.equal(parseStatForeground("4321 (claude) S 4300 0 4300 0 0"), false);
+  // comm の括弧・空白に惑わされず、最後の ) の後ろから読む
+  assert.equal(parseStatForeground("4321 (a) S 99 (b)) R 1234 777 1 2 777"), true);
+  assert.equal(parseStatForeground("4321 (my cmd) S 1 555 555 34816 555"), true);
+  for (const bad of ["", "4321 claude S 4300 4321 4300 1 4321", "4321 (claude)", "4321 (claude) S 4300 4321 4300 1", "4321 (claude) S 4300 x 4300 1 4321", "4321 (claude) S 4300 4321 4300 1 y"]) {
+    assert.equal(parseStatForeground(bad), undefined, bad);
+  }
+});
+
+test("procForeground: <procDir>/<pid>/stat を読む。無い・不正な pid は undefined（#502）", (t) => {
+  const proc = tempDir(t);
+  mkdirSync(join(proc, "4321"));
+  writeFileSync(join(proc, "4321", "stat"), "4321 (claude) S 4300 4300 4300 34816 4300 4194560\n");
+  mkdirSync(join(proc, "4322"));
+  writeFileSync(join(proc, "4322", "stat"), "4322 (claude) S 4300 4322 4300 34816 4400 4194560\n");
+  const frontOf = procForeground(proc);
+  assert.equal(frontOf(4321), true);
+  assert.equal(frontOf(4322), false);
+  assert.equal(frontOf(4323), undefined);
+  assert.equal(frontOf(0), undefined);
+  assert.equal(frontOf(-1), undefined);
 });
 
 test("ancestorPids: 親から順に depth 段まで。init（1）・不明・循環で止まる", () => {

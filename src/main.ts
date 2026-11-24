@@ -68,7 +68,7 @@ import { CcChannelPosts } from "./cc/channel-posts.ts";
 import { CcQuestionFlow } from "./cc/question-flow.ts";
 import { CcWaitBudget } from "./cc/notice-text.ts";
 import { createCcHookServer, type CcHookServer } from "./cc/hook-server.ts";
-import { CcPaneResolver, procParentPid } from "./cc/panes.ts";
+import { CcPaneResolver, procForeground, procParentPid } from "./cc/panes.ts";
 import { CcPermissionHold } from "./cc/permission-hold.ts";
 import { CcRegistry } from "./cc/registry.ts";
 import { CcReplier } from "./cc/replies.ts";
@@ -958,12 +958,15 @@ if (
   ccTmux = tmux;
   const panes = new CcPaneResolver({ tmux, parentOf: procParentPid() });
   ccPanes = panes;
+  // claude の pid が端末の前面の組に居るか（包みの bash で起動したペインの見分け。#502）
+  const frontOf = procForeground();
   ccSender = new CcSender({
     cfg: config,
     registry,
     // 取り込みの途中のセッションには積まない・届けない
     holds: (sessionId) => ccTakeover?.holds(sessionId) === true,
     panes,
+    frontOf,
     tmux,
     sends: ccSends,
     sessions: ccSessions,
@@ -1080,7 +1083,7 @@ if (
     claudeConfigDir: config.claudeConfigDir,
     registry,
     panes,
-    probePane: (paneId) => probePaneState({ tmux, paneId, now: () => now().getTime() }),
+    probePane: (paneId, pid) => probePaneState({ tmux, paneId, now: () => now().getTime(), front: () => frontOf(pid) }),
     dirs: new ClaudeDirs(),
     takeovers: ccTakeovers,
     ccChannels: ccChannelStore,
