@@ -378,6 +378,10 @@
   background: var(--accent);
 }
 
+.c-band-hand-mark[data-state="running"] {
+  border: var(--c-mark-ring) solid var(--accent);
+}
+
 @media (hover: hover) and (pointer: fine) {
   .c-band-conn:hover,
   .c-band-hand:hover {
