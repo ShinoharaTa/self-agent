@@ -468,9 +468,14 @@ export function Item({ item, on }) {
   </div>`;
 }
 
+/** 右腕のボタンの印（turn・unread・running。知らない値は null。c-shell の handMarkOf と同じ。c-deck は c-shell を import しない） */
+function bandMark(mark) {
+  return mark === "turn" || mark === "unread" || mark === "running" ? mark : null;
+}
+
 /** 右腕のボタンの読み上げの名前（印があれば語で足す） */
 function bandHandName(mark) {
-  return mark === "turn" || mark === "unread" ? "右腕（" + MARK_LABEL[mark] + "）" : undefined;
+  return bandMark(mark) ? "右腕（" + MARK_LABEL[mark] + "）" : undefined;
 }
 
 /**
@@ -483,7 +488,7 @@ export function DeckBand({ variant, conn, hand, controls, title, on }) {
   const phone = variant === "phone";
   const page = phone && title && filled(title.name) ? title : null;
   const count = page ? countLabel(page.name, page.count) : null;
-  const mark = hand && (hand.mark === "turn" || hand.mark === "unread") ? hand.mark : null;
+  const mark = hand ? bandMark(hand.mark) : null;
   return html`<header class="c-band">
     ${conn
       ? html`<button class="c-band-conn" key="conn" type="button" data-act="status" aria-label=${conn.label} title=${conn.label} onClick=${() => on.status()}>

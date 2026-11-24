@@ -1510,6 +1510,8 @@ test("web components: handLabel・listLabel（0 件は数を言わない・99+�
   assert.equal(shell.handLabel(null), "右腕に頼む・訊く");
   assert.equal(shell.handLabel("turn"), "右腕に頼む・訊く（あなたの番）");
   assert.equal(shell.handLabel("unread"), "右腕に頼む・訊く（未読）");
+  assert.equal(shell.handLabel("running"), "右腕に頼む・訊く（作業中）");
+  assert.equal(shell.handLabel("x"), "右腕に頼む・訊く");
   assert.equal(shell.listLabel(0), "一覧");
   assert.equal(shell.listLabel(2), "一覧（あなたの番 2 件）");
   assert.equal(shell.listLabel(120), "一覧（あなたの番 99+ 件）");
@@ -1527,6 +1529,11 @@ test("web components: bottomModel は phone で 一覧・右腕・ほか、wide 
   const quiet = shell.bottomModel({ variant: "tablet", turns: "3", hand: null });
   assert.equal(quiet.variant, "phone");
   assert.deepEqual([quiet.items[0]?.count, quiet.items[0]?.name, quiet.items[1]?.mark], [0, "一覧", null]);
+  // 作業中は印と名前、知らない値は印なし
+  for (const [hand, mark] of [["running", "running"], ["x", null]] as const) {
+    assert.deepEqual(shell.bottomModel({ variant: "phone", turns: 0, hand }).items[1], { act: "hand", label: "右腕に頼む・訊く", name: shell.handLabel(mark), mark }, String(hand));
+  }
+  assert.equal(shell.bottomModel({ variant: "phone", turns: 0, hand: "running" }).items[1]?.name, "右腕に頼む・訊く（作業中）");
   assert.deepEqual(shell.bottomModel({ variant: "wide", tabs: [{ id: "tasks", title: "タスク" }, { id: "reminders", title: "リマインド" }] }), {
     variant: "wide",
     items: [
@@ -1563,6 +1570,11 @@ test("web components: BottomBar の形と押したとき（ほか・tab は K2 �
   (hand.props.onClick as (e: unknown) => void)({ currentTarget: y });
   (more.props.onClick as (e: unknown) => void)({ preventDefault: () => undefined, currentTarget: x });
   assert.deepEqual(calls, [["list"], ["hand", y], ["more", x]]);
+  // 作業中は輪の印と「（作業中）」、知らない値は印なし
+  const runningHand = find(one(html`<${shell.BottomBar} variant="phone" turns=${0} hand="running" on=${on} />`), "c-bottom-hand")[0] as El;
+  assert.equal(runningHand.props["aria-label"], "右腕に頼む・訊く（作業中）");
+  assert.deepEqual(find(runningHand, "c-bottom-hand-mark").map((m) => [m.props["data-state"], m.props["aria-hidden"]]), [["running", "true"]]);
+  assert.equal(find(one(html`<${shell.BottomBar} variant="phone" turns=${0} hand="x" on=${on} />`), "c-bottom-hand-mark").length, 0);
   // 0 件・印なし
   const quiet = one(html`<${shell.BottomBar} variant="phone" turns=${0} hand=${null} on=${on} />`);
   assert.equal(find(quiet, "c-badge").length, 0);
@@ -1681,9 +1693,10 @@ test("web components: topModel の phone・talk（戻る・右腕、場所と切
   assert.equal(shell.topModel(topProps({ note: "調べ物" }))?.rest, "場所: General ・ 調べ物");
   assert.equal(shell.topModel(topProps({ place: null, note: "調べ物" }))?.rest, "調べ物");
   assert.equal(shell.topModel(topProps({ place: null, note: "" }))?.rest, "");
-  for (const [hand, mark] of [["unread", "unread"], [null, null], ["x", null]] as const) {
+  for (const [hand, mark] of [["unread", "unread"], ["running", "running"], [null, null], ["x", null]] as const) {
     assert.deepEqual(shell.topModel(topProps({ hand }))?.hand, { name: shell.handLabel(mark), mark }, String(hand));
   }
+  assert.equal((shell.topModel(topProps({ hand: "running" }))?.hand as Obj).name, "右腕に頼む・訊く（作業中）");
   assert.equal(shell.topModel(topProps({ title: 3 }))?.title, "");
 });
 
@@ -1788,6 +1801,11 @@ test("web components: TopBar の phone（戻る・題・「…」・右腕の順
   (menu.props.onClick as (e: unknown) => void)({ preventDefault: () => undefined, currentTarget: x });
   (hand.props.onClick as (e: unknown) => void)({ currentTarget: y });
   assert.deepEqual(calls, [["back"], ["menu", x], ["hand", y]]);
+  // 作業中は輪の印と「（作業中）」、知らない値は印なし
+  const runningHand = find(one(html`<${shell.TopBar} ...${topProps({ hand: "running" })} on=${on} />`), "c-top-hand")[0] as El;
+  assert.equal(runningHand.props["aria-label"], "右腕に頼む・訊く（作業中）");
+  assert.deepEqual(find(runningHand, "c-top-hand-mark").map((m) => [m.props["data-state"], m.props["aria-hidden"]]), [["running", "true"]]);
+  assert.equal(find(one(html`<${shell.TopBar} ...${topProps({ hand: "x" })} on=${on} />`), "c-top-hand-mark").length, 0);
   // controls を渡したときだけ。印が無ければ点を出さない
   const withControls = one(html`<${shell.TopBar} ...${topProps({ hand: null })} controls="v3-hand" on=${on} />`);
   assert.equal((find(withControls, "c-top-hand")[0] as El).props["aria-controls"], "v3-hand");
@@ -1888,8 +1906,10 @@ test("web components: HandOrb は button.c-orb（data-act=hand・data-tone は a
       assert.equal(orb.type, "button", what);
       assert.equal(orb.props.class, "c-orb", what);
       assert.deepEqual([orb.props.type, orb.props["data-act"], orb.props["data-tone"]], ["button", "hand", face], what);
-      const label = shell.handLabel(mark === "turn" || mark === "unread" ? mark : null);
+      const state = mark === "turn" || mark === "unread" || mark === "running" ? mark : null;
+      const label = shell.handLabel(state);
       assert.deepEqual([orb.props["aria-label"], orb.props.title], [label, label], what);
+      if (mark === "running") assert.equal(label, "右腕に頼む・訊く（作業中）", what);
       assert.deepEqual([orb.props["aria-controls"], orb.props["aria-expanded"]], ["v3-hand", "false"], what);
       const icons = find(orb, "c-icon");
       assert.equal(icons.length, 1, what);
@@ -1900,7 +1920,7 @@ test("web components: HandOrb は button.c-orb（data-act=hand・data-tone は a
       const marks = find(orb, "c-mark");
       const dots = find(orb, "c-orb-dot");
       const places = find(orb, "c-orb-mark");
-      if (mark === "turn" || mark === "unread") {
+      if (state !== null) {
         assert.equal(places.length, 1, what);
         const placed = face === "accent" ? dots : marks;
         assert.deepEqual([marks.length, dots.length], face === "accent" ? [0, 1] : [1, 0], what);
@@ -4826,6 +4846,11 @@ test("web components: DeckBand は点・名前・探す・右腕・始める・�
   assert.equal(find(quiet, "c-band-conn").length, 0);
   const qh = find(quiet, "c-band-hand")[0]!;
   assert.deepEqual([qh.props["aria-label"], qh.props["aria-expanded"], qh.props["aria-controls"], find(qh, "c-band-hand-mark").length], [undefined, "false", undefined, 0]);
+  // 作業中は輪の印と「右腕（作業中）」、知らない値は印なし
+  const runningHand = find(one(html`<${deck.DeckBand} conn=${null} hand=${{ mark: "running", open: false }} on=${on} />`), "c-band-hand")[0]!;
+  assert.deepEqual([runningHand.props["aria-label"], find(runningHand, "c-band-hand-mark").map((m) => [m.props["data-state"], m.props["aria-hidden"]])], ["右腕（作業中）", [["running", "true"]]]);
+  const unknownHand = find(one(html`<${deck.DeckBand} conn=${null} hand=${{ mark: "x", open: false }} on=${on} />`), "c-band-hand")[0]!;
+  assert.deepEqual([unknownHand.props["aria-label"], find(unknownHand, "c-band-hand-mark").length], [undefined, 0]);
   assert.equal(find(one(html`<${deck.DeckBand} conn=${{ tone: "bad", label: "x" }} hand=${null} on=${on} />`), "c-band-dot")[0]?.props["data-tone"], "bad");
 });
 
@@ -4875,16 +4900,21 @@ test("web components: 流れの列の本体（.c-col-body）の下の余白は v
   assert.equal((stripCssComments(read("c-deck.css")).match(/--c-deck-tail/g) ?? []).length, 1);
 });
 
-test("web components: c-deck.css は区切りの線（左の線と 0 の外し・角丸のほかの border）・gradient・半透明・影・動きを書かない", () => {
+test("web components: c-deck.css は区切りの線（左の線と 0 の外し・角丸と、帯の［右腕］の作業中の輪のほかの border）・gradient・半透明・影・動きを書かない", () => {
   const rules = parseCss(read("c-deck.css"));
   assert.ok(rules.length > 0);
+  const rings: string[] = [];
   for (const rule of rules) {
     for (const decl of rule.body.split(";").map((d) => d.trim()).filter((d) => d !== "")) {
       const prop = decl.slice(0, decl.indexOf(":")).trim();
-      if (prop.startsWith("border")) assert.ok(["border-left", "border-left-color", "border-radius"].includes(prop) || decl === "border: 0", `${rule.selectors.join(",")}: ${decl}`);
+      const what = `${rule.selectors.join(",")}: ${decl}`;
+      // 作業中の輪（K2 の Mark の running と同じ形）は帯の［右腕］の 1 つだけ
+      if (prop === "border" && /^border: var\(--c-mark-ring\) solid /.test(decl)) rings.push(what);
+      else if (prop.startsWith("border")) assert.ok(["border-left", "border-left-color", "border-radius"].includes(prop) || decl === "border: 0", what);
       assert.doesNotMatch(decl, /gradient|rgba\(|^opacity\s*:|^box-shadow\s*:|^animation|^transition/, `${rule.selectors.join(",")}: ${decl}`);
     }
   }
+  assert.deepEqual(rings, ['.c-band-hand-mark[data-state="running"]: border: var(--c-mark-ring) solid var(--accent)']);
   assert.doesNotMatch(stripCssComments(read("c-deck.css")), /@keyframes|@media \(min-width|1340/);
 });
 
@@ -4978,7 +5008,7 @@ test("web components: 見出し（c-shell.css の .c-top・c-hand.css の .c-han
     );
   // c-hand.css は border・box-shadow を書かない
   for (const { sel, decl, prop } of declsOf("c-hand.css")) assert.ok(!prop.startsWith("border") && prop !== "box-shadow", `c-hand.css ${sel}: ${decl}`);
-  // c-shell.css の box-shadow は右腕の番の印の輪（区切りでない。下のバーと丸の accent の顔）だけ。border（border-radius と border: 0 を除く）は場所・モードのボタンと見出しの［右腕］と右腕の丸（静かな顔）の輪郭だけ
+  // c-shell.css の box-shadow は右腕の番の印の輪（区切りでない。下のバーと丸の accent の顔）だけ。border（border-radius と border: 0 を除く）は場所・モードのボタンと見出しの［右腕］と右腕の丸（静かな顔）の輪郭と、右腕の口の作業中の輪（下のバー・見出し・丸の accent の顔）だけ
   const shell = declsOf("c-shell.css");
   assert.deepEqual(shell.filter((d) => d.prop === "box-shadow").map((d) => `${d.sel}: ${d.decl}`), [
     '.c-bottom-hand-mark[data-state="turn"]: box-shadow: 0 0 0 var(--c-mark-ring) var(--primary-text)',
@@ -4986,7 +5016,16 @@ test("web components: 見出し（c-shell.css の .c-top・c-hand.css の .c-han
   ]);
   assert.deepEqual(
     shell.filter((d) => d.prop.startsWith("border") && d.prop !== "border-radius" && d.decl !== "border: 0").map((d) => d.sel),
-    [".c-top-place, .c-top-mode", ".c-top-hand", ".c-orb"],
+    ['.c-bottom-hand-mark[data-state="running"]', ".c-top-place, .c-top-mode", ".c-top-hand", '.c-top-hand-mark[data-state="running"]', ".c-orb", '.c-orb-dot[data-state="running"]'],
+  );
+  // 作業中の輪は K2 の Mark の running と同じ形（border だけ。地は塗らない）。色は accent の地の上で --primary-text、見出しは --accent
+  assert.deepEqual(
+    shell.filter((d) => /-mark\[data-state="running"\]$|^\.c-orb-dot\[data-state="running"\]$/.test(d.sel)).map((d) => `${d.sel}: ${d.decl}`),
+    [
+      '.c-bottom-hand-mark[data-state="running"]: border: var(--c-mark-ring) solid var(--primary-text)',
+      '.c-top-hand-mark[data-state="running"]: border: var(--c-mark-ring) solid var(--accent)',
+      '.c-orb-dot[data-state="running"]: border: var(--c-mark-ring) solid var(--primary-text)',
+    ],
   );
   // c-composer.css の border は欄と写しの共通の規則の border・border-radius と、写しの border-color だけ
   assert.deepEqual(

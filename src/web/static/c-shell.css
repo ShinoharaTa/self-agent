@@ -105,6 +105,10 @@
   background: var(--primary-text);
 }
 
+.c-bottom-hand-mark[data-state="running"] {
+  border: var(--c-mark-ring) solid var(--primary-text);
+}
+
 /*
  * スマホの流れの列（deck。D2）: 列のボタンは残りを分け合い、右腕は中身の幅。当たりはボタンの四角い箱（角丸なし・地なし）、
  * 見える地は中の .c-bottom-page-in（角丸）。今の列は字の太さと地と aria-current（色だけにしない。差し色は付けない（accent の役は docs/plan/web-ui-deck.md §4.5 の 4 つ））
@@ -366,6 +370,10 @@
   background: var(--accent);
 }
 
+.c-top-hand-mark[data-state="running"] {
+  border: var(--c-mark-ring) solid var(--accent);
+}
+
 /* 押した・乗った（下のバーの右腕と同じ宣言。押せない場所のボタンには当てない） */
 .c-top-place:not([aria-disabled="true"]):active,
 .c-top-mode:not([aria-disabled="true"]):active,
@@ -439,6 +447,10 @@
 
 .c-orb-dot[data-state="unread"] {
   background: var(--primary-text);
+}
+
+.c-orb-dot[data-state="running"] {
+  border: var(--c-mark-ring) solid var(--primary-text);
 }
 
 /* 押した・乗った（下のバーの右腕と同じ宣言） */

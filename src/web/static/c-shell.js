@@ -11,7 +11,13 @@ const filled = (v) => typeof v === "string" && v !== "";
 export function handLabel(mark) {
   if (mark === "turn") return HAND + "（あなたの番）";
   if (mark === "unread") return HAND + "（未読）";
+  if (mark === "running") return HAND + "（作業中）";
   return HAND;
+}
+
+/** 右腕の口の印（turn・unread・running。知らない値は null） */
+function handMarkOf(mark) {
+  return mark === "turn" || mark === "unread" || mark === "running" ? mark : null;
 }
 
 /** 「一覧」のボタンの名前（件数は K2 の Badge と同じく 99 まで） */
@@ -38,7 +44,7 @@ export function bottomModel({ variant, turns, hand, tabs, pages, page }) {
     // null・id の無い物は捨てる
     const list = Array.isArray(pages) ? pages.filter((p) => p !== null && typeof p === "object" && filled(p.id)) : [];
     const current = list.some((p) => p.id === page) ? page : list.length > 0 ? list[0].id : null;
-    const mark = hand === "turn" || hand === "unread" ? hand : null;
+    const mark = handMarkOf(hand);
     return {
       variant: v,
       items: [
@@ -56,7 +62,7 @@ export function bottomModel({ variant, turns, hand, tabs, pages, page }) {
     const list = Array.isArray(tabs) ? tabs.filter((tab) => tab !== null && typeof tab === "object" && tab.id !== undefined && tab.id !== null && tab.id !== "") : [];
     return { variant: v, items: [...list.map((tab) => ({ act: "tab", id: tab.id, label: tab.title })), more] };
   }
-  const mark = hand === "turn" || hand === "unread" ? hand : null;
+  const mark = handMarkOf(hand);
   return {
     variant: v,
     items: [
@@ -137,7 +143,7 @@ export function topModel({ variant, view, title, status, note, place, views, han
   let md = null;
   if (v === "phone") {
     rest = [placeText, noteText].filter((s) => s !== null).join(" ・ ");
-    const mark = hand === "turn" || hand === "unread" ? hand : null;
+    const mark = handMarkOf(hand);
     hd = { name: handLabel(mark), mark };
   } else if (narrow) {
     rest = [placeText, noteText].filter((s) => s !== null).join(" ・ ");
@@ -234,13 +240,13 @@ export function TopBar({ variant, view, title, status, note, place, views, hand,
 // ===== 右腕の丸（HandOrb。#463 の D6）: 広い幅の流れの列で右下に浮く 56 の円。中は bot のアイコンと印だけ（字は無い） =====
 
 /**
- * 右腕の丸。tone は "accent"（列だけの間）か、ほかは静かな顔（quiet。席が開いている間）。mark は turn・unread、ほかは印なし。
+ * 右腕の丸。tone は "accent"（列だけの間）か、ほかは静かな顔（quiet。席が開いている間）。mark は turn・unread・running、ほかは印なし。
  * 印は accent の顔が自前の点（下のバーと同じ配色）、静かな顔が K2 の Mark。open は枠が開いているか（aria-expanded）、controls は aria-controls。
  * on: { hand(opener) }（押したボタンを渡す）
  */
 export function HandOrb({ mark, tone, open, controls, on }) {
   const face = tone === "accent" ? "accent" : "quiet";
-  const state = mark === "turn" || mark === "unread" ? mark : null;
+  const state = handMarkOf(mark);
   const name = handLabel(state);
   return html`<button class="c-orb" type="button" data-act="hand" data-tone=${face} aria-label=${name} title=${name}
       aria-controls=${filled(controls) ? controls : undefined} aria-expanded=${open ? "true" : "false"} onClick=${(event) => on.hand(event.currentTarget)}>

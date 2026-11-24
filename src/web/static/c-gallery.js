@@ -370,6 +370,7 @@ const TOP_WIDE_LONG = {
 /** box: 入れ物（pane は一覧と同じ、full は広い幅の見出しが全部を出せる下限の幅ちょうど、list は一覧の列の幅ちょうど） */
 const TOP_DEMOS = [
   { demo: "top-phone-talk", variant: "phone", view: "talk", title: "日程の取得が遅い", status: { text: "あなたの番", tone: "warning" }, place: { text: "General", movable: true }, menu: true, hand: "turn" },
+  { demo: "top-phone-running", variant: "phone", view: "talk", title: "日程の取得が遅い", status: { text: "あなたの番", tone: "warning" }, place: { text: "General", movable: true }, menu: true, hand: "running" },
   {
     demo: "top-phone-long",
     variant: "phone",
@@ -469,22 +470,26 @@ function Bottoms() {
     <${Pane} demo="bottom-phone"><${BottomBar} variant="phone" turns=${2} hand="turn" on=${BOTTOM_ON} /><//>
     <${Pane} demo="bottom-phone-quiet"><${BottomBar} variant="phone" turns=${0} hand=${null} on=${BOTTOM_ON} /><//>
     <${Pane} demo="bottom-phone-unread"><${BottomBar} variant="phone" turns=${120} hand="unread" on=${BOTTOM_ON} /><//>
+    <${Pane} demo="bottom-phone-running"><${BottomBar} variant="phone" turns=${2} hand="running" on=${BOTTOM_ON} /><//>
     <${Pane} demo="bottom-wide"><${BottomBar} variant="wide" tabs=${WIDE_TABS} on=${BOTTOM_ON} /><//>
     <${PhonePane} demo="bottom-deck"><${BottomBar} variant="deck" pages=${deckPages(12)} page="turn" hand="turn" on=${BOTTOM_ON} /><//>
+    <${PhonePane} demo="bottom-deck-running"><${BottomBar} variant="deck" pages=${deckPages(12)} page="turn" hand="running" on=${BOTTOM_ON} /><//>
     <${PhonePane} demo="bottom-deck-quiet"><${BottomBar} variant="deck" pages=${deckPages(0)} page="feed" hand=${null} on=${BOTTOM_ON} /><//>
   <//>`;
 }
 
-// ===== 右腕の丸（HandOrb。#463 の D6）: 列だけの間の accent の顔と、席が開いている間の静かな顔 × 印なし・番・未読 =====
+// ===== 右腕の丸（HandOrb。#463 の D6）: 列だけの間の accent の顔と、席が開いている間の静かな顔 × 印なし・番・未読・作業中 =====
 
 const ORB_ON = { hand: noop };
 const ORB_DEMOS = Object.freeze([
   { demo: "orb-accent", tone: "accent", mark: null },
   { demo: "orb-accent-turn", tone: "accent", mark: "turn" },
   { demo: "orb-accent-unread", tone: "accent", mark: "unread" },
+  { demo: "orb-accent-running", tone: "accent", mark: "running" },
   { demo: "orb-quiet", tone: "quiet", mark: null },
   { demo: "orb-quiet-turn", tone: "quiet", mark: "turn" },
   { demo: "orb-quiet-unread", tone: "quiet", mark: "unread" },
+  { demo: "orb-quiet-running", tone: "quiet", mark: "running" },
 ]);
 
 /** 地は本番と同じ列の間の台（--bg）。押しても何も起きない */
@@ -893,12 +898,17 @@ const BAND_TITLES = Object.freeze([
   { demo: "band-phone-feed", title: { name: "通知", count: 0 } },
 ]);
 
-/** 帯と 3 つの列の見本（列は見本の幅で 3 等分。band-no-hand は丸を描けた広い幅の帯（［右腕］なし）。band-phone・deck-paged・deck-phone-ops はスマホの幅の枠で、列は 1 列ずつ横に送る）。押しても何も起きない */
+/** 帯と 3 つの列の見本（列は見本の幅で 3 等分。band-running は右腕が作業中の帯、band-no-hand は丸を描けた広い幅の帯（［右腕］なし）。band-phone・deck-paged・deck-phone-ops はスマホの幅の枠で、列は 1 列ずつ横に送る）。押しても何も起きない */
 function Decks() {
   return html`<${Section} name="deck" title="流れの列と上の帯">
     <div class="c-gallery-slide" data-demo="band">
       <div class="c-gallery-deck c-gallery-band">
         <${DeckBand} conn=${{ tone: "ok", label: "見本の Bot: 接続中" }} hand=${{ mark: "turn", open: false }} controls="v3-hand" on=${BAND_ON} />
+      </div>
+    </div>
+    <div class="c-gallery-slide" data-demo="band-running">
+      <div class="c-gallery-deck c-gallery-band">
+        <${DeckBand} conn=${{ tone: "ok", label: "見本の Bot: 接続中" }} hand=${{ mark: "running", open: false }} controls="v3-hand" on=${BAND_ON} />
       </div>
     </div>
     <div class="c-gallery-slide" data-demo="band-no-hand">
