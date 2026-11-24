@@ -137,7 +137,7 @@ export type SendablePane = { ok: true; pane: TmuxPane } | { ok: false; reason: "
  * 送ってよいペイン（§3.1・§7 の 2。純関数）: claude の pid そのものか CC_PANE_ANCESTOR_DEPTH 段までの祖先が pane_pid の、死んでいないペイン。
  * sessions/<pid>.json の tmux 欄（補助）だけで採れるペインには送らない。たどる途中で一覧のほかのセッションの pid に当たったら（入れ子）tmux の外とする。
  * pane_current_command は見ない: pid のたどりで当たれば claude は生きていて、Bash のツールでコマンドを動かしている間は前面がその子（bash など）になるだけ。
- * 貼るかどうかは pane-state.ts の probePaneState が決める（前面が claude でなければ not_claude で、sender は作業中と同じく待つ。#284）
+ * 貼るかどうかは pane-state.ts の probePaneState が決める（名前が claude でなく、claude の pid も端末の前面の組に居なければ not_claude で、sender は作業中と同じく待つ。#284・#502）
  */
 export function findSendablePane(
   target: Pick<PaneTarget, "pid">,
