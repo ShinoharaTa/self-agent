@@ -2937,7 +2937,7 @@ type HandFrame = {
   onRef?: (id: string) => void;
 };
 type TermCtx = { row: { id: string } | null; place: string | null; pane: () => void };
-type HandHeadState = { title: string; menu: boolean; on: { menu: (opener: unknown) => unknown; close: () => unknown } };
+type HandHeadState = { title: string; menu: boolean; seat?: boolean; on: { menu: (opener: unknown) => unknown; close: () => unknown; seat?: (opener: unknown) => unknown } };
 
 // 一覧のモデル（c-list.js）。素の JS で型が無いので、URL を変数にして型の解決を避ける（test/web-components.test.ts と同じ）
 type ListRow = { id: string; title: string; mark: string; state: { text: string; tone: string } | null; time: string | null; tag: string | null; done: boolean; current: boolean };
@@ -11769,6 +11769,187 @@ test("web static: 流れの列: 右腕の作業中の印は丸（両方の顔）
   p.store.runningOf = () => null;
   p.app.refreshSidebar();
   assert.equal(p.deck.bars.at(-1)?.hand, null);
+});
+
+/** 流れの列の殻で、丸から右腕の枠を開き、見出しの［広げる］を押す（D6 の PR-6b） */
+function seatHandFrom(h: HandShell) {
+  lastOrb(h).on.hand(h.nodes.orbButton);
+  assert.equal(handOf(h), "open");
+  const head = h.handHead.draws.at(-1);
+  assert.ok(head && head.on.seat, "枠の見出しに［広げる］の on が無い");
+  assert.equal(head.seat, true);
+  head.on.seat(h.handButtons.menu);
+}
+const seatInput = (h: HandShell) => h.nodes.ed.querySelector("textarea.composer-input");
+
+test("web static: 流れの列: 右腕の枠の［広げる］で枠を畳み、席に右腕の会話を枠の指定（head: false・outgoing 無し・札・placeholder）で描き、右腕の入れ物は空。見出しは題「右腕」・場所・モード・［会話］［端末］なし・「…」は右腕の操作・［閉じる］。列・帯・丸は inert でなく、焦点は席の入力欄。口の印は番だけ", async () => {
+  const h = (await loadDeck({ width: 1440, hand: {} })) as HandShell;
+  h.handReplies.push("<#1> を見て");
+  lastOrb(h).on.hand(h.nodes.orbButton);
+  const frameFrame = h.handRenders.at(-1)!.frame;
+  assert.equal(typeof frameFrame.outgoing, "function", "枠は「いま見ている話題」を添える");
+  assert.ok(h.nodes.handEd.querySelector("div.fake-ref"));
+  h.nodes.backdrop.dispatch("click");
+  const renderedBefore = h.rendered.length;
+  seatHandFrom(h);
+  assert.equal(handOf(h), "closed");
+  assert.equal(h.handHead.draws.at(-1), null);
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
+  assert.equal(h.app.activeTabId(), "ch:900");
+  assert.equal(h.location.hash, "#/ch/900");
+  // 席の中身は右腕の枠の指定（見出しなし・添え書きなし・札と placeholder は枠と同じ）。views の render は通らない
+  const seat = h.handRenders.at(-1)!;
+  assert.equal(seat.id, "900");
+  assert.equal(seat.frame.head, false);
+  assert.equal("outgoing" in seat.frame, false);
+  assert.equal(seat.frame.placeholder, "右腕に頼む・訊く");
+  assert.equal(seat.frame.title, "右腕");
+  assert.equal(seat.frame.replyRefs, frameFrame.replyRefs);
+  assert.equal(seat.frame.noticeRefs, frameFrame.noticeRefs);
+  assert.equal(seat.frame.onRef, frameFrame.onRef);
+  assert.equal(h.rendered.length, renderedBefore);
+  assert.deepEqual(h.nodes.ed.querySelectorAll("div.fake-ref").map((r) => r.getAttribute("data-topic")), ["ch:1"]);
+  assert.equal(h.nodes.handEd.children.length, 0, "右腕の入れ物には描かない");
+  assert.equal(h.nodes.ed.querySelectorAll("div.ed-scroll").length + h.nodes.handEd.querySelectorAll("div.ed-scroll").length, 1);
+  // 見出し
+  const top = h.lastTop();
+  assert.deepEqual([top.view, top.title, top.status, top.note, top.place, top.views, top.mode, top.menu, top.close], ["talk", "右腕", null, null, null, null, null, false, true]);
+  // 後ろは押せる・焦点は席の入力欄
+  for (const n of [h.nodes.band, h.nodes.orb, h.nodes.deckBox, h.nodes.main]) assert.equal((n as unknown as { inert: boolean }).inert, false);
+  assert.ok(seatInput(h));
+  assert.equal(h.document.activeElement, seatInput(h));
+  // 見えている会話・読んでいる会話に 1 回だけ
+  assert.deepEqual(shownIds(h), ["900"]);
+  assert.deepEqual(readingIds(h), ["900"]);
+  // SA.app.refresh は席の側を描く（右腕の入れ物は空のまま）
+  const renders = h.handRenders.length;
+  h.app.refresh("ch:900");
+  assert.equal(h.handRenders.length, renders + 1);
+  assert.equal(h.handRenders.at(-1)!.frame, seat.frame);
+  assert.equal(h.nodes.handEd.children.length, 0);
+  // 「…」は chat.js の head の menu が在るときだけ、押すと「右腕 の操作」の板
+  h.chatHeads["900"] = { title: "inbox", status: null, note: null, menu: [{ icon: "rotate-ccw", label: "会話を新しくする", run: () => undefined }] };
+  h.app.refresh("ch:900");
+  assert.equal(h.lastTop().menu, true);
+  h.lastTop().on.menu!(h.nodes.topButtons.menu);
+  assert.equal(h.nodes.sheet.getAttribute("aria-label"), "右腕 の操作");
+  assert.deepEqual(h.nodes.sheet.querySelectorAll("button.more-row").map((r) => textOf(r.querySelector("span.sb-label")!)), ["会話を新しくする"]);
+  h.nodes.sheet.removeAttribute("open");
+  // 状態: 作業中 → あなたの番。口の印は番だけ（未読・作業中は席で見えているので出さない）
+  const run = { channelId: "900", turnSeq: 1 };
+  h.store.runningOf = (id) => (id === "900" ? run : null);
+  h.store.isUnread = () => true;
+  h.app.refreshSidebar();
+  assert.deepEqual(JSON.parse(JSON.stringify(h.lastTop().status)), { text: "作業中", tone: "accent" });
+  assert.deepEqual([lastOrb(h).mark, lastOrb(h).tone], [null, "quiet"]);
+  const turn = { kind: "confirm", since: "2026-11-14T00:00:00.000Z", summary: null };
+  h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:1"), v3Topic("ch:2")], { rightHands: [v3Hand({ turn, last: { id: 5, at: "2026-11-14T00:00:00.000Z", kind: "agent" } })] }));
+  await h.topics.load();
+  assert.deepEqual(JSON.parse(JSON.stringify(h.lastTop().status)), { text: "あなたの番", tone: "warning" });
+  assert.equal(lastOrb(h).mark, "turn");
+  // 一覧を読み直しても（syncHand）枠へ移さない
+  assert.equal(h.app.activeTabId(), "ch:900");
+  assert.equal(handOf(h), "closed");
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
+  // 席を閉じると未読が戻る（席の住人は空）
+  h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:1"), v3Topic("ch:2")], { rightHands: [v3Hand({ last: { id: 5, at: "2026-11-14T00:00:00.000Z", kind: "agent" } })] }));
+  await h.topics.load();
+  assert.equal(lastOrb(h).mark, null);
+  h.lastTop().on.close!();
+  assert.equal(lastOrb(h).mark, "unread");
+});
+
+test("web static: 流れの列: 席に右腕が出ている間の丸・帯の［右腕］・open(右腕) は枠を開かず席の入力欄へ。席を閉じる（［閉じる］・Esc・戻る）と席は空で枠は閉じたまま、次の丸で枠。ほかの話題を開くと席の右腕をやめる。スマホの幅になると席は空・枠は閉じたまま・［広げる］なし。再読み込みの hash は枠", async () => {
+  const h = (await loadDeck({ width: 1440, hand: {} })) as HandShell;
+  seatHandFrom(h);
+  // 丸・open(右腕)・hashchange（同じタブ）: 枠は開かず、焦点は席の入力欄
+  h.nodes.itemButton.focus();
+  lastOrb(h).on.hand(h.nodes.orbButton);
+  assert.equal(handOf(h), "closed");
+  assert.equal(h.document.activeElement, seatInput(h));
+  h.nodes.itemButton.focus();
+  h.app.open("ch:900");
+  assert.equal(handOf(h), "closed");
+  assert.equal(h.document.activeElement, seatInput(h));
+  h.fire("hashchange");
+  assert.equal(handOf(h), "closed");
+  assert.equal(h.app.activeTabId(), "ch:900");
+  // 閉じ方 3 つ: 席は空・枠は閉じたまま・次の丸で枠（同じチャンネルは 1 つの入れ物だけ）
+  const closes: Array<[string, () => void]> = [
+    ["閉じる", () => h.lastTop().on.close!()],
+    ["Esc", () => h.fireDoc("keydown", keyEvent("Escape", h.nodes.itemButton))],
+    ["戻る", () => h.history.back()],
+  ];
+  for (const [how, close] of closes) {
+    if (h.app.activeTabId() !== "ch:900") seatHandFrom(h);
+    h.nodes.itemButton.focus();
+    close();
+    assert.equal(h.nodes.v3.getAttribute("data-view"), "list", how);
+    assert.equal(h.app.activeTabId(), null, how);
+    assert.equal(handOf(h), "closed", how);
+    assert.match(h.nodes.ed.textContent, /左の一覧から話題を選んでください/, how);
+    assert.deepEqual(shownIds(h), [], how);
+    assert.equal(h.location.hash, "", how);
+    lastOrb(h).on.hand(h.nodes.orbButton);
+    assert.equal(handOf(h), "open", how);
+    assert.equal(h.nodes.ed.querySelectorAll("div.ed-scroll").length + h.nodes.handEd.querySelectorAll("div.ed-scroll").length, 1, how);
+    assert.ok(h.nodes.handEd.querySelector("textarea.composer-input"), how);
+    assert.equal(h.handRenders.at(-1)!.frame.head, false, how);
+    assert.equal(typeof h.handRenders.at(-1)!.frame.outgoing, "function", how);
+    h.nodes.backdrop.dispatch("click");
+  }
+  // 入力中の Esc では閉じない（席の決まり）
+  seatHandFrom(h);
+  const typing = seatInput(h)!;
+  Object.assign(typing, { closest: () => typing });
+  typing.focus();
+  h.fireDoc("keydown", keyEvent("Escape", typing));
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
+  assert.equal(h.app.activeTabId(), "ch:900");
+  // ほかの話題を開くと席の右腕をやめ、次の丸は枠を開く
+  h.app.open("ch:1");
+  assert.equal(h.app.activeTabId(), "ch:1");
+  lastOrb(h).on.hand(h.nodes.orbButton);
+  assert.equal(handOf(h), "open");
+  h.nodes.backdrop.dispatch("click");
+  // あなたの番 の右腕の項目（open(右腕)）も枠を開き、席は ch:1 のまま
+  h.app.open("ch:900");
+  assert.equal(handOf(h), "open");
+  assert.equal(h.app.activeTabId(), "ch:1");
+  h.nodes.backdrop.dispatch("click");
+  // 席だけの幅（700）: 帯の［右腕］で席の入力欄へ
+  const n = (await loadDeck({ width: 700, hand: {} })) as HandShell;
+  seatHandFrom(n);
+  assert.equal(n.nodes.v3.getAttribute("data-deck"), "0");
+  assert.equal(n.deck.orbs.at(-1), null);
+  assert.deepEqual(JSON.parse(JSON.stringify(lastBand(n).hand)), { mark: null, open: false });
+  n.nodes.itemButton.focus();
+  lastBand(n).on.hand!(n.nodes.bandButtons.hand);
+  assert.equal(handOf(n), "closed");
+  assert.equal(n.document.activeElement, seatInput(n));
+  // スマホの幅になると席は空・枠は閉じたまま（席の entry は一覧の物に）。スマホの枠の見出しに［広げる］は無い
+  seatHandFrom(h);
+  h.setPhone(true, 390);
+  assert.equal(h.app.activeTabId(), null);
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "list");
+  assert.equal(handOf(h), "closed");
+  assert.equal((h.history.state as { v3Body?: boolean } | null)?.v3Body, undefined);
+  assert.deepEqual(shownIds(h), []);
+  phoneBarHand(h, true);
+  assert.equal(handOf(h), "open");
+  assert.equal(h.handHead.draws.at(-1)!.seat, false);
+  // 枠を開いたまま広い幅とスマホをまたぐと［広げる］を出し入れする
+  h.setPhone(false, 1440);
+  assert.equal(h.handHead.draws.at(-1)!.seat, true);
+  h.setPhone(true, 390);
+  assert.equal(h.handHead.draws.at(-1)!.seat, false);
+  // 再読み込み（hash が右腕）は枠に開く
+  const r = loadShell({ deck: true, width: 1440, hand: {}, hash: "#/ch/900" }) as HandShell;
+  await r.flush();
+  r.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:1")], { rightHands: [v3Hand()] }));
+  await r.topics.load();
+  assert.equal(r.app.activeTabId(), null);
+  assert.equal(handOf(r), "open");
 });
 
 test("web static: shell.css の右腕の丸の入れ物（.v3-orb。D6）は 落ち先で display: none、広い幅（side・fold）で列の場所の右下（格子の 1 列目・2 行目・end・--z-sash・下の余白に safe-area）、席が閉じている間だけ右の safe-area、席だけの幅で出さない。position を書かず、--c-deck-tail の上書きは広い幅の .v3-deck だけ", () => {

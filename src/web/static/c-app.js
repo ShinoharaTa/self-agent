@@ -703,12 +703,12 @@ if (handRoot) {
     return span ? span.querySelector("button") : null;
   };
 
-  /** 見出しを描く。state は { title, menu, on: { menu(opener), close() } } か null（消す）。描けなければ false（shell.js が古い見出しに戻す） */
+  /** 見出しを描く。state は { title, menu, seat, on: { menu(opener), close(), seat(opener) } } か null（消す）。seat が true のときだけ［広げる］。描けなければ false（shell.js が古い見出しに戻す） */
   const drawHand = (state) => {
     const before = document.activeElement;
     const inside = !!before && handRoot.contains(before);
     try {
-      render(state === null ? null : html`<${HandHead} title=${state.title} menu=${state.menu} on=${state.on} />`, handRoot);
+      render(state === null ? null : html`<${HandHead} title=${state.title} menu=${state.menu} seat=${state.seat === true} on=${state.on} />`, handRoot);
     } catch (error) {
       // 名前だけ（message・stack は本文を含むことがあるので出さない）
       console.error("[web] hand draw failed", error instanceof Error ? error.name : "");
