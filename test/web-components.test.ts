@@ -398,9 +398,13 @@ test("web components: 一覧と下のバー（c-list・c-shell）と会話（c-t
   if (CSS_FILES.includes("c-term.css")) assert.doesNotMatch(stripCssComments(read("c-term.css")), /position:\s*(?:fixed|absolute)/, "c-term.css");
 });
 
-test("web components: shell.css の動きは流れの列の席が開くときだけ（D5 の PR-1）。transition と @starting-style を書くのは決めた 3 つの規則で、どれも [data-moves=\"on\"] 付き。対象は opacity と transform、長さは --dur-short（スマホの全面は --dur-long）、曲線は --ease-out、ずれは --c-deck-seat-in。all・will-change・animation・@keyframes は無い", () => {
+test("web components: shell.css の動きは流れの列の席が開くとき（D5 の PR-1）と右腕の枠と幕が出るとき（D6 の PR-4）だけ。transition と @starting-style を書くのは決めた 5 つと 4 つの規則で、どれも [data-moves=\"on\"] 付き。対象は opacity と transform（幕は opacity だけ）、長さは --dur-short（スマホの全面は --dur-long）、曲線は --ease-out、ずれは --c-deck-seat-in（席・広い幅の枠は X、スマホの枠は Y）。all・will-change・animation・@keyframes は無い", () => {
   const SEAT = '.v3[data-deck][data-moves="on"][data-view="body"] .v3-main';
   const FULL = '.v3[data-deck][data-moves="on"][data-seat="full"][data-view="body"] .v3-main';
+  const HAND = '.v3[data-deck][data-moves="on"][data-hand="open"] .v3-hand';
+  const BACK = '.v3[data-deck][data-moves="on"][data-hand="open"] .v3-hand-backdrop';
+  const HAND_FULL = '.v3[data-deck][data-moves="on"][data-seat="full"][data-hand="open"] .v3-hand';
+  const BACK_FULL = '.v3[data-deck][data-moves="on"][data-seat="full"][data-hand="open"] .v3-hand-backdrop';
   const rules = parseCss(read("shell.css"));
   const MOVE = /(?:^|; ?)(?:transition|animation)(?:-[a-z-]+)?\s*:/;
   // 動きの宣言を持つ規則と、@starting-style の中の規則（0 個なら落ちる）
@@ -409,18 +413,29 @@ test("web components: shell.css の動きは流れの列の席が開くときだ
   assert.deepEqual(moving, [
     { at: [], selectors: [SEAT], body: "transition-property: opacity, transform; transition-duration: var(--dur-short); transition-timing-function: var(--ease-out);" },
     { at: [], selectors: [FULL], body: "transition-duration: var(--dur-long);" },
+    { at: [], selectors: [HAND], body: "transition-property: opacity, transform; transition-duration: var(--dur-short); transition-timing-function: var(--ease-out);" },
+    { at: [], selectors: [BACK], body: "transition-property: opacity; transition-duration: var(--dur-short); transition-timing-function: var(--ease-out);" },
+    { at: [], selectors: [HAND_FULL, BACK_FULL], body: "transition-duration: var(--dur-long);" },
   ]);
-  assert.deepEqual(starting, [{ at: ["@starting-style"], selectors: [SEAT], body: "opacity: 0; transform: translateX(var(--c-deck-seat-in));" }]);
-  for (const r of [...moving, ...starting]) for (const s of r.selectors) assert.ok(s.startsWith(".v3[data-deck]") && s.includes('[data-moves="on"]') && s.endsWith(" .v3-main"), s);
+  assert.deepEqual(starting, [
+    { at: ["@starting-style"], selectors: [SEAT], body: "opacity: 0; transform: translateX(var(--c-deck-seat-in));" },
+    { at: ["@starting-style"], selectors: [HAND], body: "opacity: 0; transform: translateX(var(--c-deck-seat-in));" },
+    { at: ["@starting-style"], selectors: [BACK], body: "opacity: 0;" },
+    { at: ["@starting-style"], selectors: [HAND_FULL], body: "transform: translateY(var(--c-deck-seat-in));" },
+  ]);
+  for (const r of [...moving, ...starting]) {
+    for (const s of r.selectors) assert.ok(s.startsWith(".v3[data-deck]") && s.includes('[data-moves="on"]') && [" .v3-main", " .v3-hand", " .v3-hand-backdrop"].some((tail) => s.endsWith(tail)), s);
+  }
   const src = stripCssComments(read("shell.css"));
   assert.doesNotMatch(src, /@keyframes|will-change|(?:^|[\s;{])animation(?:-[a-z-]+)?\s*:|transition(?:-property)?\s*:[^;]*\ball\b/);
-  // 動く値は opacity と transform だけ（ほかの規則に opacity・transform を書かない）
+  // 動く値は opacity と transform だけ（@starting-style の中の決めた 4 つの規則のほかに opacity・transform を書かない）
+  const ALLOWED = [[SEAT], [HAND], [BACK], [HAND_FULL]].map((selectors) => JSON.stringify([["@starting-style"], selectors]));
   for (const r of rules) {
-    if (r.body.split(";").some((d) => /^\s*(?:opacity|transform)\s*:/.test(d))) assert.deepEqual([r.at, r.selectors], [["@starting-style"], [SEAT]], r.selectors.join(","));
+    if (r.body.split(";").some((d) => /^\s*(?:opacity|transform)\s*:/.test(d))) assert.ok(ALLOWED.includes(JSON.stringify([r.at, r.selectors])), `${r.at.join(" ")} ${r.selectors.join(",")}`);
   }
   // ずれのトークンは tokens.css に在り、shell.css だけが使う
   assert.match(read("tokens.css"), /--c-deck-seat-in: 16px;/);
-  assert.equal((src.match(/var\(--c-deck-seat-in\)/g) ?? []).length, 1);
+  assert.equal((src.match(/var\(--c-deck-seat-in\)/g) ?? []).length, 3);
 });
 
 test("web components: 下のバーの自前のボタンは当たりの下限を持つ", () => {
