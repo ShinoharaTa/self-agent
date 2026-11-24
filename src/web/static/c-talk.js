@@ -151,6 +151,7 @@ export function refsOf(list) {
  * Bot の返事の行だけ: fmt.reply が関数なら解析する本文をその結果にし（文字列でない物が返れば元の本文のまま）、fmt.refs が関数なら（差し替える前の本文から）札を取り、
  * 1 つ以上在るときだけ返事のすぐ後ろに { kind: "refs", key: key + ":refs", refs } の行を足す。
  * 知らせ（notice）の行だけ: fmt.notice が関数なら本文をその結果にする（文字列でない物が返れば元の本文のまま）
+ * 知らせの行も fmt.noticeRefs が関数なら（差し替える前の本文から）札を取り、1 つ以上在るときだけ知らせのすぐ後ろに { kind: "refs", key: key + ":refs", refs } の行を足す
  */
 export function talkModel(state, parse) {
   const fmt = state.fmt;
@@ -159,6 +160,7 @@ export function talkModel(state, parse) {
   const reply = typeof fmt.reply === "function" ? fmt.reply : null;
   const refsFn = typeof fmt.refs === "function" ? fmt.refs : null;
   const noticeFn = typeof fmt.notice === "function" ? fmt.notice : null;
+  const noticeRefsFn = typeof fmt.noticeRefs === "function" ? fmt.noticeRefs : null;
   const items = turns.flatMap((turn, i) => {
     const prev = i > 0 ? turns[i - 1] : null;
     const key = String(turn.id);
@@ -166,7 +168,9 @@ export function talkModel(state, parse) {
     if (turn.kind === "divider") return [{ kind: "divider", key, text }];
     if (turn.kind === "notice") {
       const said = noticeFn ? noticeFn(text) : text;
-      return [{ kind: "notice", key, text: typeof said === "string" ? said : text, time: fmt.time(turn) }];
+      const row = { kind: "notice", key, text: typeof said === "string" ? said : text, time: fmt.time(turn) };
+      const refs = noticeRefsFn ? refsOf(noticeRefsFn(text)) : [];
+      return refs.length > 0 ? [row, { kind: "refs", key: key + ":refs", refs }] : [row];
     }
     const time = fmt.time(turn);
     const label = fmt.label(turn);

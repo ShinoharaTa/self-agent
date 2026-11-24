@@ -701,8 +701,8 @@
     else scroll.scrollTop = oldTop;
   }
 
-  /** chat.js に渡す枠の指定（毎回同じ物）。札は古い描き方では replyExtras（DOM）、部品の道では replyRefs（データ）と onRef */
-  const HAND_FRAME = { title: "右腕", placeholder: "右腕に頼む・訊く", ops: handOps, outgoing: withViewing, replyText: namedText, noticeText: handNoticeText, replyExtras: handCards, replyRefs: handRefs, onRef: (id) => SA.app.open(id) };
+  /** chat.js に渡す枠の指定（毎回同じ物）。札は古い描き方では replyExtras（DOM）、部品の道では replyRefs・noticeRefs（データ）と onRef */
+  const HAND_FRAME = { title: "右腕", placeholder: "右腕に頼む・訊く", ops: handOps, outgoing: withViewing, replyText: namedText, noticeText: handNoticeText, replyExtras: handCards, replyRefs: handRefs, noticeRefs: handRefs, onRef: (id) => SA.app.open(id) };
   /** 見出しを入口 c-app.js の部品（SA.hand）が描くときの枠（chat.js は見出しを作らない） */
   const HAND_FRAME_BARE = Object.assign({}, HAND_FRAME, { head: false });
 
@@ -1035,7 +1035,7 @@
     });
   }
 
-  /** 知らせ（統括のまとめ）の <#ID> を名前に。出た ID は全部覚える（一覧が変われば描き直す。札は出さない）。投げたら元の文 */
+  /** 知らせ（統括のまとめ）の <#ID> を名前に。出た ID は全部覚える（一覧が変われば描き直す。札は部品の道の noticeRefs）。投げたら元の文 */
   function handNoticeText(text) {
     if (typeof text !== "string") return text;
     try {
