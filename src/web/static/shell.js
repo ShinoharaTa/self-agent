@@ -65,7 +65,7 @@
     handWant: true,
     handOver: false,
     handMode: "over",
-    // 右腕の会話を席に開いているか（枠の見出しの［広げる］の後。流れの列の広い幅だけ。メモリだけ。履歴・hash・保存に書かない）
+    // 右腕の会話を席に開いているか（枠の見出しの［広げる］の後。流れの列の広い幅だけ。この印はメモリだけで、履歴・hash・保存に書かない。席を開いた履歴の entry と hash の右腕のタブは、ほかの話題を席に開いたときと同じに付くが、hash から読み直すと（再読み込みなど）枠に開く）
     handSeat: false,
     // 見出しを compact（場所・[会話][端末] を「…」の板へ）にするか。列 2 の幅を測れるまでは compact（fitTop が入口に測らせて決める）
     topCompact: true,
@@ -950,14 +950,14 @@
   }
 
   /**
-   * 席の右腕をやめる（席を閉じた・スマホの幅になった）。席の住人を空にし、枠は開かない（次の口は今までどおり枠を開く）。
+   * 席の右腕をやめる（席を閉じた・スマホの幅になった・右腕のチャンネルが替わった（無くなった））。席の住人を空にし、枠は開かない（次の口は今までどおり枠を開く）。
    * 席を閉じた後（popstate・showList）は一覧の entry なので履歴に触らない。席が出たまま（スマホの幅になった）なら一覧にし、席の entry を一覧の物に置き換える（syncHand と同じ）
    */
   function leaveHandSeat() {
     if (!S.handSeat) return;
     S.handSeat = false;
-    const tab = handTab();
-    if (tab !== null && S.active === tab) {
+    // S.handSeat が真の間、席の住人は［広げる］で開いた右腕のタブ（ほかのタブを開くと open が偽に戻す）。右腕のチャンネルが替わった後でも空にする
+    if (S.active !== null) {
       S.active = null;
       S.view2 = "talk";
       SA.topics.setCurrent(null);
@@ -1083,6 +1083,8 @@
   /** 話題の一覧を読むたびに: 列 2 に右腕のチャンネルが出ていたら右腕へ移し（［広げる］で席に開いた右腕は移さない）、右腕が変わっていたら描き直し、口を描く */
   function syncHand() {
     const tab = handTab();
+    // 席に右腕を開いた後で右腕のチャンネルが替わった・無くなった: 席の右腕をやめ、席を空にする（新しい右腕は今までどおり枠に開く）
+    if (S.handSeat && S.active !== tab) leaveHandSeat();
     if (tab !== null && S.active === tab && !S.handSeat) {
       const prev = SA.views.info(S.active);
       if (prev && prev.onClose) prev.onClose();
