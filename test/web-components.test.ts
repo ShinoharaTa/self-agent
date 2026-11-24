@@ -16,7 +16,7 @@ const C_TOKENS = [
   "tap", "bar-h", "bottom-h", "row-h", "gutter", "list-w", "hand-w", "card-r", "btn-sm-h", "round-r",
   "icon", "icon-sm", "mark", "mark-ring", "badge-h", "badge-pad", "seg-h", "seg-pad", "toast-w", "spin", "font-body", "row-indent", "list-gap",
   "top-full-min", "top-place-min", "talk-max", "bubble-pad-y", "bubble-pad-x", "card-max", "check", "deck-band-h", "deck-col-max", "deck-line",
-  "deck-seat-in", "orb",
+  "deck-seat-in", "orb", "gallery-pane-w",
 ].map((n) => `--c-${n}`);
 
 /** c-*.css が var() で使ってよい --c-* 以外の変数（base.css の目盛り・tokens.css の色・動き・重なり・字）。--bubble-* は古い殻（app.css）だけの色で、部品は使わない */
