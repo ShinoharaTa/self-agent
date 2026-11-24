@@ -133,6 +133,8 @@ function setup(t: TestContext, options: { setUp?: boolean; history?: boolean } =
     cfg: { ccSendWaitMin: 120, allowedGuildIds: ["guild-1"] },
     registry,
     panes,
+    // 前面の組は分からない（名前だけで見分ける。#502）
+    frontOf: () => undefined,
     tmux,
     sends,
     sessions,

@@ -958,7 +958,7 @@ if (
   ccTmux = tmux;
   const panes = new CcPaneResolver({ tmux, parentOf: procParentPid() });
   ccPanes = panes;
-  // claude の pid が端末の前面の組に居るか（包みの bash で起動したペインの見分け。#502）
+  // claude の pid がペインの端末と同じ端末の前面の組に居るか（包みの bash で起動したペインの見分け。#502）
   const frontOf = procForeground();
   ccSender = new CcSender({
     cfg: config,
@@ -1083,7 +1083,7 @@ if (
     claudeConfigDir: config.claudeConfigDir,
     registry,
     panes,
-    probePane: (paneId, pid) => probePaneState({ tmux, paneId, now: () => now().getTime(), front: () => frontOf(pid) }),
+    probePane: (paneId, pid, panePid) => probePaneState({ tmux, paneId, now: () => now().getTime(), front: () => frontOf(pid, panePid) }),
     dirs: new ClaudeDirs(),
     takeovers: ccTakeovers,
     ccChannels: ccChannelStore,

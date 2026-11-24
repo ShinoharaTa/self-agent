@@ -9,10 +9,12 @@ import {
   findSendablePane,
   findSessionPane,
   paneIdOfHint,
-  parseStatForeground,
   parseStatParentPid,
+  parseStatTerminal,
   procForeground,
   procParentPid,
+  sameTerminalFront,
+  type StatTerminal,
 } from "../src/cc/panes.ts";
 import type { TmuxPane, TmuxResult } from "../src/tmux/tmux.ts";
 import { tempDir } from "./helpers/db.ts";
@@ -64,35 +66,72 @@ test("procParentPid: <procDir>/<pid>/stat を読む。無い・不正な pid は
   assert.equal(parentOf(-1), undefined);
 });
 
-test("parseStatForeground: pgrp（3 つ目）と tpgid（6 つ目）が同じなら true。違う・tpgid が -1・0 は false。形が合わなければ undefined（#502）", () => {
-  // 包みの bash の組に居る claude（組の先頭は bash）でも、組が前面なら true
-  assert.equal(parseStatForeground("4321 (claude) S 4300 4300 4300 34816 4300 4194560"), true);
-  assert.equal(parseStatForeground("4321 (claude) S 4300 4321 4300 34816 4321 4194560"), true);
-  // 子（Bash のツールのコマンドなど）が別の組で前面に居る
-  assert.equal(parseStatForeground("4321 (claude) S 4300 4321 4300 34816 4400 4194560"), false);
-  assert.equal(parseStatForeground("4321 (claude) S 4300 4321 4300 0 -1 4194560"), false);
-  assert.equal(parseStatForeground("4321 (claude) S 4300 4321 4300 0 0 4194560"), false);
-  assert.equal(parseStatForeground("4321 (claude) S 4300 0 4300 0 0"), false);
+test("parseStatTerminal: 最後の ) の後ろの state（1 つ目）・pgrp（3 つ目）・tty_nr（5 つ目）・tpgid（6 つ目）を読む。欄不足・壊れは undefined（#502）", () => {
+  assert.deepEqual(parseStatTerminal("4321 (claude) S 4300 4300 4300 34816 4300 4194560"), { state: "S", pgrp: 4300, tty: 34816, tpgid: 4300 });
+  assert.deepEqual(parseStatTerminal("4321 (claude) S 4300 4321 4300 34816 4400 4194560"), { state: "S", pgrp: 4321, tty: 34816, tpgid: 4400 });
+  // 端末なし（tty_nr 0・tpgid -1）・負の値も整数として読む
+  assert.deepEqual(parseStatTerminal("4321 (claude) S 4300 4321 4300 0 -1 4194560"), { state: "S", pgrp: 4321, tty: 0, tpgid: -1 });
+  assert.deepEqual(parseStatTerminal("4321 (claude) S 4300 0 4300 0 0"), { state: "S", pgrp: 0, tty: 0, tpgid: 0 });
   // comm の括弧・空白に惑わされず、最後の ) の後ろから読む
-  assert.equal(parseStatForeground("4321 (a) S 99 (b)) R 1234 777 1 2 777"), true);
-  assert.equal(parseStatForeground("4321 (my cmd) S 1 555 555 34816 555"), true);
-  for (const bad of ["", "4321 claude S 4300 4321 4300 1 4321", "4321 (claude)", "4321 (claude) S 4300 4321 4300 1", "4321 (claude) S 4300 x 4300 1 4321", "4321 (claude) S 4300 4321 4300 1 y"]) {
-    assert.equal(parseStatForeground(bad), undefined, bad);
+  assert.deepEqual(parseStatTerminal("4321 (a) S 99 (b)) R 1234 777 1 2 777"), { state: "R", pgrp: 777, tty: 2, tpgid: 777 });
+  assert.deepEqual(parseStatTerminal("4321 (my cmd) S 1 555 555 34816 555"), { state: "S", pgrp: 555, tty: 34816, tpgid: 555 });
+  for (const bad of [
+    "",
+    "4321 claude S 4300 4321 4300 1 4321",
+    "4321 (claude)",
+    "4321 (claude) S 4300 4321 4300 1",
+    "4321 (claude) S 4300 x 4300 1 4321",
+    "4321 (claude) S 4300 4321 4300 z 4321",
+    "4321 (claude) S 4300 4321 4300 1 y",
+  ]) {
+    assert.equal(parseStatTerminal(bad), undefined, bad);
   }
 });
 
-test("procForeground: <procDir>/<pid>/stat を読む。無い・不正な pid は undefined（#502）", (t) => {
+test("sameTerminalFront: claude が生きていて前面の組に居て、ペインと同じ端末のときだけ true（中継の pty の下は false。#502）", () => {
+  const term = (state: string, pgrp: number, tty: number, tpgid: number): StatTerminal => ({ state, pgrp, tty, tpgid });
+  const pane = term("S", 4300, 34816, 4300);
+  // 包みの bash の組に居る claude（組の先頭は bash）でも、組が前面なら true。自分の組が前面でも true
+  assert.equal(sameTerminalFront(term("S", 4300, 34816, 4300), pane), true);
+  assert.equal(sameTerminalFront(term("S", 4321, 34816, 4321), pane), true);
+  assert.equal(sameTerminalFront(term("R", 4321, 34816, 4321), pane), true);
+  assert.equal(sameTerminalFront(term("D", 4321, 34816, 4321), pane), true);
+  // 中継（script・vim の :terminal）の内側の pty では前面でも、ペインの端末とは違う
+  assert.equal(sameTerminalFront(term("S", 4321, 34817, 4321), pane), false);
+  // 制御端末が無い（ペインの側も 0 でも）
+  assert.equal(sameTerminalFront(term("S", 4321, 0, 4321), term("S", 4300, 0, 4300)), false);
+  // 子（Bash のツールのコマンドなど）が別の組で前面に居る
+  assert.equal(sameTerminalFront(term("S", 4321, 34816, 4400), pane), false);
+  assert.equal(sameTerminalFront(term("S", 4321, 34816, -1), pane), false);
+  assert.equal(sameTerminalFront(term("S", 4321, 34816, 0), pane), false);
+  assert.equal(sameTerminalFront(term("S", 0, 34816, 0), pane), false);
+  // 終わった・止まった claude
+  assert.equal(sameTerminalFront(term("Z", 4321, 34816, 4321), pane), false);
+  assert.equal(sameTerminalFront(term("T", 4321, 34816, 4321), pane), false);
+});
+
+test("procForeground: claude とペインの <procDir>/<pid>/stat を読む。ペインの stat が無い = false、claude の stat が無い・不正な pid = undefined（#502）", (t) => {
   const proc = tempDir(t);
-  mkdirSync(join(proc, "4321"));
-  writeFileSync(join(proc, "4321", "stat"), "4321 (claude) S 4300 4300 4300 34816 4300 4194560\n");
-  mkdirSync(join(proc, "4322"));
-  writeFileSync(join(proc, "4322", "stat"), "4322 (claude) S 4300 4322 4300 34816 4400 4194560\n");
+  const stat = (pid: number, line: string): void => {
+    mkdirSync(join(proc, String(pid)));
+    writeFileSync(join(proc, String(pid), "stat"), `${line}\n`);
+  };
+  // ペインのシェル（包みの bash）と、その組に居る claude
+  stat(4300, "4300 (bash) S 4200 4300 4300 34816 4300 4194560");
+  stat(4321, "4321 (claude) S 4300 4300 4300 34816 4300 4194560");
+  // 子が前面の claude
+  stat(4322, "4322 (claude) S 4300 4322 4300 34816 4400 4194560");
+  // 別の端末のペイン（中継の外側と内側で端末が違う形）
+  stat(4310, "4310 (script) S 4200 4310 4310 34817 4310 4194560");
   const frontOf = procForeground(proc);
-  assert.equal(frontOf(4321), true);
-  assert.equal(frontOf(4322), false);
-  assert.equal(frontOf(4323), undefined);
-  assert.equal(frontOf(0), undefined);
-  assert.equal(frontOf(-1), undefined);
+  assert.equal(frontOf(4321, 4300), true);
+  assert.equal(frontOf(4322, 4300), false);
+  assert.equal(frontOf(4321, 4310), false);
+  assert.equal(frontOf(4321, 4399), false);
+  assert.equal(frontOf(4321, 0), false);
+  assert.equal(frontOf(4323, 4300), undefined);
+  assert.equal(frontOf(0, 4300), undefined);
+  assert.equal(frontOf(-1, 4300), undefined);
 });
 
 test("ancestorPids: 親から順に depth 段まで。init（1）・不明・循環で止まる", () => {

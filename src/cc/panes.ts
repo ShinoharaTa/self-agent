@@ -41,37 +41,66 @@ export function procParentPid(procDir: string = "/proc"): ParentPidReader {
   };
 }
 
-/** pid が端末の前面のプロセスの組に居るか。分からなければ undefined（#502） */
-export type ForegroundReader = (pid: number) => boolean | undefined;
+/**
+ * claude（pid）が、ペイン（pane_pid）の端末と同じ端末の前面のプロセスの組に居るか。claude の stat が分からなければ undefined（#502）。
+ * 中継（`script`・vim の `:terminal` など自前の pty を持つ物）の下の claude は、内側の pty では前面でもペインの端末の前面ではないので false
+ */
+export type ForegroundReader = (pid: number, panePid: number) => boolean | undefined;
+
+/** /proc/<pid>/stat の端末の欄（parseStatTerminal の戻り値） */
+export type StatTerminal = { state: string; pgrp: number; tty: number; tpgid: number };
 
 /**
- * /proc/<pid>/stat の中身から、そのプロセスが端末の前面のプロセスの組に居るか（純関数。#502）。parseStatParentPid と同じく最後の `)` の後ろから
- * 読む（`<state> <ppid> <pgrp> <session> <tty_nr> <tpgid> …`）。pgrp・tpgid がどちらも 1 以上なら pgrp === tpgid、tpgid が -1（端末なし）・0 は false。
- * 形が合わない・欄が足りなければ undefined
+ * /proc/<pid>/stat の中身から、状態・プロセスの組・制御端末・端末の前面の組を読む（純関数。#502）。parseStatParentPid と同じく最後の `)` の後ろから
+ * 読む（`<state> <ppid> <pgrp> <session> <tty_nr> <tpgid> …`。添字 0・2・4・5）。欄が足りない・どれかが整数として読めなければ undefined
  */
-export function parseStatForeground(stat: string): boolean | undefined {
+export function parseStatTerminal(stat: string): StatTerminal | undefined {
   const close = stat.lastIndexOf(")");
   if (close < 0) return undefined;
   const fields = stat.slice(close + 1).trim().split(/\s+/);
-  const pgrp = fields[2];
-  const tpgid = fields[5];
-  if (pgrp === undefined || tpgid === undefined || !/^-?\d{1,10}$/.test(pgrp) || !/^-?\d{1,10}$/.test(tpgid)) return undefined;
-  const group = Number(pgrp);
-  const front = Number(tpgid);
-  if (!Number.isSafeInteger(group) || !Number.isSafeInteger(front)) return undefined;
-  if (group < 1 || front < 1) return false;
-  return group === front;
+  const state = fields[0];
+  if (state === undefined || state === "") return undefined;
+  const numbers: number[] = [];
+  for (const raw of [fields[2], fields[4], fields[5]]) {
+    if (raw === undefined || !/^-?\d{1,10}$/.test(raw)) return undefined;
+    const value = Number(raw);
+    if (!Number.isSafeInteger(value)) return undefined;
+    numbers.push(value);
+  }
+  const [pgrp, tty, tpgid] = numbers as [number, number, number];
+  return { state, pgrp, tty, tpgid };
 }
 
-/** /proc/<pid>/stat から、端末の前面のプロセスの組に居るかを読む。読めなければ undefined（procDir はテスト用。#502） */
+/**
+ * claude がペインの端末と同じ端末の前面の組に居るか（純関数。#502）: claude が生きていて（R・S・D）、pgrp・tpgid がどちらも 1 以上で同じ、
+ * 制御端末が在り（tty_nr が 0 でない）、ペインの pane_pid と同じ端末。中継の pty の下の claude は tty が違うので false
+ */
+export function sameTerminalFront(claude: StatTerminal, pane: StatTerminal): boolean {
+  if (!["R", "S", "D"].includes(claude.state)) return false;
+  if (claude.pgrp < 1 || claude.tpgid < 1 || claude.pgrp !== claude.tpgid) return false;
+  if (claude.tty === 0) return false;
+  return pane.tty === claude.tty;
+}
+
+/**
+ * /proc/<pid>/stat（claude）と /proc/<panePid>/stat（ペイン）から、claude がペインの端末の前面の組に居るかを読む（procDir はテスト用。#502）。
+ * claude の stat が読めなければ undefined、ペインの stat が読めなければ false
+ */
 export function procForeground(procDir: string = "/proc"): ForegroundReader {
-  return (pid) => {
+  const read = (pid: number): StatTerminal | undefined => {
     if (!Number.isSafeInteger(pid) || pid < 1) return undefined;
     try {
-      return parseStatForeground(readFileSync(join(procDir, String(pid), "stat"), "utf8"));
+      return parseStatTerminal(readFileSync(join(procDir, String(pid), "stat"), "utf8"));
     } catch {
       return undefined;
     }
+  };
+  return (pid, panePid) => {
+    const claude = read(pid);
+    if (claude === undefined) return undefined;
+    const pane = read(panePid);
+    if (pane === undefined) return false;
+    return sameTerminalFront(claude, pane);
   };
 }
 

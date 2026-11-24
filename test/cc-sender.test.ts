@@ -69,7 +69,7 @@ type Phase = "before" | "pasted" | "entered";
 
 /**
  * 本物の CcSender・CcPaneResolver・createTmux（偽の execFile）・一時 SQLite。claude（S1 の pid 500）の親 400 が %1 の pane_pid。
- * capture-pane は phase（貼る前・貼った後・Enter の後）ごとに screens の画面を返す。frontOf は前面の組の見分け（#502。省略可）
+ * capture-pane は phase（貼る前・貼った後・Enter の後）ごとに screens の画面を返す。frontOf は前面の組の見分け（#502。既定は分からない = undefined）
  */
 function setup(t: TestContext, options: { frontOf?: ForegroundReader } = {}) {
   const db = tempDb(t);
@@ -126,7 +126,7 @@ function setup(t: TestContext, options: { frontOf?: ForegroundReader } = {}) {
     cfg: { ccSendWaitMin: 120, allowedGuildIds: ["g1", "g2"] },
     registry,
     panes,
-    frontOf: options.frontOf,
+    frontOf: options.frontOf ?? (() => undefined),
     tmux,
     sends,
     sessions,
@@ -302,10 +302,10 @@ test("前面が claude でないペイン（コマンド実行中）には積ん
 });
 
 test("名前が bash のペインでも、claude の pid が前面の組に居れば（frontOf が true）入力待ちで貼って delivered（包みの bash の起動の形。#502）", async (t) => {
-  const asked: number[] = [];
+  const asked: Array<[number, number]> = [];
   const { env, sender, sends, actions, commands } = setup(t, {
-    frontOf: (pid) => {
-      asked.push(pid);
+    frontOf: (pid, panePid) => {
+      asked.push([pid, panePid]);
       return true;
     },
   });
@@ -318,8 +318,11 @@ test("名前が bash のペインでも、claude の pid が前面の組に居�
   assert.deepEqual([row.state, row.paneId], ["delivered", "%1"]);
   assert.deepEqual(actions(), ["load-buffer", "paste-buffer", "send-keys"]);
   assert.ok(commands.some((args) => args.join(" ") === "send-keys -t %1 Enter"));
-  // 読むのはそのセッション（S1）の claude の pid で、撮るたびに読む
-  assert.deepEqual(asked, [500, 500]);
+  // 読むのはそのセッション（S1）の claude の pid とそのペイン（%1）の pane_pid で、撮るたびに読む
+  assert.deepEqual(asked, [
+    [500, 400],
+    [500, 400],
+  ]);
 });
 
 test("名前が bash のペインで frontOf が false・無しなら、今までどおり積んで待つ（not_claude。#284・#502）", async (t) => {
