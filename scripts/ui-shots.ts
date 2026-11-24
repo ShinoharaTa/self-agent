@@ -740,7 +740,7 @@ const TOP_PLACE_MIN = 96;
 const TOP_BOX: Record<string, number> = { "c-gallery-top-full": 520, "c-gallery-top-list": 280 };
 /** 見本の見出しの data-demo（ページの順） */
 const TOP_DEMOS = [
-  "top-phone-talk", "top-phone-long", "top-phone-other",
+  "top-phone-talk", "top-phone-running", "top-phone-long", "top-phone-other",
   "top-wide-talk", "top-wide-cc", "top-wide-long", "top-wide-short", "top-wide-mode", "top-wide-mode-busy", "top-wide-other",
   "top-compact-cc", "top-compact-long",
 ];
@@ -6290,7 +6290,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
   }
 
   /**
-   * 見本の右腕の丸（#463 の D6）: 6 つの見本（accent・静か × 印なし・番・未読）が 56×56 で角丸が半分以上、svg が 1 つ・字なし、
+   * 見本の右腕の丸（#463 の D6）: 8 つの見本（accent・静か × 印なし・番・未読・作業中）が 56×56 で角丸が半分以上、svg が 1 つ・字なし、
    * accent の顔の地が --accent で輪郭 0、静かな顔の地が --surface で輪郭 1px、名前（aria-label と title）、印の数と丸の箱の中に在る事。
    * 足りない物は 1 行ずつ console.log に書き、1 つでもあれば投げて段を失敗にする
    */
@@ -6302,9 +6302,11 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         ["orb-accent", "accent", ""],
         ["orb-accent-turn", "accent", "turn"],
         ["orb-accent-unread", "accent", "unread"],
+        ["orb-accent-running", "accent", "running"],
         ["orb-quiet", "quiet", ""],
         ["orb-quiet-turn", "quiet", "turn"],
         ["orb-quiet-unread", "quiet", "unread"],
+        ["orb-quiet-running", "quiet", "running"],
       ];
       const colorOf = (host: Element, value: string): string => {
         const probe = document.createElement("span");
@@ -6338,7 +6340,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         const wantBorder = tone === "accent" ? "0px" : "1px";
         if (borders.some((w) => w !== wantBorder)) out.push(`丸 ${demo}: 輪郭が ${borders.join(" ")}（${wantBorder} のはず）`);
         if (cs.boxShadow !== "none") out.push(`丸 ${demo}: 影が在る ${cs.boxShadow}`);
-        const name = mark === "turn" ? `${NAME}（あなたの番）` : mark === "unread" ? `${NAME}（未読）` : NAME;
+        const name = mark === "turn" ? `${NAME}（あなたの番）` : mark === "unread" ? `${NAME}（未読）` : mark === "running" ? `${NAME}（作業中）` : NAME;
         if (orb.getAttribute("aria-label") !== name || orb.getAttribute("title") !== name) out.push(`丸 ${demo}: 名前が ${JSON.stringify(orb.getAttribute("aria-label"))}・title ${JSON.stringify(orb.getAttribute("title"))}（「${name}」のはず）`);
         if (orb.hasAttribute("id")) out.push(`丸 ${demo}: id が在る`);
         // 印: accent の顔は自前の点、静かな顔は K2 の Mark。丸の箱の中に収まる
@@ -6376,7 +6378,102 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
   }
 
   /**
-   * スマホの流れの列の見本（D2）: 下のバーの deck の 2 つ（外側 390 の枠・列 3 つと右腕・今の列は 1 つ・数の Badge は番の列だけ・4 つの字が省かれない・id なし）、
+   * 見本の右腕の口の作業中の印（#463 の D6 の PR-5）: 丸の 2 つの顔・下のバーの 2 つ（phone・deck）・スマホの見出し・帯の作業中の見本で、
+   * 印が 1 つ（data-state=running）・地が透明（塗らない）・輪の太さが --c-mark-ring で実線・輪の色が口ごとの決まり（accent の地の上は --primary-text、ほかは --accent）・
+   * 外寸が K2 の Mark の running と同じ（同じページの静かな丸の Mark と比べる。base.css の border-box で輪は箱の内側なので --c-mark）で、隣の番の見本の点と同じ、名前が「（作業中）」で終わる事。
+   * 足りない物は 1 行ずつ console.log に書き、1 つでもあれば投げて段を失敗にする
+   */
+  async function checkHandRunning(page: Page, label: string): Promise<void> {
+    const lines = await page.evaluate(() => {
+      const out: string[] = [];
+      const HAND = "右腕に頼む・訊く（作業中）";
+      // [見本, 押す物, 印, 輪の色のトークン, 名前, 隣の番の見本]
+      const demos: ReadonlyArray<[string, string, string, string, string, string]> = [
+        ["orb-accent-running", "button.c-orb", ".c-orb-dot", "--primary-text", HAND, "orb-accent-turn"],
+        ["orb-quiet-running", "button.c-orb", ".c-mark", "--accent", HAND, "orb-quiet-turn"],
+        ["bottom-phone-running", ".c-bottom-hand", ".c-bottom-hand-mark", "--primary-text", HAND, "bottom-phone"],
+        ["bottom-deck-running", ".c-bottom-hand", ".c-bottom-hand-mark", "--primary-text", HAND, "bottom-deck"],
+        ["top-phone-running", ".c-top-hand", ".c-top-hand-mark", "--accent", HAND, "top-phone-talk"],
+        ["band-running", ".c-band-hand", ".c-band-hand-mark", "--accent", "右腕（作業中）", "band"],
+      ];
+      const probeOf = (host: Element, css: Partial<CSSStyleDeclaration>): HTMLSpanElement => {
+        const probe = document.createElement("span");
+        Object.assign(probe.style, { display: "block", position: "absolute", visibility: "hidden" }, css);
+        host.append(probe);
+        return probe;
+      };
+      const colorOf = (host: Element, token: string): string => {
+        const probe = probeOf(host, { backgroundColor: `var(${token})` });
+        const c = getComputedStyle(probe).backgroundColor;
+        probe.remove();
+        return c;
+      };
+      const lengthOf = (host: Element, value: string): number => {
+        const probe = probeOf(host, { width: value, height: "0" });
+        const w = probe.getBoundingClientRect().width;
+        probe.remove();
+        return w;
+      };
+      const body = document.body;
+      const ring = lengthOf(body, "var(--c-mark-ring)");
+      const want = lengthOf(body, "var(--c-mark)");
+      if (!(ring > 0) || !(want > ring * 2)) out.push(`作業中: トークンを測れない（輪 ${ring}・外寸 ${want}）`);
+      // 同じページの K2 の Mark の running（静かな丸の中の物）
+      const k2 = document.querySelector('[data-demo="orb-quiet-running"] .c-mark[data-state="running"]');
+      const k2Box = k2 === null ? null : k2.getBoundingClientRect();
+      if (k2Box === null) out.push("作業中: K2 の Mark の running が見本に無い");
+      else if (Math.abs(k2Box.width - want) > 0.5 || Math.abs(k2Box.height - want) > 0.5) out.push(`作業中: K2 の Mark の running が ${k2Box.width.toFixed(1)}×${k2Box.height.toFixed(1)}（${want.toFixed(1)} のはず）`);
+      for (const [demo, button, markSel, token, name, turnDemo] of demos) {
+        const roots = document.querySelectorAll(`[data-demo="${demo}"]`);
+        if (roots.length !== 1) {
+          out.push(`作業中 ${demo}: 見本が ${roots.length}（1 のはず）`);
+          continue;
+        }
+        const root = roots[0] as Element;
+        const btns = root.querySelectorAll(button);
+        if (btns.length !== 1) {
+          out.push(`作業中 ${demo}: ${button} が ${btns.length}（1 のはず）`);
+          continue;
+        }
+        const btn = btns[0] as HTMLElement;
+        if (btn.getAttribute("aria-label") !== name) out.push(`作業中 ${demo}: 名前が ${JSON.stringify(btn.getAttribute("aria-label"))}（「${name}」のはず）`);
+        if (button === "button.c-orb" && btn.getAttribute("title") !== name) out.push(`作業中 ${demo}: title が ${JSON.stringify(btn.getAttribute("title"))}（「${name}」のはず）`);
+        const marks = btn.querySelectorAll(markSel);
+        if (marks.length !== 1) {
+          out.push(`作業中 ${demo}: 印 ${markSel} が ${marks.length}（1 のはず）`);
+          continue;
+        }
+        const mark = marks[0] as HTMLElement;
+        if (mark.getAttribute("data-state") !== "running") out.push(`作業中 ${demo}: 印の data-state が ${mark.getAttribute("data-state")}（running のはず）`);
+        const cs = getComputedStyle(mark);
+        if (cs.backgroundColor !== "rgba(0, 0, 0, 0)" || cs.backgroundImage !== "none") out.push(`作業中 ${demo}: 地が塗られている（${cs.backgroundColor} ${cs.backgroundImage}）`);
+        if (cs.boxShadow !== "none") out.push(`作業中 ${demo}: 影が在る ${cs.boxShadow}`);
+        const widths = [cs.borderTopWidth, cs.borderRightWidth, cs.borderBottomWidth, cs.borderLeftWidth].map((w) => parseFloat(w));
+        if (widths.some((w) => Math.abs(w - ring) > 0.01)) out.push(`作業中 ${demo}: 輪の太さが ${widths.join(" ")}（${ring} のはず）`);
+        const styles = [cs.borderTopStyle, cs.borderRightStyle, cs.borderBottomStyle, cs.borderLeftStyle];
+        if (styles.some((st) => st !== "solid")) out.push(`作業中 ${demo}: 輪の線が ${styles.join(" ")}（solid のはず）`);
+        const color = colorOf(btn, token);
+        const colors = [cs.borderTopColor, cs.borderRightColor, cs.borderBottomColor, cs.borderLeftColor];
+        if (colors.some((c) => c !== color)) out.push(`作業中 ${demo}: 輪の色が ${colors.join(" ")}（${token} ${color} のはず）`);
+        const r = mark.getBoundingClientRect();
+        if (Math.abs(r.width - want) > 0.5 || Math.abs(r.height - want) > 0.5) out.push(`作業中 ${demo}: 印の外寸が ${r.width.toFixed(1)}×${r.height.toFixed(1)}（K2 の Mark の running と同じ ${want.toFixed(1)} のはず）`);
+        if (k2Box !== null && (Math.abs(r.width - k2Box.width) > 0.5 || Math.abs(r.height - k2Box.height) > 0.5)) out.push(`作業中 ${demo}: 印の外寸が K2 の Mark の running（${k2Box.width.toFixed(1)}）と違う`);
+        const turn = document.querySelector(`[data-demo="${turnDemo}"] ${button} ${markSel}[data-state="turn"]`);
+        const t = turn === null ? null : turn.getBoundingClientRect();
+        if (t === null) out.push(`作業中 ${demo}: 隣の番の見本 ${turnDemo} に番の点が無い`);
+        else if (Math.abs(r.width - t.width) > 0.5 || Math.abs(r.height - t.height) > 0.5) out.push(`作業中 ${demo}: 印の外寸 ${r.width.toFixed(1)} が隣の番の点（${turnDemo}）の ${t.width.toFixed(1)} と違う`);
+        // 印は押す物の箱の中
+        const b = btn.getBoundingClientRect();
+        if (r.left < b.left - 0.5 || r.right > b.right + 0.5 || r.top < b.top - 0.5 || r.bottom > b.bottom + 0.5) out.push(`作業中 ${demo}: 印が押す物の箱の外`);
+      }
+      return out;
+    });
+    for (const line of lines) logLines.push(`[${label}] ${line}`);
+    if (lines.length > 0) throw new Error(`右腕の作業中の印の見本の検査で ${lines.length} 件`);
+  }
+
+  /**
+   * スマホの流れの列の見本（D2）: 下のバーの deck の 3 つ（外側 390 の枠・列 3 つと右腕・今の列は 1 つ・数の Badge は番の列だけ・4 つの字が省かれない・id なし）、
    * 帯の phone（点・探す・始める・ほかで右腕なし・「self-agent」が省かれない）、deck-paged（列 3 つが枠の幅で、1 列ずつ止まる横送り）、
    * deck-phone-ops（リマインドの操作の行が 1 行で項目の中）と当たり（PC でも 44）。
    * 足りない物は 1 行ずつ console.log に書き、1 つでもあれば投げて段を失敗にする
@@ -6387,6 +6484,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       const cut = (el: Element | null): boolean => el !== null && el.scrollWidth > el.clientWidth + 1;
       const bars: ReadonlyArray<[string, string, string]> = [
         ["bottom-deck", "turn", "12"],
+        ["bottom-deck-running", "turn", "12"],
         ["bottom-deck-quiet", "feed", ""],
       ];
       for (const [demo, current, badge] of bars) {
@@ -6502,7 +6600,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       return out;
     });
     lines.push(
-      ...(await page.evaluate(hitProblems, { min: 44, scopes: '[data-demo="bottom-deck"], [data-demo="bottom-deck-quiet"], [data-demo="band-phone"], [data-demo="deck-paged"], [data-demo="deck-phone-ops"]', targets: "button, a[href]", toast: false })).map(
+      ...(await page.evaluate(hitProblems, { min: 44, scopes: '[data-demo="bottom-deck"], [data-demo="bottom-deck-running"], [data-demo="bottom-deck-quiet"], [data-demo="band-phone"], [data-demo="deck-paged"], [data-demo="deck-phone-ops"]', targets: "button, a[href]", toast: false })).map(
         (line) => `スマホの流れの列: ${line}`,
       ),
     );
@@ -6545,6 +6643,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         await checkTerms(page, vp, label);
         await checkDeckPhone(page, label);
         await checkOrbs(page, label);
+        await checkHandRunning(page, label);
         // 検査で動かした位置（ページと横に送る入れ物）を先頭に戻す
         await page.evaluate(() => {
           for (const el of document.querySelectorAll("*")) if (el.scrollLeft !== 0) el.scrollLeft = 0;
