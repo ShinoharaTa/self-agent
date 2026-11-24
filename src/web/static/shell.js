@@ -65,6 +65,8 @@
     handWant: true,
     handOver: false,
     handMode: "over",
+    // 右腕の会話を席に開いているか（枠の見出しの［広げる］の後。流れの列の広い幅だけ。メモリだけ。履歴・hash・保存に書かない）
+    handSeat: false,
     // 見出しを compact（場所・[会話][端末] を「…」の板へ）にするか。列 2 の幅を測れるまでは compact（fitTop が入口に測らせて決める）
     topCompact: true,
     // 流れの列: 最後に書いた見える列の数と席に開いている物（null は流れの列でない）・席を開いた元（{ key } か { find: true }。閉じた後の焦点）
@@ -194,7 +196,12 @@
       ed.replaceChildren(el("div", { class: "v3-empty" }, [el("p", { class: "meta", text: "左の一覧から話題を選んでください" })]));
       return;
     }
-    info.render(ed);
+    // 席の右腕（［広げる］の後）は右腕の枠の指定で描き、右腕の入れ物は空にする（同じチャンネルを 2 つの入れ物に描かない）
+    const seatId = S.handSeat && tabId === handTab() ? handChannelId() : null;
+    if (seatId !== null) {
+      clearHandEd();
+      SA.chat.render(ed, seatId, HAND_SEAT_FRAME);
+    } else info.render(ed);
     const scroll = ed.querySelector(".ed-scroll");
     if (!scroll) return;
     const stick = scroll.dataset.stick === "bottom";
@@ -286,6 +293,7 @@
   function topState() {
     const info = S.active ? SA.views.info(S.active) : null;
     if (!info) return { view: "none", title: "", status: null, note: null, place: null, views: null, hand: null, compact: S.topCompact, menu: false, mode: null, close: false, controls: "v3-hand", on: TOP_ON };
+    if (handSeated()) return handSeatTop();
     const t = SA.topics.find(S.active) || null;
     const head = topHead();
     let status = null;
@@ -349,8 +357,12 @@
     renderBar();
   }
 
-  /** 見出しの「…」の板: スマホと compact は場所を変える・[会話][端末] の代わりを先頭に、後ろにチャンネルの操作（head.menu） */
+  /** 見出しの「…」の板: スマホと compact は場所を変える・[会話][端末] の代わりを先頭に、後ろにチャンネルの操作（head.menu）。席の右腕は右腕の「…」の板 */
   function openTopMenu(opener) {
+    if (handSeated()) {
+      openHandMenu(opener);
+      return;
+    }
     const t = S.active ? SA.topics.find(S.active) : null;
     if (!t) return;
     const head = topHead();
@@ -469,11 +481,14 @@
       if (tabId.startsWith("cc:") && SA.store.status === null) deferred = tabId;
       return;
     }
-    // 右腕のチャンネルは列 2 に描かない（同じチャンネルを 2 つの入れ物に描かない）。右腕を開く
-    if (tabId === handTab()) {
+    // 右腕のチャンネルは列 2 に描かない（同じチャンネルを 2 つの入れ物に描かない）。右腕を開く（席に右腕が出ていれば openHand が席の入力欄へ）
+    // ［広げる］（seatHand）から開くときだけ通す
+    if (tabId === handTab() && (!S.handSeat || S.active === tabId)) {
       openHand(document.activeElement, false);
       return;
     }
+    // ほかのタブを開いたら席の右腕はやめる（印を戻すのは下の描き直し）
+    if (tabId !== handTab()) S.handSeat = false;
     const switched = S.active !== tabId;
     const shownBefore = edTab;
     // 会話（ch:）は閉じない（開いた手順・選びかけの選択肢を、ほかの話題を見て戻っても保つ）
@@ -552,7 +567,8 @@
 
   /** tabId が列 2 に出ていれば見出しと中身だけ描き直す */
   function refresh(tabId) {
-    if (tabId !== null && tabId === handTab()) {
+    // 席の右腕は席の側（下の renderEd）を描く
+    if (tabId !== null && tabId === handTab() && !handSeated()) {
       renderHand();
       return;
     }
@@ -594,6 +610,21 @@
 
   function handVisible() {
     return S.handMode === "column" ? S.handWant : S.handOver;
+  }
+
+  /** 席に右腕の会話を開いているか（［広げる］の後。席の住人が右腕のタブの間） */
+  function handSeated() {
+    return S.handSeat && S.active !== null && S.active === handTab();
+  }
+
+  /** 右腕の会話が見えているか（枠か席）。口に未読・作業中を出さない */
+  function handSeen() {
+    return handVisible() || handSeated();
+  }
+
+  /** 枠の見出しに［広げる］を出すか（流れの列・スマホでない・右腕のチャンネルが在る） */
+  function handSeatable() {
+    return deckOn() && !phone() && handChannelId() !== null;
   }
 
   /** 列 3 が入るか（スマホか、列 2 が HAND_MAIN_MIN を切るなら重ねる形） */
@@ -705,11 +736,14 @@
   const HAND_FRAME = { title: "右腕", placeholder: "右腕に頼む・訊く", ops: handOps, outgoing: withViewing, replyText: namedText, noticeText: handNoticeText, replyExtras: handCards, replyRefs: handRefs, noticeRefs: handRefs, onRef: (id) => SA.app.open(id) };
   /** 見出しを入口 c-app.js の部品（SA.hand）が描くときの枠（chat.js は見出しを作らない） */
   const HAND_FRAME_BARE = Object.assign({}, HAND_FRAME, { head: false });
+  /** ［広げる］の後に席（#ed）に描くときの枠（見出しは列 2 の部品が描く。席では「いま見ている話題」を添えないので outgoing は無し） */
+  const HAND_SEAT_FRAME = Object.assign({}, HAND_FRAME_BARE);
+  delete HAND_SEAT_FRAME.outgoing;
 
   /** 部品の見出しで描けなかった（以後はこのタブで古い見出し） */
   let handHeadBroken = false;
   /** 部品の見出しの on（1 回だけ作る） */
-  const HAND_ON = { menu: (opener) => openHandMenu(opener), close: () => closeHand() };
+  const HAND_ON = { menu: (opener) => openHandMenu(opener), close: () => closeHand(), seat: () => seatHand() };
 
   /** 右腕の「…」の行（chat.js の head の menu。#inbox では会話を新しくする・Discord で開く）。チャンネルが無ければ空 */
   function handMenu() {
@@ -727,7 +761,7 @@
   /** 右腕の見出しを部品で描く（閉じていれば消す）。描けたら true、口が無い・描けなければ false（古い見出しに戻す） */
   function drawHandHead() {
     if (!SA.hand || handHeadBroken) return false;
-    if (SA.hand.draw(handVisible() ? { title: HAND_FRAME.title, menu: handMenu().length > 0, on: HAND_ON } : null)) return true;
+    if (SA.hand.draw(handVisible() ? { title: HAND_FRAME.title, menu: handMenu().length > 0, seat: handSeatable(), on: HAND_ON } : null)) return true;
     handHeadBroken = true;
     SA.hand.draw(null);
     return false;
@@ -795,6 +829,11 @@
 
   /** 右腕を開く。focusInput なら入力欄に（部品なら口に頼む）、でなければ [畳む] に焦点 */
   function openHand(opener, focusInput) {
+    // 席に右腕が出ている間は枠を開かず、席の入力欄へ
+    if (handSeated()) {
+      focusSeatInput();
+      return;
+    }
     // 流れの列で「探す」の板の中から開いたら、先に板を閉じる（右腕は modal。畳んだ後の焦点は板を開いたボタンへ。板の中の要素は閉じると隠れる）
     if (deckOn() && findOpen()) {
       const from = findOpener;
@@ -841,6 +880,99 @@
       }
     }
     focusHandClose();
+  }
+
+  /**
+   * 枠の見出しの［広げる］: 枠を畳み（open が今の決まりで畳む。履歴の entry は席の物に置き換わる。口へ焦点は戻さない）、右腕の会話を席に開き、焦点は席の入力欄（無ければ席の［閉じる］）
+   */
+  function seatHand() {
+    const tab = handTab();
+    if (tab === null || !handSeatable()) return;
+    S.handSeat = true;
+    open(tab);
+    if (!handSeated()) {
+      S.handSeat = false;
+      return;
+    }
+    focusSeatInput();
+    renderHandEntries();
+  }
+
+  /** 席の入力欄に焦点（部品なら口に頼む）。無ければ席の［閉じる］ */
+  function focusSeatInput() {
+    const ed = $("ed");
+    const root = ed ? [...ed.children].find((child) => child.getAttribute("data-composer") !== null) : null;
+    if (root && SA.composer && SA.composer.focus(root)) return;
+    const input = ed ? ed.querySelector("textarea.composer-input") : null;
+    if (input) input.focus({ preventScroll: true });
+    else if (SA.top) SA.top.focus("close");
+  }
+
+  /** 右腕の入れ物を空にする（席に右腕を描くとき。部品の根は外してから）。次に枠を開いたら下端から描き直す */
+  function clearHandEd() {
+    const ed = $("v3-hand-ed");
+    if (!ed || ed.children.length === 0) return;
+    for (const [attr, part] of [
+      ["data-talk", SA.talk],
+      ["data-composer", SA.composer],
+      ["data-cards", SA.cards],
+    ]) {
+      if (part && typeof part.drop === "function") for (const n of ed.querySelectorAll("[" + attr + "]")) part.drop(n);
+    }
+    ed.replaceChildren();
+    handShown = null;
+    handStick = true;
+  }
+
+  /** 席の右腕の見出しの state: 題「右腕」・状態は あなたの番 > 作業中・場所・モード・［会話］［端末］は無し・「…」は右腕の操作 */
+  function handSeatTop() {
+    const data = SA.topics.data();
+    const hand = data && data.rightHands[0];
+    let status = null;
+    if (hand && hand.turn) status = { text: "あなたの番", tone: "warning" };
+    else if (SA.store.runningOf(handChannelId()) !== null) status = { text: "作業中", tone: "accent" };
+    return {
+      view: "talk",
+      title: HAND_FRAME.title,
+      status,
+      note: null,
+      place: null,
+      views: null,
+      hand: handMark(),
+      compact: S.topCompact,
+      menu: handMenu().length > 0,
+      mode: null,
+      close: deckOn() && !phone(),
+      backLabel: deckFull() ? "戻る" : undefined,
+      controls: "v3-hand",
+      on: TOP_ON,
+    };
+  }
+
+  /**
+   * 席の右腕をやめる（席を閉じた・スマホの幅になった）。席の住人を空にし、枠は開かない（次の口は今までどおり枠を開く）。
+   * 席を閉じた後（popstate・showList）は一覧の entry なので履歴に触らない。席が出たまま（スマホの幅になった）なら一覧にし、席の entry を一覧の物に置き換える（syncHand と同じ）
+   */
+  function leaveHandSeat() {
+    if (!S.handSeat) return;
+    S.handSeat = false;
+    const tab = handTab();
+    if (tab !== null && S.active === tab) {
+      S.active = null;
+      S.view2 = "talk";
+      SA.topics.setCurrent(null);
+      if (S.view === "body") {
+        setView("list");
+        try {
+          if (history.state && history.state.v3Body) history.replaceState({}, "", location.pathname + location.search);
+        } catch {
+          // 書けなくても一覧は出ている
+        }
+      }
+      renderMain();
+      SA.topics.render();
+    }
+    renderHandEntries();
   }
 
   /** 右腕を畳む（列は保存して帯のボタンに焦点。重ねる形は履歴の entry があれば戻る = popstate で閉じる） */
@@ -908,14 +1040,14 @@
     return true;
   }
 
-  /** 口の印（あなたの番 > 未読 > 作業中 で 1 つ。見えている右腕には未読・作業中を出さない。作業中は右腕のチャンネルに実行中のターンが在る間） */
+  /** 口の印（あなたの番 > 未読 > 作業中 で 1 つ。見えている右腕（枠か席）には未読・作業中を出さない。作業中は右腕のチャンネルに実行中のターンが在る間） */
   function handMark() {
     const data = SA.topics.data();
     const hand = data && data.rightHands[0];
     if (!hand) return null;
     if (hand.turn) return "turn";
-    if (!handVisible() && SA.store.isUnread({ id: handChannelId(), last: hand.last })) return "unread";
-    if (!handVisible() && SA.store.runningOf(handChannelId()) !== null) return "running";
+    if (!handSeen() && SA.store.isUnread({ id: handChannelId(), last: hand.last })) return "unread";
+    if (!handSeen() && SA.store.runningOf(handChannelId()) !== null) return "running";
     return null;
   }
 
@@ -948,10 +1080,10 @@
     renderBand();
   }
 
-  /** 話題の一覧を読むたびに: 列 2 に右腕のチャンネルが出ていたら右腕へ移し、右腕が変わっていたら描き直し、口を描く */
+  /** 話題の一覧を読むたびに: 列 2 に右腕のチャンネルが出ていたら右腕へ移し（［広げる］で席に開いた右腕は移さない）、右腕が変わっていたら描き直し、口を描く */
   function syncHand() {
     const tab = handTab();
-    if (tab !== null && S.active === tab) {
+    if (tab !== null && S.active === tab && !S.handSeat) {
       const prev = SA.views.info(S.active);
       if (prev && prev.onClose) prev.onClose();
       S.active = null;
@@ -1197,6 +1329,7 @@
     setView("list");
     if (deckOn()) focusSeatFrom();
     else focusCurrentRow();
+    leaveHandSeat();
   }
 
   function openDrawer() {
@@ -2085,6 +2218,9 @@
 
     bindViewport();
     mqPhone.addEventListener("change", () => {
+      // スマホの幅になったら席の右腕はやめ、席を空にする（枠は開かない）。開いている枠の見出しの［広げる］は描き直して出し入れする
+      if (phone()) leaveHandSeat();
+      if (handVisible()) drawHandHead();
       // 流れの列とスマホの間は、席（会話）を出しているかをそのまま保つ。入口が無ければ今までどおり話題があれば会話
       if (SA.deck) setView(S.view);
       else setView(S.active ? "body" : "list");
@@ -2121,6 +2257,8 @@
           if (deckOn()) focusSeatFrom();
           else if (phone()) focusCurrentRow();
         }
+        // 席の右腕を閉じた: 席を空にする（枠は開かない）
+        leaveHandSeat();
       }
       if (handChanged) applyHand();
       if (handClosed) restoreHandFocus();
