@@ -82,12 +82,12 @@
   color: var(--text-secondary);
 }
 
-/* 一覧・下のバーの見本の入れ物（高さは決めない。一覧が全部見える） */
+/* 一覧・下のバーの見本の入れ物（高さは決めない。一覧が全部見える。幅は見本だけの --c-gallery-pane-w で、右腕の枠の幅 --c-hand-w とは別） */
 .c-gallery-pane {
   display: flex;
   flex-direction: column;
   width: 100%;
-  max-width: var(--c-hand-w);
+  max-width: var(--c-gallery-pane-w);
   border: var(--border-width) solid var(--border);
   background: var(--surface);
 }
@@ -185,5 +185,5 @@
 .c-gallery-phone {
   box-sizing: border-box;
   max-width: none;
-  width: calc(var(--c-hand-w) + var(--space-6) + var(--space-1) + 2 * var(--border-width));
+  width: calc(var(--c-gallery-pane-w) + var(--space-6) + var(--space-1) + 2 * var(--border-width));
 }
