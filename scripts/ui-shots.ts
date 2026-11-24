@@ -5463,8 +5463,141 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           } finally {
             await page.emulateMedia({ reducedMotion: null });
           }
+          // 右腕の枠と幕が出るときの動き（D6 の PR-4。同じ組）: 読み込み（右腕の hash）で開いた枠は動かない。最初の操作の後に口（PC は丸・スマホは下のバーの右腕）を押した直後、
+          // 枠（#v3-hand）は opacity と transform・幕（#v3-hand-backdrop）は opacity だけで、長さは席と同じ。丸は動かず、押した直後も終わった後も画面が横にずれない・送りの棒が出ない。
+          // 終わった後は不透明・ずれなしで PR-2 の形。Esc で閉じるのはすぐ。動きを減らす設定では動かない。終わりは枠を閉じた列だけの画面（後ろの段は読み直す）
+          {
+            const sayHand = (text: string): void => void problems.push(`右腕の枠の動き: ${text}`);
+            const HAND_OPEN = vp === "phone" ? BAR_HAND : ORB;
+            type HandStart = { moves: string | null; hand: string | null; frame: string[]; frameDur: number[]; frameEase: string[]; back: string[]; backDur: number[]; backEase: string[]; orb: number; shift: ShiftState; ease: string };
+            type ShiftState = { rootLeft: number; bodyLeft: number; v3Left: number; innerW: number; clientW: number; scrollW: number };
+            /** 画面が横にずれていないか（ページ・body・#v3 の scrollLeft が 0、送りの棒が出ていない（innerWidth = clientWidth）。after では はみ出しも残らない） */
+            const shiftLines = (st: ShiftState, when: string, after: boolean): string[] =>
+              st.rootLeft !== 0 || st.bodyLeft !== 0 || st.v3Left !== 0 || st.innerW !== st.clientW || (after && st.scrollW > st.clientW)
+                ? [`${when}の横のずれ・送りの棒が ${JSON.stringify(st)}（scrollLeft は全部 0・innerWidth = clientWidth${after ? "・scrollWidth ≦ clientWidth" : ""} のはず）`]
+                : [];
+            const shiftNow = (): Promise<ShiftState> =>
+              page.evaluate(() => {
+                const root = document.documentElement;
+                return { rootLeft: root.scrollLeft, bodyLeft: document.body.scrollLeft, v3Left: document.querySelector("#v3")?.scrollLeft ?? -1, innerW: window.innerWidth, clientW: root.clientWidth, scrollW: root.scrollWidth };
+              });
+            /** 口を押し、同じ処理の中で枠・幕・丸の動きと横のずれを読む（止めない） */
+            const pressHand = (): Promise<HandStart | null> =>
+              page.evaluate((sel: string) => {
+                const opener = document.querySelector<HTMLElement>(sel);
+                const hand = document.querySelector<HTMLElement>("#v3-hand");
+                const back = document.querySelector<HTMLElement>("#v3-hand-backdrop");
+                if (opener === null || hand === null || back === null) return null;
+                opener.click();
+                const of = (el: HTMLElement | null) => {
+                  const anims = el === null ? [] : el.getAnimations();
+                  return {
+                    props: anims.map((a) => (a as CSSTransition).transitionProperty ?? "").sort(),
+                    durations: anims.map((a) => Number(a.effect?.getTiming().duration)),
+                    easings: anims.map((a) => String(a.effect?.getTiming().easing ?? "")),
+                  };
+                };
+                const f = of(hand);
+                const b = of(back);
+                const root = document.documentElement;
+                return {
+                  moves: document.querySelector("#v3")?.getAttribute("data-moves") ?? null,
+                  hand: document.querySelector("#v3")?.getAttribute("data-hand") ?? null,
+                  frame: f.props,
+                  frameDur: f.durations,
+                  frameEase: f.easings,
+                  back: b.props,
+                  backDur: b.durations,
+                  backEase: b.easings,
+                  orb: document.querySelector<HTMLElement>("#v3-orb")?.getAnimations({ subtree: true }).length ?? 0,
+                  shift: { rootLeft: root.scrollLeft, bodyLeft: document.body.scrollLeft, v3Left: document.querySelector("#v3")?.scrollLeft ?? -1, innerW: window.innerWidth, clientW: root.clientWidth, scrollW: root.scrollWidth },
+                  ease: getComputedStyle(root).getPropertyValue("--ease-out"),
+                };
+              }, HAND_OPEN);
+            // 読み込み（右腕のチャンネルの hash）で開いた枠: 印が無く、枠と幕に動きの規則が当たらない
+            await load(page, "/");
+            await page.waitForSelector(HAND_OPEN, { timeout: 5000 });
+            await settled(page);
+            const handTab = await page.evaluate(() => (window as unknown as { SA: { topics: { data: () => { rightHands: Array<{ id: string }> } | null } } }).SA.topics.data()?.rightHands[0]?.id ?? null);
+            if (handTab === null) throw new Error("右腕のチャンネルが一覧に無い");
+            await load(page, `/#/${handTab.replace(":", "/")}`);
+            await page.waitForSelector('#v3[data-hand="open"]', { timeout: 5000 });
+            await settled(page);
+            const loaded = await page.evaluate(() => {
+              const hand = document.querySelector<HTMLElement>("#v3-hand");
+              const back = document.querySelector<HTMLElement>("#v3-hand-backdrop");
+              return {
+                moves: document.querySelector("#v3")?.getAttribute("data-moves") ?? null,
+                running: hand === null || back === null ? -1 : hand.getAnimations().length + back.getAnimations().length,
+                duration: hand === null ? "" : getComputedStyle(hand).transitionDuration,
+              };
+            });
+            if (loaded.moves !== null || loaded.running !== 0 || loaded.duration !== "0s") sayHand(`読み込みで開いた枠が ${JSON.stringify(loaded)}（印なし・動き 0・transition-duration 0s のはず）`);
+            // 最初の操作の後に口を押す
+            await load(page, "/");
+            await page.waitForSelector(HAND_OPEN, { timeout: 5000 });
+            await settled(page);
+            await pressBlank();
+            const started = await pressHand();
+            if (started === null) throw new Error("右腕の口か #v3-hand・#v3-hand-backdrop が無い");
+            if (started.moves !== "on" || started.hand !== "open") sayHand(`押した直後の data-moves・data-hand が ${String(started.moves)}・${String(started.hand)}（on・open のはず）`);
+            if (started.frame.length === 0) throw new Error("右腕の枠の動きが 0 個");
+            if (JSON.stringify(started.frame) !== JSON.stringify(["opacity", "transform"])) sayHand(`枠で動いている物が ${started.frame.join("・")}（opacity・transform のはず）`);
+            if (JSON.stringify(started.back) !== JSON.stringify(["opacity"])) sayHand(`幕で動いている物が ${started.back.join("・") || "無し"}（opacity だけのはず）`);
+            if ([...started.frameDur, ...started.backDur].some((d) => d !== want)) sayHand(`長さが 枠 ${started.frameDur.join("・")}・幕 ${started.backDur.join("・")}（${want} のはず）`);
+            if (tight(started.ease) === "" || [...started.frameEase, ...started.backEase].some((e) => tight(e) !== tight(started.ease))) sayHand(`曲線が ${[...started.frameEase, ...started.backEase].join("・")}（--ease-out の ${started.ease.trim()} のはず）`);
+            if (started.orb !== 0) sayHand(`開く間の丸の動きが ${started.orb} 個（0 のはず）`);
+            for (const line of shiftLines(started.shift, "押した直後", false)) sayHand(line);
+            await settled(page);
+            const end = await page.evaluate(() => {
+              const hand = document.querySelector<HTMLElement>("#v3-hand");
+              if (hand === null) return null;
+              const cs = getComputedStyle(hand);
+              return { opacity: cs.opacity, transform: cs.transform, running: hand.getAnimations().length, orb: document.querySelector<HTMLElement>("#v3-orb")?.getAnimations({ subtree: true }).length ?? 0 };
+            });
+            if (end === null) throw new Error("#v3-hand が無い");
+            if (end.opacity !== "1" || !(end.transform === "none" || end.transform === "matrix(1, 0, 0, 1, 0, 0)") || end.running !== 0) sayHand(`動きが終わった後の枠が ${JSON.stringify(end)}（不透明・transform なし・動き 0 のはず）`);
+            if (end.orb !== 0) sayHand(`開いた後の丸の動きが ${end.orb} 個（0 のはず）`);
+            for (const line of await handFrameLines(page, vp)) sayHand(line);
+            for (const line of shiftLines(await shiftNow(), "動きが終わった後", true)) sayHand(line);
+            // Esc で閉じるのはすぐ（スマホは履歴を戻して閉じるので、data-hand が closed になった所で同じ処理の中で読む）
+            await page.keyboard.press("Escape");
+            const closed = await page
+              .waitForFunction(
+                () => {
+                  if (document.querySelector('#v3[data-hand="closed"]') === null) return false;
+                  const hand = document.querySelector<HTMLElement>("#v3-hand");
+                  const back = document.querySelector<HTMLElement>("#v3-hand-backdrop");
+                  return {
+                    display: hand === null ? "" : getComputedStyle(hand).display,
+                    running: hand === null || back === null ? -1 : hand.getAnimations().length + back.getAnimations().length,
+                  };
+                },
+                undefined,
+                { timeout: 5000 },
+              )
+              .then((h) => h.jsonValue() as Promise<{ display: string; running: number }>, () => null);
+            if (closed === null || closed.display !== "none" || closed.running !== 0) sayHand(`Esc で閉じた直後が ${JSON.stringify(closed)}（closed・display none・動き 0 のはず）`);
+            await settled(page);
+            // 動きを減らす設定: 押しても枠と幕の動きが 0 個
+            await page.emulateMedia({ reducedMotion: "reduce" });
+            try {
+              await load(page, "/");
+              await page.waitForSelector(HAND_OPEN, { timeout: 5000 });
+              await settled(page);
+              await pressBlank();
+              const reduced = await pressHand();
+              if (reduced === null || reduced.moves !== "on" || reduced.hand !== "open" || reduced.frame.length + reduced.back.length !== 0) sayHand(`動きを減らす設定で押した直後が ${JSON.stringify(reduced)}（印 on・open・動き 0 のはず）`);
+              await settled(page);
+              await page.keyboard.press("Escape");
+              await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
+              await settled(page);
+            } finally {
+              await page.emulateMedia({ reducedMotion: null });
+            }
+          }
           for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
-          if (problems.length > 0) throw new Error(`席の動きの検査で ${problems.length} 件`);
+          if (problems.length > 0) throw new Error(`席・右腕の枠の動きの検査で ${problems.length} 件`);
         });
       }
       // 列の中の操作（D1 の PR-2。ダークの PC と、D2 からダークのスマホ）: ［完了］の当たり・列から 1 つ消える・知らせと［取り消す］（スマホは知らせが上）・焦点の行き先。
