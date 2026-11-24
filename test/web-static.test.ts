@@ -9817,6 +9817,59 @@ function loadApiMove() {
   return { store, refreshes, setMove: (value: unknown) => (moveProposal = value) };
 }
 
+test("web static: /api/running でターンが始まった・終わったら一覧を描き直す（右腕の口の作業中の印はこの道で付く・消える。#463 の D6 PR-5）", async () => {
+  const context = {
+    window: { addEventListener: () => undefined, localStorage: { getItem: () => null, setItem: () => undefined } } as Record<string, unknown>,
+    document: { visibilityState: "visible", addEventListener: () => undefined },
+    setTimeout: () => 0,
+    clearTimeout: () => undefined,
+    Intl,
+    Date,
+    Number,
+    JSON,
+  };
+  vm.runInNewContext(read("api.js"), context);
+  const SA = (context.window as { SA: Record<string, unknown> }).SA;
+  let sidebar = 0;
+  /** refreshSidebar が呼ばれた時点の runningOf("300")（描き直しの中で口が読む値） */
+  const seen: boolean[] = [];
+  const store = SA.store as { runningOf: (channelId: string) => unknown; load: { running: () => Promise<unknown> } };
+  SA.app = {
+    refresh: () => undefined,
+    refreshTabMarks: () => undefined,
+    refreshStatus: () => undefined,
+    refreshSidebar: () => {
+      sidebar += 1;
+      seen.push(store.runningOf("300") !== null);
+    },
+    refreshTabs: () => undefined,
+    addOutput: () => undefined,
+    activeTabId: () => null,
+  };
+  SA.chat = { channelsChanged: () => undefined, current: () => null, channelTitle: () => "右腕", endText: () => "" };
+  let running: unknown[] = [];
+  (SA.api as { get: unknown }).get = (path: string) =>
+    Promise.resolve(path.startsWith("/api/running") ? { turns: JSON.parse(JSON.stringify(running)) } : { turns: [], channel: null });
+  const run = { channelId: "300", turnSeq: 1, label: "考えています", steps: [], toolCalls: 0, elapsedMs: 10 };
+  // 何も動いていない → 描き直さない
+  await store.load.running();
+  assert.equal(sidebar, 0);
+  assert.equal(store.runningOf("300"), null);
+  // 始まった → 1 回描き直す（そのとき runningOf は物を返す）
+  running = [run];
+  await store.load.running();
+  assert.equal(sidebar, 1);
+  assert.deepEqual(seen, [true]);
+  // 同じターンのまま変わらない → 描き直さない
+  await store.load.running();
+  assert.equal(sidebar, 1);
+  // 終わった → もう 1 回描き直す（そのとき runningOf は null）
+  running = [];
+  await store.load.running();
+  assert.equal(sidebar, 2);
+  assert.deepEqual(seen, [true, false]);
+});
+
 test("web static: 行が増えずに moveProposal が あり → null になったら会話を描き直す", async () => {
   const h = loadApiMove();
   h.setMove(MOVE_PROPOSAL);
