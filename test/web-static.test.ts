@@ -11943,6 +11943,27 @@ test("web static: 流れの列: 席に右腕が出ている間の丸・帯の［
   assert.equal(h.handHead.draws.at(-1)!.seat, true);
   h.setPhone(true, 390);
   assert.equal(h.handHead.draws.at(-1)!.seat, false);
+  // 席に右腕が出ている間に右腕のチャンネルが替わると、席の右腕をやめて席は空・枠は閉じたまま。新しい右腕は枠に開く（席には開かない）
+  const c = (await loadDeck({ width: 1440, hand: {} })) as HandShell;
+  seatHandFrom(c);
+  c.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:1"), v3Topic("ch:2")], { rightHands: [v3Hand({ id: "ch:901" })] }));
+  await c.topics.load();
+  assert.equal(c.app.activeTabId(), null);
+  assert.equal(c.nodes.v3.getAttribute("data-view"), "list");
+  assert.equal(handOf(c), "closed");
+  assert.deepEqual(shownIds(c), []);
+  c.app.open("ch:901");
+  assert.equal(handOf(c), "open");
+  assert.equal(c.app.activeTabId(), null);
+  c.nodes.backdrop.dispatch("click");
+  // 右腕が無くなったときも同じ（席は空。普通のチャンネルとして席に残さない）
+  const g = (await loadDeck({ width: 1440, hand: {} })) as HandShell;
+  seatHandFrom(g);
+  g.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:1"), v3Topic("ch:2")], { rightHands: [] }));
+  await g.topics.load();
+  assert.equal(g.app.activeTabId(), null);
+  assert.equal(g.nodes.v3.getAttribute("data-view"), "list");
+  assert.equal(handOf(g), "closed");
   // 再読み込み（hash が右腕）は枠に開く
   const r = loadShell({ deck: true, width: 1440, hand: {}, hash: "#/ch/900" }) as HandShell;
   await r.flush();
