@@ -2636,6 +2636,61 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
   const sheetRows = (page: Page): Promise<string[]> => page.evaluate(() => [...document.querySelectorAll("#v3-sheet .more-row .sb-label")].map((el) => (el.textContent ?? "").trim()));
 
   /**
+   * 段 c: 流れの列の形の開いた右腕の枠（D6 の PR-2）。広い幅は 上端 = 帯（#v3-band）の下端 + 8・幅 420・右端 = 画面の右端・左の線 0・帯と重ならない・
+   * 右下の丸の中心を引くと丸でも丸の子でもない（枠の中か幕）。スマホは上の線 0。枠を開いて settled の後に呼ぶ。落ち先の形では呼ばない。足りない物の文を返す
+   */
+  async function handFrameLines(page: Page, vp: Viewport): Promise<string[]> {
+    const got = await page.evaluate((orbSel: string) => {
+      const hand = document.querySelector<HTMLElement>("#v3-hand");
+      const band = document.querySelector<HTMLElement>("#v3-band");
+      if (hand === null || band === null) return null;
+      const h = hand.getBoundingClientRect();
+      const b = band.getBoundingClientRect();
+      const cs = getComputedStyle(hand);
+      const orb = document.querySelector<HTMLElement>(orbSel);
+      let orbHit: string | null = null;
+      if (orb !== null) {
+        const o = orb.getBoundingClientRect();
+        const el = document.elementFromPoint(o.left + o.width / 2, o.top + o.height / 2);
+        orbHit =
+          el === null
+            ? "null"
+            : el.closest("#v3-orb") !== null
+              ? "orb"
+              : el.closest("#v3-hand") !== null || el.id === "v3-hand-backdrop"
+                ? "ok"
+                : `${el.tagName.toLowerCase()}${el.id === "" ? "" : "#" + el.id}.${el.classList[0] ?? ""}`;
+      }
+      return {
+        top: h.top,
+        right: h.right,
+        width: h.width,
+        bandTop: b.top,
+        bandBottom: b.bottom,
+        vw: document.documentElement.clientWidth,
+        left: cs.borderLeftWidth,
+        topLine: cs.borderTopWidth,
+        orb: orb !== null,
+        orbHit,
+      };
+    }, ORB);
+    if (got === null) return ["右腕の枠: #v3-hand か帯（#v3-band）が無い"];
+    const lines: string[] = [];
+    if (vp === "phone") {
+      if (got.topLine !== "0px") lines.push(`右腕の枠: スマホの枠の上の線が ${got.topLine}（0 のはず）`);
+      return lines;
+    }
+    if (Math.abs(got.top - (got.bandBottom + 8)) > 0.5) lines.push(`右腕の枠: 枠の上端 ${got.top.toFixed(1)} が帯の下端 ${got.bandBottom.toFixed(1)} + 8 でない`);
+    if (Math.abs(got.width - 420) > 0.5) lines.push(`右腕の枠: 枠の幅 ${got.width.toFixed(1)}（420 のはず）`);
+    if (Math.abs(got.right - got.vw) > 0.5) lines.push(`右腕の枠: 枠の右端 ${got.right.toFixed(1)} が画面の右端 ${got.vw} でない`);
+    if (got.left !== "0px") lines.push(`右腕の枠: 枠の左の線が ${got.left}（0 のはず）`);
+    if (got.top < got.bandBottom - 0.5) lines.push(`右腕の枠: 帯（${got.bandTop.toFixed(1)}〜${got.bandBottom.toFixed(1)}）と枠（上端 ${got.top.toFixed(1)}）が重なる`);
+    if (!got.orb) lines.push("右腕の枠: 右腕の丸が DOM に無い（丸の上の当たりを見られない）");
+    else if (got.orbHit !== "ok") lines.push(`右腕の枠: 枠を開いた間に丸の中心で引いた要素が ${got.orbHit}（枠の中か幕のはず）`);
+    return lines;
+  }
+
+  /**
    * 段 c: 開いた右腕の中が部品（見出し・会話・札・入力欄）で描かれている。phone ならスマホで下のバーから開いた後（畳んで開き直し、焦点が入力欄に在るかも見る）。
    * 絵を撮った後に呼ぶ。最後に札の［開く］を押すので、呼んだ後は列 2 にその話題が開いている。足りない物の文を返す
    */
@@ -5648,6 +5703,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         await settled(page);
         // 丸で開いた枠の焦点は枠の中（最初に開いた枠は中身を読み込む前なので、入力欄か［畳む］。openHand の今の決まり。読み込んだ後に開いた入力欄は下の 2 回目で見る）
         if (vp !== "phone" && (await deckOn(page)) && !(await activeIs(page, "#v3-hand *"))) orbLines.push(`右腕の丸: 丸で開いた枠の焦点が枠の中に無い（${await activeTag(page)}）`);
+        // 流れの列の形の枠は 帯の下から・幅 420・線なし（D6 の PR-2。落ち先の形は見ない）
+        if (await deckOn(page)) orbLines.push(...(await handFrameLines(page, vp)));
         await shot(page, handName);
         // 開いた右腕の中は部品（最後に札の［開く］を押す）
         const problems = [...orbLines, ...(await handPartsLines(page, vp, vp === "phone"))];
