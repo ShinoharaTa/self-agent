@@ -872,6 +872,7 @@
    *   replyExtras: (text) => Node[] Bot の返事の吹き出しの下に足す要素（省略可。古い描き方のときだけ）
    *   head: false                   見出しを作らない（呼ぶ側が別に描く。省略可）
    *   replyRefs: (text) => [{ id, title, meta }]  部品の道の札（Bot の返事のすぐ下。省略可）
+   *   noticeRefs: (text) => [{ id, title, meta }] 部品の道の札（知らせ（notice）の行のすぐ下。省略可）
    *   onRef: (id) => void           札の [開く]（省略可）
    */
   /** 枠の見出し: 題と […]（会話を新しくする・Discord で開く）と枠のボタン。[‹]・アイコン・バッジ・リンクのボタンは出さない */
@@ -1117,10 +1118,11 @@
         allLabel: allStepsLabel,
         // 実行中の行の名前は renderRunning と同じ決め方
         runName: (prev) => (showsAgentName(ch) && !followsSameAgent(prev, ch, ch ? ch.persona : "default") ? persona(ch ? ch.persona : "default").name : null),
-        // 枠（右腕）の Bot の返事の本文の差し替えと札
+        // 枠（右腕）の Bot の返事の本文の差し替えと札（知らせの札も）
         reply: frame && frame.replyText ? frame.replyText : null,
         notice: frame && frame.noticeText ? frame.noticeText : null,
         refs: frame && frame.replyRefs ? frame.replyRefs : null,
+        noticeRefs: frame && frame.noticeRefs ? frame.noticeRefs : null,
       },
       on: {
         older: () => loadOlder(channelId),

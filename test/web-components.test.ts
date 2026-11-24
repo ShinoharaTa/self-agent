@@ -2233,6 +2233,49 @@ test("web components: talkModel: fmt.notice は知らせ（notice）の行の本
   }
 });
 
+test("web components: talkModel: fmt.noticeRefs の札は知らせ（notice）の行のすぐ後ろの行（kind refs）。渡すのは差し替える前の本文。関数でない・空・並びでない物では行を足さない。同じ id の札は 1 つ。返事の札（fmt.refs）は今のまま（#463 の D6 PR-3）", () => {
+  const parse = (text: string): unknown => [{ type: "paragraph", text: "P:" + text }];
+  const base = talkFmt().fmt;
+  const asked: unknown[] = [];
+  const replyAsked: unknown[] = [];
+  const fmt = {
+    ...base,
+    notice: (text: unknown) => "N:" + String(text),
+    noticeRefs: (text: unknown) => {
+      asked.push(text);
+      if (text === "まとめ 2") return [{ id: "t1", title: "話題 1", meta: "3 分" }, { id: "t1", title: "話題 1 再" }, { id: "t2", title: "話題 2" }];
+      if (text === "まとめ 並びでない") return { id: "t1", title: "話題 1" };
+      return [];
+    },
+    refs: (text: unknown) => {
+      replyAsked.push(text);
+      return text === "返事 札" ? [{ id: "t9", title: "話題 9" }] : [];
+    },
+  };
+  const turns = [
+    { id: 1, kind: "notice", text: "まとめ 2" },
+    { id: 2, kind: "notice", text: "まとめ 並びでない" },
+    { id: 3, kind: "notice", text: "まとめ 空" },
+    { id: 4, kind: "agent", text: "返事 札" },
+    { id: 5, kind: "divider", text: "区切り" },
+    { id: 6, kind: "owner", text: "まとめ 2" },
+  ];
+  const items = talk.talkModel(talkState({ turns, fmt }), parse).items as Obj[];
+  assert.deepEqual(items.map((i) => i.key), ["1", "1:refs", "2", "3", "4", "4:refs", "5", "6"]);
+  assert.deepEqual(items[1], { kind: "refs", key: "1:refs", refs: [{ id: "t1", title: "話題 1", meta: "3 分" }, { id: "t2", title: "話題 2", meta: "" }] });
+  // 知らせの本文は差し替えたまま。札に渡すのは差し替える前の本文で、知らせの行だけ
+  assert.equal(items[0]!.text, "N:まとめ 2");
+  assert.deepEqual(asked, ["まとめ 2", "まとめ 並びでない", "まとめ 空"]);
+  // 返事の札は今のまま
+  assert.deepEqual(replyAsked, ["返事 札"]);
+  assert.deepEqual(items[5], { kind: "refs", key: "4:refs", refs: [{ id: "t9", title: "話題 9", meta: "" }] });
+  // noticeRefs が関数でなければ今までどおり（行を足さない）
+  for (const odd of [null, undefined, "x", [{ id: "t1", title: "話題 1" }]]) {
+    const kept = talk.talkModel(talkState({ turns: [turns[0]], fmt: { ...base, noticeRefs: odd } }), parse).items as Obj[];
+    assert.deepEqual(kept.map((i) => [i.kind, i.key, i.text]), [["notice", "1", "まとめ 2"]]);
+  }
+});
+
 test("web components: 右腕の枠（shell.js の HAND_FRAME）だけが noticeText に handNoticeText を持ち、chat.js の部品の道が fmt.notice に渡す。.c-notice は改行をそのまま出す（#457 の L2）", () => {
   const shell = stripJsComments(read("shell.js"));
   const hand = /const HAND_FRAME = \{[^\n]*\};/.exec(shell)?.[0];

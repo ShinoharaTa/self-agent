@@ -2933,6 +2933,7 @@ type HandFrame = {
   replyExtras?: (text: string) => DomNode[];
   head?: false;
   replyRefs?: (text: string) => Array<{ id: string; title: string; meta: string }>;
+  noticeRefs?: (text: string) => Array<{ id: string; title: string; meta: string }>;
   onRef?: (id: string) => void;
 };
 type TermCtx = { row: { id: string } | null; place: string | null; pane: () => void };
@@ -3380,7 +3381,7 @@ function loadShell(
   const chatHeads: Record<string, unknown> = {};
   // 右腕の Bot の返事の本文（描くたびに replyText・replyExtras を通して .ed-scroll に入れる）
   const handReplies: string[] = [];
-  // 右腕の知らせ（notice）の本文（返事の後ろに、描くたびに noticeText を通して p.fake-notice で入れる）
+  // 右腕の知らせ（notice）の本文（返事の後ろに、描くたびに noticeText を通して p.fake-notice で入れる。head: false の枠は noticeRefs のデータを、そのすぐ後ろに div.fake-notice-ref（data-topic・「題|meta」）で）
   const handNotices: string[] = [];
   SA.chat = {
     markSeenShown: () => {
@@ -3416,6 +3417,7 @@ function loadShell(
       }
       for (const text of handNotices) {
         scroll.append(ui.el("p", { class: "fake-notice", text: frame.noticeText ? frame.noticeText(text) : text }));
+        if (bare && frame.noticeRefs) scroll.append(...frame.noticeRefs(text).map((r) => ui.el("div", { class: "fake-notice-ref", "data-topic": r.id, text: r.title + "|" + r.meta })));
       }
       const head = bare ? null : ui.el("header", { class: "ed-toolbar" }, [ui.el("h2", { text: frame.title }), ...(frame.ops ? frame.ops() : [])]);
       const keptRoot = (container.children as DomNode[]).find((c) => c.getAttribute("data-composer") !== null);
@@ -5028,6 +5030,7 @@ type Frame = {
   replyExtras?: (text: string) => DomNode[];
   head?: false;
   replyRefs?: (text: string) => Array<{ id: string; title: string; meta: string }>;
+  noticeRefs?: (text: string) => Array<{ id: string; title: string; meta: string }>;
   onRef?: (id: string) => void;
 };
 type ChatApi = {
@@ -6069,6 +6072,7 @@ test("web static: 右腕の枠（frame）も SA.talk が在れば口で描き、
     placeholder: "右腕に頼む・訊く",
     replyText: (t) => t.replace("<#5>", "「五」"),
     replyRefs: () => [{ id: "ch:5", title: "五", meta: "" }],
+    noticeRefs: () => [{ id: "ch:6", title: "六", meta: "" }],
     replyExtras: () => [c.ui.el("div", { class: "v3-card", text: "札" })],
     onRef: (id) => void opened.push(id),
   };
@@ -6081,18 +6085,20 @@ test("web static: 右腕の枠（frame）も SA.talk が在れば口で描き、
   const st = talk.draws[0]!.state;
   assert.equal(st.fmt.reply, frame.replyText);
   assert.equal(st.fmt.refs, frame.replyRefs);
+  // 知らせの札も枠の指定だけ（#463 の D6 PR-3）
+  assert.equal(st.fmt.noticeRefs, frame.noticeRefs);
   st.on.ref!("ch:5");
   assert.deepEqual(opened, ["ch:5"]);
   // 枠なしは差し替えも札も無く、on.ref は何もしない
   c.chat.render(c.box(), "2");
   const plain = talk.draws.at(-1)!.state;
-  assert.deepEqual([plain.fmt.reply, plain.fmt.refs], [null, null]);
+  assert.deepEqual([plain.fmt.reply, plain.fmt.refs, plain.fmt.noticeRefs], [null, null, null]);
   plain.on.ref!("ch:5");
   assert.deepEqual(opened, ["ch:5"]);
   // 枠で描いたチャンネルを枠なしで描き直すと、枠を忘れる
   c.chat.render(c.box(), "1");
   const again = talk.draws.at(-1)!.state;
-  assert.deepEqual([again.fmt.reply, again.fmt.refs], [null, null]);
+  assert.deepEqual([again.fmt.reply, again.fmt.refs, again.fmt.noticeRefs], [null, null, null]);
   again.on.ref!("ch:5");
   assert.deepEqual(opened, ["ch:5"]);
   // 描けなければ古い .msg と札の DOM
@@ -8529,6 +8535,51 @@ test("web static: 右腕を開いたまま、知らせ（統括のまとめ）�
   await h.topics.load();
   assert.equal(h.handRenders.length, renders + 1);
   assert.match(h.nodes.handEd.querySelector("p.fake-notice")!.textContent, /「領収書の整理 2」/);
+});
+
+test("web static: 右腕の枠の指定だけが noticeRefs に handRefs を持ち、部品の道（head: false）で知らせ（統括のまとめ）の <#ID> の札が出る（引けた物だけ・同じ ID は 1 つ・5 つまで）。札の onRef でその話題が開く（#463 の D6 PR-3）", async () => {
+  const shell = read("shell.js").replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'\\])\/\/.*$/gm, "$1");
+  const hand = /const HAND_FRAME = \{[^\n]*\};/.exec(shell)?.[0];
+  assert.ok(hand, "shell.js から HAND_FRAME の 1 行を抜き出せない（書き方が変わった）");
+  assert.ok(hand.includes("noticeRefs: handRefs"));
+  // 話題の会話の枠には足さない（noticeRefs は HAND_FRAME の 1 か所だけ。HAND_FRAME_BARE は引き継ぐ）
+  assert.equal((shell.match(/noticeRefs/g) ?? []).length, 1);
+  assert.match(read("chat.js"), /noticeRefs: frame && frame\.noticeRefs \? frame\.noticeRefs : null,/);
+  const topics = [11, 12, 13, 14, 15, 16].map((n) => v3Topic("ch:" + n, { title: "T" + n }));
+  topics[0] = v3Topic("ch:11", { title: "領収書", mark: "running", place: { dir: "~/w/x" } });
+  const refs = (h: HandShell) => h.nodes.handEd.querySelectorAll("div.fake-notice-ref").map((r) => [r.getAttribute("data-topic"), r.textContent]);
+  // <#ID> 2 つで札 2 つ。引けない ID（99）は出さない。同じ ID は 1 つ
+  const h = await loadHand({ hand: {} }, topics);
+  h.handNotices.push("終わりました: <#11>（4 分）\n終わりました: <#12>（1 分未満）\n終わりました: <#99>（2 分）、<#11>");
+  h.app.refresh("ch:900");
+  const frame = h.handRenders.at(-1)!.frame;
+  assert.equal(frame.head, false);
+  assert.equal(frame.noticeRefs, frame.replyRefs, "知らせの札も返事の札と同じ handRefs");
+  assert.deepEqual(refs(h), [
+    ["ch:11", "領収書|~/w/x・作業中"],
+    ["ch:12", "T12|なし・進行中"],
+  ]);
+  // 知らせの本文は今のまま（引けたものを「題名」に）
+  assert.match(h.nodes.handEd.querySelector("p.fake-notice")!.textContent, /「領収書」/);
+  // 札の [開く]（on.ref → onRef）でその話題が開く
+  frame.onRef!("ch:12");
+  assert.equal(h.app.activeTabId(), "ch:12");
+  // 話題の題が変わると札の題も変わる（知らせの ID を覚えている）
+  const renders = h.handRenders.length;
+  topics[1] = v3Topic("ch:12", { title: "T12 改" });
+  await h.topics.load();
+  assert.equal(h.handRenders.length, renders + 1);
+  assert.deepEqual(refs(h)[1], ["ch:12", "T12 改|なし・進行中"]);
+  // 6 つ在れば先頭 5 つ
+  const six = await loadHand({ hand: {} }, topics);
+  six.handNotices.push("<#11> <#12> <#13> <#14> <#15> <#16>");
+  six.app.refresh("ch:900");
+  assert.deepEqual(refs(six).map((r) => r[0]), ["ch:11", "ch:12", "ch:13", "ch:14", "ch:15"]);
+  // 引ける ID が無ければ札は無い
+  const none = await loadHand({ hand: {} }, topics);
+  none.handNotices.push("終わりました: <#99>（2 分）");
+  none.app.refresh("ch:900");
+  assert.equal(refs(none).length, 0);
 });
 
 // ===== 右腕の見出しと中身を部品へ（K6） =====
