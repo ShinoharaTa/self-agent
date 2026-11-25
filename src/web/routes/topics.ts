@@ -8,6 +8,7 @@
 // POST /api/topics/ch:<id>/mode（H4b）はプロジェクトのセッションの許可のモードを変える（app/session-mode.ts の setSessionMode。mode の配線があるときだけ）
 // 既読（M7。docs/plan/web-ui-v3.md §3.3）: GET の応答に reads（{ [channelId]: lastReadId }）を足し、POST /api/topics/ch:<id>/read で進める（reads の配線があるときだけ。log は出さない）
 // ピン留め（#507）: GET の応答に pins（生きている留めた話題の channelId）と pinMax を足し、POST /api/topics/ch:<id>/pin で留める・外す（pins の配線があるときだけ。log は出さない）。留めた話題は件数の上限の外でも話題に入れる
+// 右腕（#inbox）も留められる（#514 の R5）。上限の外で、pins に入れず handPins（留めた右腕の channelId）で返す
 import { CC_CONFIRM_TTL_MS } from "../../app/commands/cc-confirm.ts";
 import { SESSION_LIST_LIMITS } from "../../app/commands/sessions.ts";
 import type { Handler } from "../../app/handler.ts";
@@ -107,8 +108,8 @@ export type TopicRouteDeps = {
    */
   reads?: { store: Pick<TopicReadStore, "all" | "get" | "advance">; lookup: ReturnType<typeof webChannelLookup> };
   /**
-   * ピン留め（#507。topic_pins）。渡したときだけ GET /api/topics の pins・pinMax に値を入れ、POST /api/topics/ch:<id>/pin を足す。
-   * lookup は reads と同じ判定。完了・削除の時に行は消さない（完了した話題の行は残り、pins に出ないだけ）
+   * ピン留め（#507。topic_pins）。渡したときだけ GET /api/topics の pins・pinMax・handPins に値を入れ、POST /api/topics/ch:<id>/pin を足す。
+   * 右腕も同じ表に留める（上限の外。#514 の R5）。lookup は reads と同じ判定。完了・削除の時に行は消さない（完了した話題の行は残り、pins に出ないだけ）
    */
   pins?: { store: Pick<TopicPinStore, "all" | "has" | "add" | "remove">; lookup: ReturnType<typeof webChannelLookup> };
   now?: () => Date;
@@ -519,7 +520,7 @@ function readsOfResult(result: TopicsResult, store: Pick<TopicReadStore, "all"> 
 }
 
 /**
- * 生きている留めた話題の channelId（all の順）。応答の話題（右腕は入らない）に ch:<channelId> が在り、完了でない物だけ。
+ * 生きている留めた話題の channelId（all の順）。応答の話題に ch:<channelId> が在り、完了でない物だけ（右腕は入らない。handPinsOfResult）。
  * all は TopicPinStore.all の値
  */
 export function pinsOfResult(result: TopicsResult, all: string[]): string[] {
@@ -530,14 +531,23 @@ export function pinsOfResult(result: TopicsResult, all: string[]): string[] {
   });
 }
 
+/** 留めた右腕の channelId（all の順）。応答の右腕に ch:<channelId> が在る物だけ（#514 の R5）。all は TopicPinStore.all の値 */
+export function handPinsOfResult(result: TopicsResult, all: string[]): string[] {
+  const hands = new Set(result.rightHands.map((hand) => hand.id));
+  return all.filter((channelId) => hands.has(`ch:${channelId}`));
+}
+
 export function topicRoutes(deps: TopicRouteDeps): Route[] {
   const { cfg, guildSettings, places, move, mode, proposals, reads, pins } = deps;
   const now = deps.now ?? (() => new Date());
   const collect = deps.collect ?? createTopicCollector(deps);
   const readsOf = (result: TopicsResult): Record<string, number> => readsOfResult(result, reads?.store);
-  /** GET /api/topics と POST /pin の 200 の pins・pinMax。pins の配線が無ければ [] と 0 */
-  const pinsOf = (result: TopicsResult): { pins: string[]; pinMax: number } =>
-    pins === undefined ? { pins: [], pinMax: 0 } : { pins: pinsOfResult(result, pins.store.all()), pinMax: TOPIC_PIN_MAX };
+  /** GET /api/topics と POST /pin の 200 の pins・pinMax・handPins。pins の配線が無ければ []・0・[] */
+  const pinsOf = (result: TopicsResult): { pins: string[]; pinMax: number; handPins: string[] } => {
+    if (pins === undefined) return { pins: [], pinMax: 0, handPins: [] };
+    const all = pins.store.all();
+    return { pins: pinsOfResult(result, all), pinMax: TOPIC_PIN_MAX, handPins: handPinsOfResult(result, all) };
+  };
 
   const routes: Route[] = [
     {
@@ -583,7 +593,11 @@ export function topicRoutes(deps: TopicRouteDeps): Route[] {
         if (pins.lookup(channelId) === undefined) return NOT_FOUND;
         const result = buildTopics(collect(now().getTime(), null));
         const id = `ch:${channelId}`;
-        if (result.rightHands.some((hand) => hand.id === id)) return BAD_REQUEST;
+        // 右腕は上限を見ずに留める（pins に入らないので数えない）
+        if (result.rightHands.some((hand) => hand.id === id)) {
+          if (!pins.store.has(channelId)) pins.store.add(channelId);
+          return { status: 200, json: pinsOf(result) };
+        }
         const topic = result.topics.find((item) => item.id === id);
         if (topic === undefined || topic.state === "done") return NOT_FOUND;
         if (!pins.store.has(channelId)) {
