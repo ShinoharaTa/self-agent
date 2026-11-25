@@ -5627,6 +5627,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
             __pinMarks?: string[];
             __pinNew?: Array<{ id: string; on: boolean; seen: string[] }>;
             __pinFrames?: Array<{ t: number; sl: number; col: number | null; nw: boolean | null; oth: number | null }>;
+            __pinFramesEnd?: "done" | "limit";
           };
           /** 今の帯と列の形（ブラウザの中で測る） */
           type Strip = {
@@ -5862,12 +5863,16 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
             await page.waitForSelector("#v3-sheet[open]", { timeout: 5000 });
             const rows = await sheetRows(page);
             if (!rows.includes("ピン留めする")) throw new Error(`「…」の板に「ピン留めする」が無い（${rows.join("・")}）`);
-            // 列が出る動き（#507 の P5）: 押す直前から 800ms、コマごとに帯の位置・新しい列の left と data-new・1 本目の列の left を覚える
+            // 列が出る動き（#507 の P5）: 押す直前から、コマごとに帯の位置・新しい列の left と data-new・1 本目の列の left を覚える。
+            // 時間の窓でなく事象で区切る: 新しい列に data-new が付いて外れてから 3 コマで終わり（"done"）、5 秒で打ち切り（"limit"）
             await page.evaluate(
               ({ id, other }: { id: string; other: string }) => {
                 const w = window as unknown as Win;
                 const frames: NonNullable<Win["__pinFrames"]> = [];
                 w.__pinFrames = frames;
+                w.__pinFramesEnd = undefined;
+                let marked = false;
+                let after = 0;
                 const band = document.querySelector<HTMLElement>("#v3-deck")!;
                 const t0 = performance.now();
                 const tick = (): void => {
@@ -5881,7 +5886,11 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
                     nw: col === null ? null : col.hasAttribute("data-new"),
                     oth: oth === null ? null : Math.round(oth.getBoundingClientRect().left * 10) / 10,
                   });
-                  if (t < 800) requestAnimationFrame(tick);
+                  if (col !== null && col.hasAttribute("data-new")) marked = true;
+                  else if (col !== null && marked) after++;
+                  if (after >= 3) w.__pinFramesEnd = "done";
+                  else if (t >= 5000) w.__pinFramesEnd = "limit";
+                  else requestAnimationFrame(tick);
                 };
                 requestAnimationFrame(tick);
               },
@@ -5899,16 +5908,18 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
             if (Math.abs(s.left - s.max) > 1) say(`留めた直後の帯の位置 ${s.left}（末尾の列の右端 ${s.max} のはず）`);
             stripLines(s, "2 本留めた所", 2);
             // 列が出る間（帯の末尾へ送った後）: 帯の位置とほかの列（1 本目）は動かず、新しい列だけが右から寄り、data-new は付いて外れる
-            await page.waitForFunction(() => ((window as unknown as Win).__pinFrames ?? []).some((f) => f.t >= 800), undefined, { timeout: 5000 });
+            await page.waitForFunction(() => (window as unknown as Win).__pinFramesEnd !== undefined, undefined, { timeout: 10000 });
+            const ended = await page.evaluate(() => (window as unknown as Win).__pinFramesEnd);
+            // 比べるのは新しい列が DOM に初めて出たコマから（押す前は席が開いていて帯の幅が違う）
             const frames = (await page.evaluate(() => (window as unknown as Win).__pinFrames ?? [])).filter((f) => f.col !== null);
-            if (frames.length < 3) say(`2 本目の列が出てからのコマが ${frames.length} 個（3 個以上のはず）`);
-            else {
+            if (frames.length === 0) say("2 本目の列が DOM に出ない（5 秒まで見た）");
+            else if (!frames.some((f) => f.nw === true)) say("2 本目を留めた列に data-new が付かない（列が出る動き）");
+            else if (ended !== "done") say("2 本目を留めた列の data-new が 5 秒で外れない");
+            if (frames.length > 0) {
               const sls = [...new Set(frames.map((f) => f.sl))];
               const oths = [...new Set(frames.map((f) => f.oth))];
               if (sls.length !== 1) say(`2 本目の列が出る間に帯の位置が動いた（${sls.join(" → ")}）`);
               if (oths.length !== 1) say(`2 本目の列が出る間に 1 本目の列が動いた（left ${oths.join(" → ")}）`);
-              if (!frames.some((f) => f.nw === true)) say("2 本目を留めた列に data-new が付かない（列が出る動き）");
-              if (frames.at(-1)!.nw !== false) say("2 本目を留めた列の data-new が外れない");
             }
 
             // 左端: 読み込み直すと帯は左端（位置は覚えない）
