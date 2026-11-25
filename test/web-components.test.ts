@@ -439,6 +439,11 @@ test("web components: shell.css の動きは流れの列の席が開くとき（
   // ずれのトークンは tokens.css に在り、shell.css だけが使う
   assert.match(read("tokens.css"), /--c-deck-seat-in: 16px;/);
   assert.equal((src.match(/var\(--c-deck-seat-in\)/g) ?? []).length, 4);
+  // 新しい列が出る間だけ列の入れ物を横に切る（transform のはみ出しで帯の送れる幅が伸びて帯が送られないように。#507 の P5）。切るのはこの 1 つの規則だけ
+  const CLIP = '.v3[data-deck][data-moves="on"] .v3-pins:has(> .v3-pin[data-new])';
+  const clips = rules.filter((r) => /(?:^|; ?)overflow(?:-x)?\s*:\s*clip/.test(r.body)).map((r) => ({ at: r.at, selectors: r.selectors, body: r.body }));
+  assert.deepEqual(clips, [{ at: [], selectors: [CLIP], body: "overflow-x: clip;" }]);
+  assert.ok(!rules.some((r) => r.selectors.some((sel) => sel.includes(".v3-pins") && !sel.includes(":has(")) && /overflow/.test(r.body)), "列の入れ物をいつも切る規則がある");
 });
 
 test("web components: 下のバーの自前のボタンは当たりの下限を持つ", () => {

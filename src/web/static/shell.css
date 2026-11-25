@@ -482,6 +482,11 @@
   }
 }
 
+/* 動きの間だけ列の入れ物を横に切る（transform のはみ出しが帯の scrollWidth を伸ばし、帯が末尾へ送られてほかの列が動くため）。動きの無い時は切らない */
+.v3[data-deck][data-moves="on"] .v3-pins:has(> .v3-pin[data-new]) {
+  overflow-x: clip;
+}
+
 .v3[data-deck="0"][data-view="body"][data-seat] .v3-deck {
   display: none;
 }
