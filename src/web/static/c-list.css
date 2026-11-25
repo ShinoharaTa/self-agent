@@ -47,7 +47,8 @@
 
 .c-list-hand-note {
   margin: 0;
-  padding: 0 var(--c-gutter) var(--space-2) var(--c-row-indent);
+  /* 左端は行の題に揃える（行の左の余白 + 印 + 印と題の間） */
+  padding: 0 var(--c-gutter) var(--space-2) calc(var(--c-row-indent) + var(--c-mark) + var(--c-list-gap));
   color: var(--text-muted);
   font-size: var(--font-xs);
 }
