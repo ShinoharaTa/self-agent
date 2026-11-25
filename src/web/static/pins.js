@@ -211,5 +211,43 @@
     return SA.deck.stripSeen(v.view, [boxOf("turn", col)]).length === 1;
   }
 
-  SA.pins = { sync, has, refresh, measure, seen, turnSeen, ids };
+  /** 列の中の入力欄に焦点（部品なら口に頼む。無ければ古い入力欄）。焦点を置けたら true */
+  function focusComposer(c) {
+    const root = [...c.ed.children].find((child) => child.getAttribute("data-composer") !== null);
+    if (root && SA.composer && SA.composer.focus(root)) return true;
+    const input = c.ed.querySelector("textarea.composer-input");
+    if (!input) return false;
+    input.focus({ preventScroll: true });
+    return true;
+  }
+
+  /** 列の見出しのピンのボタンに焦点（c-app.js の口は使わず、列の見出しの根の中を探す）。焦点を置けたら true */
+  function focusPin(c) {
+    const act = c.head.querySelector('[data-act="pin"]');
+    const b = act ? (act.matches && act.matches("button") ? act : act.querySelector("button")) : null;
+    if (!b || b.disabled) return false;
+    b.focus({ preventScroll: true });
+    return true;
+  }
+
+  /**
+   * 帯をその列へすぐ送る（動かさない。scrollLeft を書く）: 列の左端を見える範囲の左端へ（末尾の列は右端まで。送れる所の端で止まる）。既に端まで見えていれば送らない。
+   * focus は "composer"（入力欄）・"pin"（見出しのピンのボタン）・null（焦点に触らない）。送った後に数え直す。列が無ければ false
+   */
+  function jump(id, focus) {
+    const c = cols.get(id);
+    const v = viewOf();
+    if (!c || v === null) return false;
+    const box = boxOf(id, c.section);
+    if (SA.deck.stripSeen(v.view, [box]).length === 0) {
+      const max = Math.max(0, v.band.scrollWidth - v.band.clientWidth);
+      v.band.scrollLeft = Math.min(Math.max(0, box.x), max);
+    }
+    if (focus === "composer") focusComposer(c);
+    else if (focus === "pin") focusPin(c);
+    measure();
+    return true;
+  }
+
+  SA.pins = { sync, has, refresh, measure, seen, turnSeen, jump, ids };
 })();

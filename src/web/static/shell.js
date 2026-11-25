@@ -284,6 +284,10 @@
     hand: (opener) => openHand(opener, false),
     // 流れの列の席を閉じる（スマホの一覧へと同じ履歴）
     close: () => showList(),
+    // 席の話題を留める（#507。帯の末尾の列にしてそこへ送る）
+    pin: () => {
+      if (S.active) pinSeat(S.active);
+    },
   };
 
   /** 列 2 に出している会話のチャンネルの見出しの中身（chat.js の head）。会話でなければ null */
@@ -298,6 +302,7 @@
     if (handSeated()) return handSeatTop();
     const t = SA.topics.find(S.active) || null;
     const head = topHead();
+    const pin = seatPin(t);
     let status = null;
     if (t) {
       if (t.mark === "turn") status = { text: "あなたの番", tone: "warning" };
@@ -322,6 +327,8 @@
       menu: t !== null && (topNarrow() || takeSession() !== null || (head !== null && head.menu.length > 0) || pinRow(t) !== null),
       mode: head && head.mode ? { value: head.mode, disabled: modeBusy(t), reason: modeBusy(t) ? MODE_BUSY : null } : null,
       close: deckOn() && !phone(),
+      // ピンのボタン（#507）は出す時だけ鍵を足す（出さない時の state は前と同じ）
+      ...(pin ? { pin } : {}),
       // スマホの流れの列の［‹］は列へ戻る（落ち先は「一覧へ」のまま）
       backLabel: deckFull() ? "戻る" : undefined,
       controls: "v3-hand",
@@ -403,7 +410,17 @@
     const pins = SA.topics.pins();
     if (pins.includes(t.id.slice(3))) return { icon: "pin", label: "ピン留めを外す", run: () => setPin(t.id, false) };
     const full = pins.length >= max;
-    return { icon: "pin", label: "ピン留めする", run: full ? null : () => setPin(t.id, true), why: full ? "ピン留めは " + max + " つまで" : "" };
+    return { icon: "pin", label: "ピン留めする", run: full ? null : () => pinSeat(t.id), why: full ? "ピン留めは " + max + " つまで" : "" };
+  }
+
+  /**
+   * 席の見出しのピンのボタン（#507）: 帯が出る幅（640px 以上で席だけの幅でない）で、「…」の板に「ピン留めする」を出す話題（pinRow）のうち留めていない物だけ { on: false }。ほかは null。
+   * 上限でも押せる（理由はサーバーの 409 の知らせ。押せなくするのは P5）
+   */
+  function seatPin(t) {
+    if (phone() || !deckOn() || !SA.pins || typeof SA.deck.stripFit !== "function" || !t || pinRow(t) === null) return null;
+    if (SA.topics.pins().includes(t.id.slice(3)) || SA.deck.stripFit(refs.v3.clientWidth, true).show !== true) return null;
+    return { on: false };
   }
 
   /** 話題の「場所」の文字（帯と札で同じ決め方）。群 general は General のセッションなら「General」、場所の無い軽いセッションは「なし」 */
@@ -503,6 +520,16 @@
     // 流れの列の項目から開いたときの key（押した直後の 1 回だけ。ほかの開き方では null）
     const fromKey = SA.flows ? SA.flows.lastKey() : null;
     if (!tabId) return;
+    // 帯が出ている間の留めた話題（#507）は席に開かず、その列へ送って入力欄に焦点（住所は書かない）。「探す」の板・重ねた右腕は先に畳む
+    if (tabId.startsWith("ch:") && pinsShown() && SA.pins.has(tabId.slice(3))) {
+      if (findOpen()) closeFind(false);
+      if (S.handMode === "over" && S.handOver) {
+        S.handOver = false;
+        applyHand();
+      }
+      SA.pins.jump(tabId.slice(3), "composer");
+      return;
+    }
     const page = oldPage(tabId);
     if (page !== null) {
       showOldPage(page);
@@ -2026,7 +2053,41 @@
   /** pins.js に渡す押した先（1 回だけ作り、毎回同じ物を渡す）。seen は見えている列が替わった時（節「ピン留め」の行の線） */
   const PINS_ON = {
     seen: () => renderFlows(),
+    menu: (channelId, opener) => openPinMenu(channelId, opener),
+    pin: (channelId) => unpinColumn(channelId),
   };
+
+  /** 留めた列の見出しの「…」の板: 「ピン留めを外す」と、チャンネルの操作（chat.js の head の menu。席の「…」と同じ順）。場所・許可のモードは出さない */
+  function openPinMenu(channelId, opener) {
+    const head = SA.chat.head ? SA.chat.head(channelId) : null;
+    const t = SA.topics.find("ch:" + channelId);
+    const title = head && typeof head.title === "string" && head.title !== "" ? head.title : t && typeof t.title === "string" && t.title !== "" ? t.title : "会話";
+    const items = [{ icon: "pin", label: "ピン留めを外す", run: () => unpinColumn(channelId) }];
+    if (head) items.push(...head.menu);
+    openSheet(title + " の操作", items, opener);
+  }
+
+  /** 席の話題を留める: 成功したら席を閉じて（fitDeck の守り）帯の末尾の列にし、その列へ送ってピンのボタンに焦点。帯が出ない幅では留めるだけ */
+  async function pinSeat(id) {
+    if (!(await setPin(id, true))) return;
+    fitDeck();
+    const channelId = id.slice(3);
+    if (pinsShown() && SA.pins.has(channelId)) SA.pins.jump(channelId, "pin");
+  }
+
+  /** 列のピンのボタン・「…」の「ピン留めを外す」: 成功したら列を片付け（fitDeck）、焦点は 右隣の列のピンのボタン → 左隣 → 上の帯の［探す］ */
+  async function unpinColumn(channelId) {
+    const before = SA.pins ? SA.pins.ids() : [];
+    const at = before.indexOf(channelId);
+    if (!(await setPin("ch:" + channelId, false))) return;
+    fitDeck();
+    const now = pinsShown() ? SA.pins.ids() : [];
+    const right = at < 0 ? undefined : before.slice(at + 1).find((id) => now.includes(id));
+    const left = at < 0 ? undefined : before.slice(0, at).reverse().find((id) => now.includes(id));
+    const next = right !== undefined ? right : left;
+    if (next !== undefined && SA.pins.jump(next, "pin")) return;
+    if (SA.deck) SA.deck.focusBand("find");
+  }
 
   /** 帯が出ているか（#v3 の data-pins） */
   function pinsShown() {
@@ -2515,9 +2576,12 @@
     SA.store.load.usage(null);
     // api.js の polling は今のまま全部動かす（chat.js が store.channels・store.running・store.cc を使う）
     SA.poll.start();
+    // 住所の話題が留めた話題なら（一覧を読むと fitDeck の守りが席を閉じて帯の列にする）、その列へ送って入力欄に焦点（#507。open と同じ扱い）
+    const hashPin = fromHash && fromHash.startsWith("ch:") ? fromHash.slice(3) : null;
     SA.topics.load().then(() => {
       topicsLoaded = true;
       reopenDeferred();
+      if (hashPin !== null && S.active === null && pinsShown() && SA.pins.has(hashPin)) SA.pins.jump(hashPin, "composer");
     });
   }
 
