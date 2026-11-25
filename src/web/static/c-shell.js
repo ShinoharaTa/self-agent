@@ -183,9 +183,9 @@ export function topModel({ variant, view, title, status, note, place, views, han
 
 /**
  * 会話の見出し（列 2 の上）。on: { back(), place(opener), mode(opener), view(value), menu(opener), hand(opener), pin(opener), close() }。直下の子は決まった key（増減しても残る子を作り直さない）。
- * backLabel は［‹］の名前（空でない文字列のときだけ。既定は「一覧へ」）
+ * backLabel は［‹］の名前（空でない文字列のときだけ。既定は「一覧へ」）。level は題の見出しの段（2 のときだけ h2。ほかは h1。留めた会話の列の見出しは 2。#507）
  */
-export function TopBar({ variant, view, title, status, note, place, views, hand, menu, compact, mode, close, pin, backLabel, controls, on }) {
+export function TopBar({ variant, view, title, status, note, place, views, hand, menu, compact, mode, close, pin, backLabel, controls, level, on }) {
   const m = topModel({ variant, view, title, status, note, place, views, hand, menu, compact, mode, close, pin });
   if (m === null) return null;
   const wide = m.variant === "wide";
@@ -194,7 +194,7 @@ export function TopBar({ variant, view, title, status, note, place, views, hand,
   return html`<header class="c-top" data-variant=${m.variant} data-view=${m.view} data-compact=${m.compact ? "true" : undefined}>
     ${m.back ? html`<span class="c-top-act" key="back" data-act="back"><${IconButton} icon="chevron-left" label=${filled(backLabel) ? backLabel : "一覧へ"} onPress=${() => on.back()} /></span>` : null}
     <div class="c-top-text" key="text">
-      <h1 class="c-top-title">${m.title}</h1>
+      ${level === 2 ? html`<h2 class="c-top-title">${m.title}</h2>` : html`<h1 class="c-top-title">${m.title}</h1>`}
       ${!wide && (statusEl || restEl) ? html`<p class="c-top-sub">${statusEl}${statusEl && restEl ? " ・ " : null}${restEl}</p>` : null}
     </div>
     ${wide ? statusEl : null}
@@ -239,7 +239,7 @@ export function TopBar({ variant, view, title, status, note, place, views, hand,
         </button>`
       : null}
     ${m.pin
-      ? html`<span class="c-top-act" key="pin" data-act="pin"><${IconButton} icon="pin" label=${m.pin.on ? "ピン留めを外す" : "ピン留めする"} pressed=${m.pin.on}
+      ? html`<span class="c-top-act" key="pin" data-act="pin"><${IconButton} icon="pin" label="ピン留め" pressed=${m.pin.on}
           disabled=${m.pin.disabled} reason=${m.pin.why ?? undefined} onPress=${(event) => on.pin(event.currentTarget)} /></span>`
       : null}
     ${m.close ? html`<span class="c-top-act" key="close" data-act="close"><${IconButton} icon="x" label="閉じる" onPress=${() => on.close()} /></span>` : null}

@@ -163,8 +163,8 @@ if (listRoot) {
     return node.matches("button") ? node : node.querySelector("button");
   }
 
-  /** 見出しの vnode（drawTop と、留めた列の見出しの SA.pin.drawHead で同じ形。pin は #507） */
-  function topBar(state, variant) {
+  /** 見出しの vnode（drawTop と、留めた列の見出しの SA.pin.drawHead で同じ形。pin と level（題の段。留めた列は 2）は #507） */
+  function topBar(state, variant, level) {
     return html`<${TopBar}
       variant=${variant}
       view=${state.view}
@@ -181,6 +181,7 @@ if (listRoot) {
       pin=${state.pin}
       backLabel=${state.backLabel}
       controls=${state.controls}
+      level=${level}
       on=${state.on}
     />`;
   }
@@ -207,13 +208,13 @@ if (listRoot) {
   }
 
   /**
-   * 留めた会話の列（#507）の見出しを root に描く。state は drawTop と同じ形。形は広い幅に決め、lastTop・#c-top-root には触らない（焦点は持ち直さない）。
+   * 留めた会話の列（#507）の見出しを root に描く。state は drawTop と同じ形。形は広い幅、題は h2 に決め、lastTop・#c-top-root には触らない（焦点は持ち直さない）。
    * root が無い・描けなければ false
    */
   function drawPinHead(root, state) {
     if (!root) return false;
     try {
-      render(topBar(state, "wide"), root);
+      render(topBar(state, "wide", 2), root);
     } catch (error) {
       // drawTop と同じく名前だけ
       console.error("[web] pin head draw failed", error instanceof Error ? error.name : "");
@@ -227,9 +228,9 @@ if (listRoot) {
     if (root) render(null, root);
   }
 
-  /** 見出しのボタン（back・place・mode・menu・hand・close）にフォーカス。無い・押せなければ false */
+  /** 見出しのボタン（back・place・mode・menu・hand・pin・close）にフォーカス。無い・押せなければ false */
   function focusTop(act) {
-    if (!topRoot || !["back", "place", "mode", "menu", "hand", "close"].includes(act)) return false;
+    if (!topRoot || !["back", "place", "mode", "menu", "hand", "pin", "close"].includes(act)) return false;
     const b = buttonIn(topRoot.querySelector('[data-act="' + act + '"]'));
     if (!b || b.disabled) return false;
     b.focus({ preventScroll: true });
@@ -439,9 +440,9 @@ if (deckRoot && bandRoot) {
     return main && main.matches("button") ? main : null;
   };
 
-  /** 帯のボタン（status・find・hand・start・more）にフォーカス。無ければ false */
+  /** 帯のボタン（status・find・hand・start・more と「あなたの番 n」の turn。#507）にフォーカス。無ければ false */
   const focusBand = (act) => {
-    if (!["status", "find", "hand", "start", "more"].includes(act)) return false;
+    if (!["status", "find", "hand", "start", "more", "turn"].includes(act)) return false;
     const b = buttonOf(bandRoot.querySelector('[data-act="' + act + '"]'));
     if (!b) return false;
     b.focus({ preventScroll: true });
@@ -520,14 +521,14 @@ if (deckRoot && bandRoot) {
     return true;
   };
 
-  /** 上の帯を描く。state は { variant, conn, hand, controls, page, on }（variant は phone か、ほかは今の形。page は今いる列の id か undefined）。描けなければ false */
+  /** 上の帯を描く。state は { variant, conn, hand, controls, page, turn, on }（variant は phone か、ほかは今の形。page は今いる列の id か undefined。turn は番の列が見えない間の { count }。#507）。描けなければ false */
   const drawBand = (state) => {
     const before = document.activeElement;
     const inside = !!before && bandRoot.contains(before);
     const act = inside && before.closest("[data-act]") ? before.closest("[data-act]").getAttribute("data-act") : null;
     try {
       render(
-        html`<${DeckBand} variant=${state.variant} conn=${state.conn} hand=${state.hand} controls=${state.controls} title=${bandTitle(state)} on=${state.on} />`,
+        html`<${DeckBand} variant=${state.variant} conn=${state.conn} hand=${state.hand} controls=${state.controls} title=${bandTitle(state)} turn=${state.turn} on=${state.on} />`,
         bandRoot,
       );
       lastBand = state;
