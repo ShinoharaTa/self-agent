@@ -25,7 +25,7 @@
 
 /*
  * K2 の Button は並べ方と左右の余白だけ変える。広い幅は等分（280px の列で「リマインド」が省かれない幅）。
- * スマホの「ほか」も同じ宣言で、右腕（基準の幅が 100%）に押されて下限の幅になる
+ * スマホの「ほか」も同じ宣言で、「一覧」（中身の幅）の残りを取る
  */
 .c-bottom > .c-btn[data-size="sm"] {
   flex: 1 1 0;
@@ -60,57 +60,7 @@
 }
 
 /*
- * 右腕は「一覧」と「ほか」の残りを全部取る（基準の幅を 100% にして縮める。0 にすると「ほか」と残りを分け合う）。
- * 見た目は K2 の accent のボタンと同じ
- */
-.c-bottom-hand {
-  display: inline-flex;
-  flex: 1 1 100%;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  min-width: 0;
-  min-height: var(--c-tap);
-  padding: 0 var(--space-3);
-  border: 0;
-  border-radius: var(--c-round-r);
-  background: var(--accent);
-  color: var(--primary-text);
-  font: inherit;
-  font-weight: var(--weight-semibold);
-  cursor: pointer;
-}
-
-.c-bottom-hand-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* accent の地の上で見える色の点（K2 の Mark の色は地と同化する） */
-.c-bottom-hand-mark {
-  flex: none;
-  width: var(--c-mark);
-  height: var(--c-mark);
-  border-radius: var(--radius-full);
-}
-
-.c-bottom-hand-mark[data-state="turn"] {
-  background: var(--warning);
-  box-shadow: 0 0 0 var(--c-mark-ring) var(--primary-text);
-}
-
-.c-bottom-hand-mark[data-state="unread"] {
-  background: var(--primary-text);
-}
-
-.c-bottom-hand-mark[data-state="running"] {
-  border: var(--c-mark-ring) solid var(--primary-text);
-}
-
-/*
- * スマホの流れの列（deck。D2）: 列のボタンは残りを分け合い、右腕は中身の幅。当たりはボタンの四角い箱（角丸なし・地なし）、
+ * スマホの流れの列（deck。D2）: 列のボタンは幅を分け合う。当たりはボタンの四角い箱（角丸なし・地なし）、
  * 見える地は中の .c-bottom-page-in（角丸）。今の列は字の太さと地と aria-current（色だけにしない。差し色は付けない（accent の役は docs/plan/web-ui-deck.md §4.5 の 4 つ））
  */
 .c-bottom[data-variant="deck"] {
@@ -170,14 +120,9 @@
   text-overflow: ellipsis;
 }
 
-.c-bottom[data-variant="deck"] .c-bottom-hand {
-  flex: 0 0 auto;
-}
-
 /* 押した・乗った（K2 の .c-btn と同じ宣言。動きは付けない） */
 .c-bottom-btn:active,
-.c-bottom-page:active .c-bottom-page-in,
-.c-bottom-hand:active {
+.c-bottom-page:active .c-bottom-page-in {
   transform: scale(0.97);
 }
 
@@ -185,10 +130,6 @@
   .c-bottom-btn:hover,
   .c-bottom-page:hover .c-bottom-page-in {
     background: var(--muted);
-  }
-
-  .c-bottom-hand:hover {
-    opacity: 0.9;
   }
 }
 
@@ -332,59 +273,15 @@
   flex: none;
 }
 
-.c-top-hand {
-  flex: none;
-  box-sizing: border-box;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  min-height: var(--c-tap);
-  padding: 0 var(--space-3);
-  border: var(--border-width) solid var(--border);
-  border-radius: var(--c-round-r);
-  background: transparent;
-  color: var(--text);
-  font: inherit;
-  font-size: var(--font-sm);
-  white-space: nowrap;
-}
-
-/* 右腕の語（ボタンは flex: none で中身の幅なので省かれない） */
-.c-top-hand-label {
-  min-width: 0;
-}
-
-/* 地は見出しの色なので、印は下のバーと違って accent で見せる */
-.c-top-hand-mark {
-  flex: none;
-  width: var(--c-mark);
-  height: var(--c-mark);
-  border-radius: var(--radius-full);
-}
-
-.c-top-hand-mark[data-state="turn"] {
-  background: var(--warning);
-}
-
-.c-top-hand-mark[data-state="unread"] {
-  background: var(--accent);
-}
-
-.c-top-hand-mark[data-state="running"] {
-  border: var(--c-mark-ring) solid var(--accent);
-}
-
-/* 押した・乗った（下のバーの右腕と同じ宣言。押せない場所のボタンには当てない） */
+/* 押した・乗った（押せない場所のボタンには当てない） */
 .c-top-place:not([aria-disabled="true"]):active,
-.c-top-mode:not([aria-disabled="true"]):active,
-.c-top-hand:active {
+.c-top-mode:not([aria-disabled="true"]):active {
   transform: scale(0.97);
 }
 
 @media (hover: hover) and (pointer: fine) {
   .c-top-place:not([aria-disabled="true"]):hover,
-  .c-top-mode:not([aria-disabled="true"]):hover,
-  .c-top-hand:hover {
+  .c-top-mode:not([aria-disabled="true"]):hover {
     opacity: 0.9;
   }
 }

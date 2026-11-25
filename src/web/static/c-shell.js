@@ -26,17 +26,19 @@ export function listLabel(turns) {
   return text === "" ? "一覧" : "一覧（あなたの番 " + text + " 件）";
 }
 
-/** 列のボタンの名前（数が 1 以上なら「<label>（n 件）」。件数は K2 の Badge と同じく 99 まで） */
-function pageName(label, count) {
+/** 列のボタンの名前（数が 1 以上なら「<label>（n 件）」。件数は K2 の Badge と同じく 99 まで。unread なら「・未読」か「（未読）」を足す。#514） */
+function pageName(label, count, unread) {
   const text = badgeText(count);
+  if (unread) return text === "" ? label + "（未読）" : label + "（" + text + " 件・未読）";
   return text === "" ? label : label + "（" + text + " 件）";
 }
 
 /**
- * 下のバーの項目。phone は 一覧・右腕・ほか、wide は tabs の順に文字のボタンと最後に「ほか」。
- * deck（スマホの流れの列。D2）は pages（[{ id, label, count }]。列の名前は入口が渡す）の順に列のボタンと最後に右腕。今の列は page（合う物が無ければ先頭）
+ * 下のバーの項目。phone は 一覧・ほか、wide は tabs の順に文字のボタンと最後に「ほか」。
+ * deck（スマホの流れの列。D2）は pages（[{ id, label, count, unread }]。列の名前は入口が渡す）の順に列のボタンだけ。今の列は page（合う物が無ければ先頭）。
+ * unread（true のときだけ）は列のボタンの未読の点（あなたの番 の列に右腕の未読。#514）
  */
-export function bottomModel({ variant, turns, hand, tabs, pages, page }) {
+export function bottomModel({ variant, turns, tabs, pages, page }) {
   const v = variant === "wide" ? "wide" : variant === "deck" ? "deck" : "phone";
   const n = typeof turns === "number" && !Number.isNaN(turns) ? turns : 0;
   const more = { act: "more", label: "ほか" };
@@ -44,17 +46,14 @@ export function bottomModel({ variant, turns, hand, tabs, pages, page }) {
     // null・id の無い物は捨てる
     const list = Array.isArray(pages) ? pages.filter((p) => p !== null && typeof p === "object" && filled(p.id)) : [];
     const current = list.some((p) => p.id === page) ? page : list.length > 0 ? list[0].id : null;
-    const mark = handMarkOf(hand);
     return {
       variant: v,
-      items: [
-        ...list.map((p) => {
-          const label = typeof p.label === "string" ? p.label : "";
-          const count = typeof p.count === "number" && Number.isFinite(p.count) && p.count > 0 ? p.count : 0;
-          return { act: "page", id: p.id, label, name: pageName(label, count), count, current: p.id === current };
-        }),
-        { act: "hand", label: "右腕", name: handLabel(mark), mark },
-      ],
+      items: list.map((p) => {
+        const label = typeof p.label === "string" ? p.label : "";
+        const count = typeof p.count === "number" && Number.isFinite(p.count) && p.count > 0 ? p.count : 0;
+        const unread = p.unread === true;
+        return { act: "page", id: p.id, label, name: pageName(label, count, unread), count, unread, current: p.id === current };
+      }),
     };
   }
   if (v === "wide") {
@@ -62,23 +61,18 @@ export function bottomModel({ variant, turns, hand, tabs, pages, page }) {
     const list = Array.isArray(tabs) ? tabs.filter((tab) => tab !== null && typeof tab === "object" && tab.id !== undefined && tab.id !== null && tab.id !== "") : [];
     return { variant: v, items: [...list.map((tab) => ({ act: "tab", id: tab.id, label: tab.title })), more] };
   }
-  const mark = handMarkOf(hand);
   return {
     variant: v,
-    items: [
-      { act: "list", label: "一覧", name: listLabel(n), count: n },
-      { act: "hand", label: HAND, name: handLabel(mark), mark },
-      more,
-    ],
+    items: [{ act: "list", label: "一覧", name: listLabel(n), count: n }, more],
   };
 }
 
 /**
- * 下のバー（一覧の列の中。スクロールの入れ物の下の兄弟に置く。deck は流れの列の下）。controls は右腕のボタンの aria-controls。
- * on: { list(), hand(opener), tab(id), more(opener), page(id) }（page は deck の列のボタン。今の列でも呼ぶ）
+ * 下のバー（一覧の列の中。スクロールの入れ物の下の兄弟に置く。deck は流れの列の下）。
+ * on: { list(), tab(id), more(opener), page(id) }（page は deck の列のボタン。今の列でも呼ぶ）
  */
-export function BottomBar({ variant, turns, hand, tabs, pages, page, controls, on }) {
-  const model = bottomModel({ variant, turns, hand, tabs, pages, page });
+export function BottomBar({ variant, turns, tabs, pages, page, on }) {
+  const model = bottomModel({ variant, turns, tabs, pages, page });
   return html`<div class="c-bottom" role="group" aria-label="移動" data-variant=${model.variant}>
     ${model.items.map((item) => {
       if (item.act === "page") {
@@ -87,6 +81,7 @@ export function BottomBar({ variant, turns, hand, tabs, pages, page, controls, o
           <span class="c-bottom-page-in">
             <span class="c-bottom-page-label">${item.label}</span>
             ${item.count > 0 ? html`<${Badge} count=${item.count} tone="warning" />` : null}
+            ${item.unread ? html`<${Mark} state="unread" />` : null}
           </span>
         </button>`;
       }
@@ -96,20 +91,13 @@ export function BottomBar({ variant, turns, hand, tabs, pages, page, controls, o
           <${Badge} count=${item.count} tone="warning" />
         </button>`;
       }
-      if (item.act === "hand") {
-        return html`<button class="c-bottom-hand" key="hand" type="button" data-act="hand" aria-label=${item.name} aria-controls=${filled(controls) ? controls : undefined} onClick=${(event) => on.hand(event.currentTarget)}>
-          <${Icon} name="bot" />
-          <span class="c-bottom-hand-label">${item.label}</span>
-          ${item.mark ? html`<span class="c-bottom-hand-mark" data-state=${item.mark} aria-hidden="true"></span>` : null}
-        </button>`;
-      }
       if (item.act === "tab") return html`<${Button} key=${"tab:" + item.id} kind="ghost" size="sm" label=${item.label} onPress=${() => on.tab(item.id)} />`;
       return html`<${Button} key="more" kind="ghost" size="sm" label=${item.label} onPress=${(event) => on.more(event.currentTarget)} />`;
     })}
   </div>`;
 }
 
-// ===== 会話の見出し（TopBar。K4）。1 段で、スマホは 一覧へ・題・「…」・右腕、広い幅は 題・状態・場所・［会話］［端末］・「…」 =====
+// ===== 会話の見出し（TopBar。K4）。1 段で、スマホは 一覧へ・題・「…」、広い幅は 題・状態・場所・［会話］［端末］・「…」 =====
 
 const TOP_TONES = ["warning", "accent", "muted"];
 /** 帯に出す許可のモード（プロジェクトのセッションで選べる 3 つ） */
@@ -120,7 +108,7 @@ const TOP_VIEWS = [
 ];
 
 /**
- * 見出しの中身。view が talk・other でなければ null（何も描かない）。スマホは場所・切り替えを出さず（「…」の板から）、広い幅は右腕を出さない（右の列の物）。
+ * 見出しの中身。view が talk・other でなければ null（何も描かない）。スマホは場所・切り替えを出さない（「…」の板から）。
  * compact（広い幅で根が狭いとき。入口が測って渡す）は、広い幅でも場所・切り替えを帯に出さず、スマホと同じく補足の語にする。
  * place は text が空でない文字列のときだけ場所として扱う。広い幅の帯のボタンは名前だけを見せ、「場所: 」付きは読み上げの名前（label）。
  * mode（プロジェクトのセッションの許可のモード）は、広い幅で compact でない会話の見出しで、value が default・acceptEdits・plan のときだけ帯のボタンにする
@@ -128,7 +116,7 @@ const TOP_VIEWS = [
  * close（流れの列の席。D1）は true のときだけ帯の右端に［閉じる］を出す。
  * pin（ピン留めのボタン。#507）は広い幅（compact も）の会話の見出しで物のときだけ { on, disabled, why }（why は押せないときの理由）。ほかは null
  */
-export function topModel({ variant, view, title, status, note, place, views, hand, menu, compact, mode, close, pin }) {
+export function topModel({ variant, view, title, status, note, place, views, menu, compact, mode, close, pin }) {
   if (view !== "talk" && view !== "other") return null;
   const v = variant === "wide" ? "wide" : "phone";
   const narrow = v === "wide" && compact === true;
@@ -140,12 +128,9 @@ export function topModel({ variant, view, title, status, note, place, views, han
   let rest = "";
   let pl = null;
   let vw = null;
-  let hd = null;
   let md = null;
   if (v === "phone") {
     rest = [placeText, noteText].filter((s) => s !== null).join(" ・ ");
-    const mark = handMarkOf(hand);
-    hd = { name: handLabel(mark), mark };
   } else if (narrow) {
     rest = [placeText, noteText].filter((s) => s !== null).join(" ・ ");
   } else {
@@ -172,7 +157,6 @@ export function topModel({ variant, view, title, status, note, place, views, han
     mode: md,
     views: vw,
     menu: talk && menu === true,
-    hand: hd,
     close: close === true,
     pin:
       talk && v === "wide" && pin !== null && typeof pin === "object"
@@ -182,11 +166,11 @@ export function topModel({ variant, view, title, status, note, place, views, han
 }
 
 /**
- * 会話の見出し（列 2 の上）。on: { back(), place(opener), mode(opener), view(value), menu(opener), hand(opener), pin(opener), close() }。直下の子は決まった key（増減しても残る子を作り直さない）。
+ * 会話の見出し（列 2 の上）。on: { back(), place(opener), mode(opener), view(value), menu(opener), pin(opener), close() }。直下の子は決まった key（増減しても残る子を作り直さない）。
  * backLabel は［‹］の名前（空でない文字列のときだけ。既定は「一覧へ」）。level は題の見出しの段（2 のときだけ h2。ほかは h1。留めた会話の列の見出しは 2。#507）
  */
-export function TopBar({ variant, view, title, status, note, place, views, hand, menu, compact, mode, close, pin, backLabel, controls, level, on }) {
-  const m = topModel({ variant, view, title, status, note, place, views, hand, menu, compact, mode, close, pin });
+export function TopBar({ variant, view, title, status, note, place, views, menu, compact, mode, close, pin, backLabel, level, on }) {
+  const m = topModel({ variant, view, title, status, note, place, views, menu, compact, mode, close, pin });
   if (m === null) return null;
   const wide = m.variant === "wide";
   const statusEl = m.status ? html`<span class="c-top-status" key="status" data-tone=${m.status.tone}>${m.status.text}</span>` : null;
@@ -230,14 +214,6 @@ export function TopBar({ variant, view, title, status, note, place, views, hand,
     ${wide ? html`<span class="c-top-gap" key="gap"></span>` : null}
     ${m.views ? html`<div class="c-top-views" key="views"><${Segmented} items=${m.views.items} value=${m.views.value} label="見る物" onChange=${(value) => on.view(value)} /></div>` : null}
     ${m.menu ? html`<span class="c-top-act" key="menu" data-act="menu"><${IconButton} icon="ellipsis" label="ほかの操作" onPress=${(event) => on.menu(event.currentTarget)} /></span>` : null}
-    ${m.hand
-      ? html`<button class="c-top-hand" key="hand" type="button" data-act="hand" aria-label=${m.hand.name} aria-controls=${filled(controls) ? controls : undefined}
-          onClick=${(event) => on.hand(event.currentTarget)}>
-          <${Icon} name="bot" />
-          <span class="c-top-hand-label">右腕</span>
-          ${m.hand.mark ? html`<span class="c-top-hand-mark" data-state=${m.hand.mark} aria-hidden="true"></span>` : null}
-        </button>`
-      : null}
     ${m.pin
       ? html`<span class="c-top-act" key="pin" data-act="pin"><${IconButton} icon="pin" label="ピン留め" pressed=${m.pin.on}
           disabled=${m.pin.disabled} reason=${m.pin.why ?? undefined} onPress=${(event) => on.pin(event.currentTarget)} /></span>`
