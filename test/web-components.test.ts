@@ -5870,7 +5870,11 @@ test("web components: 入口の流れの列の焦点は、タスクの列だけ�
   assert.match(app, /const keysAfter = colKeys\(col, kind\);/);
   // 種類なしで数えるのは帯の「あなたの番 n」の焦点（focusCol。#507）だけ
   assert.equal([...app.matchAll(/colKeys\(col\)/g)].length, 1);
-  assert.match(app, /const focusCol = \(col\) => \{\n\s*const keys = colKeys\(col\);/);
+  assert.match(app, /const focusCol = \(col\) => \{\n(?:.*\n){3}\s*const keys = colKeys\(col\);/);
+  // 右腕の行（.c-col-top。#514）は列の項目に数えない（落ち先の候補にしない）。焦点が右腕の行に在ったら同じ key の行に残す
+  assert.match(app, /\.filter\(\(n\) => n\.closest\("\.c-col-top"\) === null\)/);
+  assert.match(app, /const onTop = !!holder && holder\.closest\("\.c-col-top"\) !== null;/);
+  assert.match(app, /if \(inside && !document\.contains\(before\)\) \{\n\s*if \(onTop && focusItem\(key\)\) return true;\n\s*const keysAfter = colKeys\(col, kind\);/);
   // 項目の種類を entries に入れて pressableKeys の第 2 引数へ
   assert.match(app, /key: n\.dataset\.key, kind: n\.dataset\.kind, pressable:/);
   assert.match(app, /^\s*kind,\n\s*\);/m);
@@ -5909,8 +5913,11 @@ test("web components: 入口の上の帯の「あなたの番 n」（#507 の P5
   assert.match(app, /const turnsBefore = turnCount\(\);/);
   assert.match(app, /if \(lastBand !== null && \(bandTitleKey\(\) !== titleBefore \|\| \(lastBand\.turnAway === true && turnCount\(\) !== turnsBefore\)\)\) drawBand\(lastBand\);/);
   assert.equal([...app.matchAll(/drawBand\(lastBand\)/g)].length, 1);
-  // 番の列への焦点: 列の押せる項目の先頭の、最初の押せる物
-  assert.match(app, /const focusCol = \(col\) => \{\n\s*const keys = colKeys\(col\);\n\s*return keys\.length > 0 && focusFirstIn\(keys\[0\]\);\n\s*\};/);
+  // 番の列への焦点: 右腕の行（#514）が番ならその行、でなければ本体の押せる項目の先頭の、最初の押せる物
+  assert.match(
+    app,
+    /const focusCol = \(col\) => \{\n\s*const box = colBoxOf\(col\);\n\s*const top = box \? box\.querySelector\('\.c-col-top \[data-key\]\[data-turn="true"\]'\) : null;\n\s*if \(top && focusFirstIn\(top\.dataset\.key\)\) return true;\n\s*const keys = colKeys\(col\);\n\s*return keys\.length > 0 && focusFirstIn\(keys\[0\]\);\n\s*\};/,
+  );
 });
 
 // ===== 右腕の行（docs/plan/web-ui-hand-row.md の R1。#514。state.handRow の間だけ。本番の入口はまだ渡さない） =====
@@ -6128,7 +6135,7 @@ test("web components: 一覧の右腕の行は、絞り込み中は題「右腕�
   assert.ok(!("hand" in list.listModel(stateOf(null, { handRow: true }))));
 });
 
-test("web components: .c-col-top と .c-list-hand は余白だけ（position・border・新しい色・影を書かない）。本番の入口（flows.js・topics.js・shell.js・c-app.js）は handRow を渡さず、見本に右腕の行の形が在る", () => {
+test("web components: .c-col-top と .c-list-hand は余白だけ（position・border・新しい色・影を書かない）。本番の入口の flows.js・topics.js は handRow: true と isRunning を渡し（R2）、見本に右腕の行の形が在る", () => {
   const props = (file: string, head: RegExp): string[] =>
     parseCss(read(file))
       .filter((r) => r.selectors.some((s) => head.test(s)))
@@ -6149,7 +6156,16 @@ test("web components: .c-col-top と .c-list-hand は余白だけ（position・b
     '|.c-list-hand[data-none="true"] > .c-row:active: background: transparent',
     '@media (hover: hover) and (pointer: fine)|.c-list-hand[data-none="true"] > .c-row:hover: background: transparent',
   ]);
-  for (const file of ["flows.js", "topics.js", "shell.js", "c-app.js"]) assert.doesNotMatch(read(file), /handRow/, file);
+  // R2（#514）: 流れの列と一覧の state は、いつも handRow: true（幅・段で切り替えない）と、右腕の行の作業中の印の isRunning
+  for (const file of ["flows.js", "topics.js"]) {
+    const src = stripJsComments(read(file));
+    assert.equal([...src.matchAll(/handRow/g)].length, 1, file);
+    assert.match(src, /^\s*handRow: true,$/m, file);
+    assert.match(src, /= \(channelId\) => store\.runningOf\(channelId\) !== null;/, file);
+  }
+  assert.match(stripJsComments(read("flows.js")), /^\s*isRunning,$/m);
+  assert.match(stripJsComments(read("topics.js")), /^\s*isRunning: IS_RUNNING,$/m);
+  for (const file of ["shell.js", "c-app.js"]) assert.doesNotMatch(read(file), /handRow/, file);
   const gallery = read("c-gallery.js");
   for (const demo of ["deck-hand-turn", "deck-hand-unread", "deck-hand-running", "deck-hand-idle", "deck-hand-none", "list-hand", "list-hand-unread", "list-hand-none"]) assert.ok(gallery.includes(`"${demo}"`), demo);
 });
