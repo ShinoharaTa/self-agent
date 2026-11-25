@@ -8,8 +8,8 @@ import { Badge, Button, Empty, IconButton, Loading, Mark } from "./c-atoms.js";
 import { HAND_NONE, rowModel, turnWord } from "./c-list.js";
 
 /** 幅の計算の数（設計書 §3。列の 300・席の幅は溝を含む目安）。数は全部ここ */
-/** 会話の列の幅 CONV・列の間 GAP・帯の右の丸の通り道 LANE・留められる数 PIN_MAX は、留めた話題の会話の列の物（docs/plan/web-ui-pins.md §4.2。#507） */
-export const DECK = Object.freeze({ COL_MIN: 300, COL_MAX: 420, SIDE_MIN: 1340, SIDE_REST: 900, SIDE_MAX: 720, FOLD_RATE: 0.48, FOLD_MIN: 440, FOLD_MAX: 600, CONV: 420, GAP: 8, LANE: 80, PIN_MAX: 4 });
+/** 会話の列の幅 CONV・列の間 GAP・留められる数 PIN_MAX は、留めた話題の会話の列の物（docs/plan/web-ui-pins.md §4.2。#507） */
+export const DECK = Object.freeze({ COL_MIN: 300, COL_MAX: 420, SIDE_MIN: 1340, SIDE_REST: 900, SIDE_MAX: 720, FOLD_RATE: 0.48, FOLD_MIN: 440, FOLD_MAX: 600, CONV: 420, GAP: 8, PIN_MAX: 4 });
 
 /**
  * width は #v3 の幅、seatOpen は席が開いているか。返す: { cols: 見える列の数 0〜3, side: 列と席が並ぶ幅か, seat: 席の幅, colW: 1 列の幅 }。
@@ -32,14 +32,14 @@ export function deckFit(width, seatOpen) {
 
 /**
  * 帯（流れの列と留めた会話の列を 1 本に並べて横に送る所。#507）の幅。留めた数が 1 以上の時だけ使う。width・seatOpen は deckFit と同じ。
- * 返す: { show: 帯を出すか, seat: 席の幅, room: 帯の見える幅（width − 席 − 席との間 − 丸の通り道）, colW: 流れの列の幅, convW: 会話の列の幅 }。
+ * 返す: { show: 帯を出すか, seat: 席の幅, room: 帯の見える幅（width − 席 − 席との間）, colW: 流れの列の幅, convW: 会話の列の幅 }。
  * 数でない・0 以下の幅、席だけの幅（deckFit の cols が 0）、見える幅が 0 の時は show: false
  */
 export function stripFit(width, seatOpen) {
   if (typeof width !== "number" || !Number.isFinite(width) || width <= 0) return { show: false, seat: 0, room: 0, colW: 0, convW: 0 };
   const f = deckFit(width, seatOpen);
   if (f.cols === 0) return { show: false, seat: f.seat, room: 0, colW: 0, convW: 0 };
-  const room = Math.max(0, width - f.seat - (f.seat > 0 ? DECK.GAP : 0) - DECK.LANE);
+  const room = Math.max(0, width - f.seat - (f.seat > 0 ? DECK.GAP : 0));
   if (room === 0) return { show: false, seat: f.seat, room: 0, colW: 0, convW: 0 };
   return { show: true, seat: f.seat, room, colW: Math.min(DECK.COL_MIN, room), convW: Math.min(DECK.CONV, room) };
 }

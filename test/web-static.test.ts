@@ -2683,8 +2683,8 @@ test("web static: 新しい殻の CSS の幅の段は 639 だけ。流れの列�
     if (sel === ":root") continue;
     for (const part of sel.split(",")) assert.match(part.trim(), /^\.v3/, sel);
   }
-  // 変数を書くのは :root の 1 つと、広い幅の列の下の余白（--c-deck-tail。D6。R4 で外す）の上書き 1 つだけ（右腕の列の幅 --v3-hand-w は #514 の R3b で消した）
-  assert.deepEqual(css.match(/^\s*--[a-z0-9-]+:/gm)?.map((d) => d.trim()), ["--v3-list-w:", "--c-deck-tail:"]);
+  // 変数を書くのは :root の 1 つだけ（右腕の列の幅 --v3-hand-w は #514 の R3b で、広い幅の列の下の余白 --c-deck-tail の上書きは R4 で消した）
+  assert.deepEqual(css.match(/^\s*--[a-z0-9-]+:/gm)?.map((d) => d.trim()), ["--v3-list-w:"]);
 });
 
 test("web static: 新しい殻の ≤639px のナレッジは一覧と中身を縦に並べ、見出しの検索も出す（app.css の古い殻の規則は残す。M8-0）", () => {
@@ -11348,19 +11348,16 @@ test("web static: 流れの列: 席に右腕を開いた状態の Ctrl+K・Escap
   assert.equal(r.lastTop().title, "右腕");
 });
 
-test("web static: shell.css に右腕の丸の入れ物（.v3-orb）の規則は無く（#514 の R3b）、--c-deck-tail の上書きは広い幅（side・fold）の .v3-deck の 1 つだけ（R4 で外す）", () => {
+test("web static: shell.css に右腕の丸の入れ物（.v3-orb）の規則は無く（#514 の R3b）、--c-deck-tail の上書きも帯（.v3-deck）の右の margin も無い（R4）", () => {
   const css = read("shell.css").replace(/\/\*[\s\S]*?\*\//g, "");
   const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ sel: m[1]!.trim().replace(/\s+/g, " "), body: m[2]!.trim().replace(/\s+/g, " ") }));
   assert.deepEqual(rules.filter((r) => r.sel.includes("v3-orb")), []);
-  // 列の本体の下の余白: 広い幅（side・fold）の .v3-deck だけ、消した丸 + 上下の余白 + 下の safe-area
-  const tails = rules.filter((r) => r.body.includes("--c-deck-tail"));
-  assert.deepEqual(tails, [
-    {
-      sel: '.v3[data-deck][data-seat="side"] .v3-deck, .v3[data-deck][data-seat="fold"] .v3-deck',
-      body: "--c-deck-tail: calc(var(--c-orb) + var(--space-4) + var(--space-4) + env(safe-area-inset-bottom, 0px));",
-    },
-  ]);
-  assert.match(read("tokens.css"), /\n {2}--c-orb: 56px;\n/);
+  // 列の本体の下の余白は tokens.css の既定（var(--space-2)）のまま。どの幅でも上書きしない
+  assert.deepEqual(rules.filter((r) => r.body.includes("--c-deck-tail")), []);
+  // 帯の右に丸の通り道を空けない（右の margin を書く .v3-deck の規則が無い）
+  const deckRules = rules.filter((r) => r.sel.split(",").some((part) => /\.v3-deck$/.test(part.trim())));
+  assert.ok(deckRules.length > 0);
+  for (const r of deckRules) assert.doesNotMatch(r.body, /margin(?:-right|-inline-end)?:/, r.sel);
 });
 
 test("web static: 流れの列: 帯の［＋ 始める］は General の始める板、歯車の板は 知識・メモリ・使用量・（dev なら会話ログ）・設定、点は状態の画面", async () => {
@@ -11798,7 +11795,7 @@ test("web static: 古い履歴の entry（history.state に v3Hand: true。R3a �
   assert.deepEqual(f.errors, []);
 });
 
-test("web static: 右腕の枠・丸・［広げる］のファイルと字が新しい殻に無い（c-hand.js・c-hand.css が無く、どのファイルも import・link しない。HandOrb・HandHead・drawOrb・v3Hand・withViewing の字が無い。古い殻が読むファイルと chat.js は除く。#514 の R3b）", () => {
+test("web static: 右腕の枠・丸・［広げる］のファイルと字が新しい殻に無い（c-hand.js・c-hand.css が無く、どのファイルも import・link しない。HandOrb・HandHead・drawOrb・v3Hand・withViewing の字が無い。古い殻が読むファイルと chat.js は除く。#514 の R3b。帯の右の通り道 --c-deck-lane・--c-orb・DECK.LANE の字も無い。R4）", () => {
   const files = readdirSync(STATIC_DIR);
   assert.ok(!files.includes("c-hand.js") && !files.includes("c-hand.css"));
   // 古い殻（classic.html）が読むファイルと、枠の鍵を読む側を残す chat.js（M8b まで）
@@ -11808,7 +11805,7 @@ test("web static: 右腕の枠・丸・［広げる］のファイルと字が�
   for (const name of files.filter((n) => /\.(?:js|css|html)$/.test(n))) assert.doesNotMatch(read(name), /c-hand\.(?:js|css)/, name);
   for (const name of own) {
     const text = read(name);
-    for (const word of ["HandOrb", "HandHead", "drawOrb", "focusOrb", "v3Hand", "withViewing", "viewingTitle", "SA.hand.", "v3-hand", "v3-orb", "c-orb-root", "c-hand-root", "--c-hand-w", "c-band-hand", "data-hand"]) {
+    for (const word of ["HandOrb", "HandHead", "drawOrb", "focusOrb", "v3Hand", "withViewing", "viewingTitle", "SA.hand.", "v3-hand", "v3-orb", "c-orb-root", "c-hand-root", "--c-hand-w", "c-band-hand", "data-hand", "--c-deck-lane", "--c-orb", "LANE:"]) {
       assert.equal(text.includes(word), false, `${name}: ${word}`);
     }
   }
@@ -12626,11 +12623,11 @@ test("web static: 留めた話題の列（P4）: 1440 で留めた順に列を�
 test("web static: 留めた話題の列（P4）: 見えている列は送りが止まってから数え（最後の scroll から 150ms）、変わった時だけ読み直し・既読・流れの列の描き直し。shown と reading に足し、「探す」の板の間は reading から外す", async () => {
   const h = await loadPins();
   const pins = h.app as PinApp;
-  // 1440・席は閉: 列 1 は 924〜1344（見える幅 1360）、列 2 は 1352〜1772
+  // 1440・席は閉: 列 1 は 924〜1344（見える幅 1440）、列 2 は 1352〜1772
   assert.deepEqual(json(pins.shownChannelIds()), ["1"]);
   assert.deepEqual(json(pins.readingChannelIds()), ["1"]);
   const before = { seen: h.marks.seenShown, renders: h.flows.renders, turns: h.loads.turns.length };
-  bandOf(h).scrollLeft = 412;
+  bandOf(h).scrollLeft = 332;
   h.nodes.deckBox.dispatch("scroll");
   // 止まる前は数えない
   assert.deepEqual(json(pins.shownChannelIds()), ["1"]);
@@ -12673,8 +12670,8 @@ test("web static: 留めた話題の列（P4）: 見えている列は送りが�
 test("web static: 留めた話題の列（P4）: 送っている途中は見えている列を減らすだけ（scroll のたび）。外へ出た列は描き直しても既読を付けない。新しく見えた列は止まって（150ms か scrollend）から足して既読", async () => {
   const h = await loadPins();
   const pins = h.app as PinApp;
-  // 412 で止まる: 列 1・2 が見えている
-  bandOf(h).scrollLeft = 412;
+  // 332 で止まる: 列 1・2 が見えている
+  bandOf(h).scrollLeft = 332;
   h.nodes.deckBox.dispatch("scroll");
   h.advance(150);
   assert.deepEqual(json(h.pins!.seen()), ["1", "2"]);
@@ -12694,8 +12691,8 @@ test("web static: 留めた話題の列（P4）: 送っている途中は見え�
   h.app.refresh("ch:2");
   assert.equal(h.handRenders.at(-1)!.id, "2");
   assert.deepEqual(h.marks.rendered.slice(rendered), []);
-  // 送りの途中（412 へ戻した）: 新しく端まで見えた列 2 は止まるまで足さない（measure を直に呼んでも）
-  bandOf(h).scrollLeft = 412;
+  // 送りの途中（332 へ戻した）: 新しく端まで見えた列 2 は止まるまで足さない（measure を直に呼んでも）
+  bandOf(h).scrollLeft = 332;
   h.nodes.deckBox.dispatch("scroll");
   assert.deepEqual(json(h.pins!.seen()), ["1"]);
   h.pins!.measure();
@@ -12714,7 +12711,7 @@ test("web static: 留めた話題の列（P4）: 送っている途中は見え�
   bandOf(h).scrollLeft = 0;
   h.nodes.deckBox.dispatch("scroll");
   assert.deepEqual(json(h.pins!.seen()), ["1"]);
-  bandOf(h).scrollLeft = 412;
+  bandOf(h).scrollLeft = 332;
   h.nodes.deckBox.dispatch("scroll");
   assert.deepEqual(json(h.pins!.seen()), ["1"]);
   h.nodes.deckBox.dispatch("scrollend");
@@ -12759,7 +12756,7 @@ test("web static: 留めた話題の列（P4）: 留める・外すの応答を�
   await h.flush();
   assert.deepEqual(pinCols(h), ["1", "3"]);
   assert.equal(h.nodes.v3.getAttribute("data-view"), "list");
-  assert.equal(bandOf(h).scrollLeft, 412);
+  assert.equal(bandOf(h).scrollLeft, 332);
   assert.equal(h.document.activeElement, other);
   // 席から留める: 焦点が席の中（見出しの「…」）に在ったまま → 留めた列のピンのボタン
   const s = await loadPins({}, ["1"]);
@@ -12809,7 +12806,7 @@ test("web static: 留めた話題の列（P4）: 席で見ている話題がほ�
   assert.deepEqual(pinCols(h), ["1", "3"]);
   const composer = pinCol(h, "3")!.querySelector('[data-composer="3"]')!;
   assert.equal(h.document.activeElement, composer);
-  assert.equal(bandOf(h).scrollLeft, 412);
+  assert.equal(bandOf(h).scrollLeft, 332);
   assert.equal(h.app.draft("3"), "書きかけ");
   // 焦点が席の外（列 1 のピンのボタン）なら動かさない
   const s = await loadPins({}, ["1"]);
@@ -12826,19 +12823,19 @@ test("web static: 留めた話題の列（P4）: 帯の間は留めた話題を�
   h.app.open("ch:2");
   assert.equal(h.nodes.v3.getAttribute("data-view"), "list");
   assert.equal(h.location.hash, "");
-  assert.equal(bandOf(h).scrollLeft, 412);
+  assert.equal(bandOf(h).scrollLeft, 332);
   assert.equal((h.document.activeElement as DomNode).getAttribute("data-composer"), "2");
   assert.ok(pinCol(h, "2")!.contains(h.document.activeElement));
   // 端まで見えている列 1 は送らない
   h.app.open("ch:1");
-  assert.equal(bandOf(h).scrollLeft, 412);
+  assert.equal(bandOf(h).scrollLeft, 332);
   assert.equal((h.document.activeElement as DomNode).getAttribute("data-composer"), "1");
   // 「探す」の板から
   bandOf(h).scrollLeft = 0;
   lastBand(h).on.find!(h.nodes.bandButtons.find);
   h.app.open("ch:2");
   assert.equal(h.nodes.v3.getAttribute("data-find"), "closed");
-  assert.equal(bandOf(h).scrollLeft, 412);
+  assert.equal(bandOf(h).scrollLeft, 332);
   // 留めていない話題は今までどおり席
   h.app.open("ch:3");
   assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
@@ -13010,8 +13007,8 @@ test("web static: 上の帯の「あなたの番 n」（P5）: 番の列が端�
   const h = await loadPins();
   assert.equal(lastBand(h).turnAway, false);
   const n = h.deck.bands.length;
-  // 送りの途中（scroll のたび）でも、値が変わったら描き直す（1440・席は閉: 番の列は 0〜300、412 で外れる）
-  bandOf(h).scrollLeft = 412;
+  // 送りの途中（scroll のたび）でも、値が変わったら描き直す（1440・席は閉: 番の列は 0〜300、332 で外れる）
+  bandOf(h).scrollLeft = 332;
   h.nodes.deckBox.dispatch("scroll");
   assert.equal(lastBand(h).turnAway, true);
   assert.equal(h.deck.bands.length, n + 1);
@@ -13030,7 +13027,7 @@ test("web static: 上の帯の「あなたの番 n」（P5）: 番の列が端�
   h.advance(150);
   assert.equal(h.deck.bands.length, n + 2);
   // 送った後に最後の 1 本を外す（帯をやめる）: fitDeck の終わりで false に描き直す
-  sendBand(h, 412);
+  sendBand(h, 332);
   assert.equal(lastBand(h).turnAway, true);
   h.topics.setPins({ pins: [], pinMax: 4 });
   assert.equal(h.nodes.v3.getAttribute("data-pins"), null);
@@ -13062,7 +13059,7 @@ test("web static: 上の帯の「あなたの番 n」（P5）: 帯が出てい�
 
 test("web static: 上の帯の「あなたの番 n」（P5）: 押すと帯の scrollLeft を 0 にし、settle で数え直して帯を描き直し、番の列（focusCol の turn）に焦点。置けなければ帯の［探す］", async () => {
   const h = await loadPins();
-  sendBand(h, 412);
+  sendBand(h, 332);
   assert.equal(lastBand(h).turnAway, true);
   const pins = h.pins as unknown as { settle: () => void };
   const orig = pins.settle;
@@ -13081,7 +13078,7 @@ test("web static: 上の帯の「あなたの番 n」（P5）: 押すと帯の s
   assert.equal(h.document.activeElement, h.nodes.itemButton);
   // 番の列に押せる項目が無い: 帯の［探す］
   h.deck.cols.clear();
-  sendBand(h, 412);
+  sendBand(h, 332);
   h.deck.focusBands.length = 0;
   lastBand(h).on.turn!(h.nodes.bandButtons.find);
   assert.equal(bandOf(h).scrollLeft, 0);
@@ -13183,7 +13180,7 @@ test("web static: 上の帯の「あなたの番 n」（P5）: fitDeck の終わ
   // 列を描き直さない fitDeck（同じ幅の resize）: 送りの位置が scroll を出さずに変わっていても合わせる
   const h = await loadPins();
   assert.equal(lastBand(h).turnAway, false);
-  bandOf(h).scrollLeft = 412;
+  bandOf(h).scrollLeft = 332;
   h.fire("resize");
   assert.equal(lastBand(h).turnAway, true);
   // スマホの席（全面）に開いた留めた話題: 広い幅へ移ると席を閉じて列にし、焦点が席の中なのでその列へ帯を送る（帯を描いた後に送る）
@@ -13192,6 +13189,6 @@ test("web static: 上の帯の「あなたの番 n」（P5）: fitDeck の終わ
   p.nodes.ed.querySelector('[data-composer="3"]')!.focus();
   p.setPhone(false, 1440);
   assert.equal(p.nodes.v3.getAttribute("data-view"), "list");
-  assert.equal(bandOf(p).scrollLeft, 412);
+  assert.equal(bandOf(p).scrollLeft, 332);
   assert.equal(lastBand(p).turnAway, true);
 });
