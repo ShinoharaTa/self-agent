@@ -5231,7 +5231,8 @@ test("web static: SA.app.shownChannelIds は 2 つの殻にあり、前に出て
   app.open("tasks");
   assert.deepEqual(ids(), []);
   const sh = read("shell.js");
-  const ctx: Record<string, unknown> = { S: { view2: "pane", active: "ch:333" }, paneSession: () => "s1", handVisible: () => false, handChannelId: () => null };
+  // 帯の留めた話題の列（#507）は無い
+  const ctx: Record<string, unknown> = { S: { view2: "pane", active: "ch:333" }, paneSession: () => "s1", handVisible: () => false, handChannelId: () => null, pinsSeen: () => [] };
   vm.runInNewContext(fnSource(sh, "termSession") + fnSource(sh, "shownTabId") + fnSource(sh, "shownChannelIds") + "\nresult = shownChannelIds();", ctx);
   assert.deepEqual(JSON.parse(JSON.stringify(ctx.result)), []);
   (ctx.S as { view2: string }).view2 = "talk";
