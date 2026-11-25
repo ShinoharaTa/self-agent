@@ -10613,6 +10613,23 @@ test("web static: SA.topics.pins・pinMax は応答の形が違えば [] と 0�
   assert.match(fnSource(read("topics.js"), "load"), /Array\.isArray\(next\.groups\) && Array\.isArray\(next\.topics\) && Array\.isArray\(next\.turnIds\) && Array\.isArray\(next\.rightHands\)\)/);
 });
 
+test("web static: 一覧を読んでいる途中に setPins があれば、その古い応答の pins・pinMax は今の値のまま。次の読み直し（途中に setPins が無い）ではサーバーの値が入る（#507）", async () => {
+  const { h, state } = await loadPin({}, [], 4);
+  let answer: (v: unknown) => void = () => undefined;
+  h.api.reply = () => new Promise((done) => (answer = done));
+  const reading = h.topics.load();
+  h.topics.setPins({ pins: ["1"], pinMax: 4 });
+  answer(v3Result(h.topicList, { groups: startGroups(), pins: [], pinMax: 4 }));
+  await reading;
+  await h.flush();
+  assert.deepEqual([...h.topics.pins()], ["1"]);
+  // 次の読み直し（途中に setPins が無い）はサーバーの値
+  state.pins = ["2"];
+  h.api.reply = () => Promise.resolve(v3Result(h.topicList, { groups: startGroups(), ...state }));
+  await h.topics.load();
+  assert.deepEqual([...h.topics.pins()], ["2"]);
+});
+
 test("web static: 「…」の板のピン留めの行: 留めていない話題に「ピン留めする」・留めた話題に「ピン留めを外す」（絵 pin）。pinMax 0・完了・端末の行（cc:）・ページ・右腕では出ない。上限では押せず理由（#507）", async () => {
   for (const phone of [false, true]) {
     const { h } = await loadPin({ phone }, ["3"], 4);
@@ -10691,7 +10708,7 @@ test("web static: ピン留めの行を押すと POST /api/topics/ch:<id>/pin �
   assert.deepEqual([...h.topics.pins()], []);
 });
 
-test("web static: ピン留めの失敗: 409 pin_limit は「ピン留めは n つまで」（n は応答の max、無ければ pinMax）、404 は「この話題はピン留めできません」（どれも［もう一度］なし）。ほかは［もう一度］付きで同じ値を送り直す。失敗では読み直さない（#507）", async () => {
+test("web static: ピン留めの失敗: 409 pin_limit は「ピン留めは n つまで」（n は応答の max、無ければ pinMax）、404 は「この話題はピン留めできません」（どれも［もう一度］なしで、一覧を読み直す）。ほかは［もう一度］付きで同じ値を送り直し、読み直さない（#507）", async () => {
   const { h, toasts } = await loadPin({}, [], 4);
   h.app.open("ch:1");
   const send = async (err: Error) => {
@@ -10700,10 +10717,12 @@ test("web static: ピン留めの失敗: 409 pin_limit は「ピン留めは n �
     pickPlace(h, "ピン留めする");
     await h.flush();
   };
-  const reads = h.api.paths.length;
+  let reads = h.api.paths.length;
   await send(apiError(409, "pin_limit", { error: "pin_limit", max: 3 }));
   await send(apiError(409, "pin_limit"));
   await send(apiError(404, "not_found"));
+  // 上限・引けない時は読み直す（画面の pins が古い）
+  assert.equal(topicReads(h, reads), 3);
   assert.deepEqual(
     toasts.map((t) => [t.text, t.error, t.retry !== null]),
     [
@@ -10713,6 +10732,7 @@ test("web static: ピン留めの失敗: 409 pin_limit は「ピン留めは n �
     ],
   );
   toasts.length = 0;
+  reads = h.api.paths.length;
   await send(Object.assign(apiError(500, "internal"), { toast: "サーバーの処理に失敗しました" }));
   await send(apiError(0, null));
   assert.deepEqual(
@@ -10722,6 +10742,7 @@ test("web static: ピン留めの失敗: 409 pin_limit は「ピン留めは n �
       ["サーバーにつながりません", true, true],
     ],
   );
+  // ほかの失敗（つながらない）は読み直さない
   assert.equal(topicReads(h, reads), 0);
   assert.deepEqual([...h.topics.pins()], []);
   h.api.postReply = () => Promise.resolve({ pins: ["1"], pinMax: 4 });
@@ -11706,12 +11727,13 @@ test("web static: 流れの列: 席は［閉じる］・Esc・戻るの 3 通り
   assert.equal(h.document.activeElement, h.nodes.bandButtons.find);
 });
 
-test("web static: 流れの列: 席を閉じた後の焦点は、通知の列（topic:）から開いた物なら節「ピン留め」（pin:）へ飛ばず帯の［探す］へ。動いている（run:）から開いた物は pin: の項目へ（#507）", async () => {
+test("web static: 流れの列: 席を閉じた後の焦点が節「ピン留め」（pin:）へ行くのは、あなたの番の列（turn:・run:・idle:・pin:）から開いた時だけ。通知の列（topic:）・「探す」の板から開いた物は帯の［探す］へ（#507）", async () => {
   const h = await loadDeck({ width: 1440 });
-  const closeFrom = (key: string) => {
+  const closeFrom = (key: string | null) => {
     h.deck.items.clear();
     h.deck.items.add("pin:ch:1");
-    h.flows.key = key;
+    if (key === null) lastBand(h).on.find!(h.nodes.bandButtons.find!);
+    else h.flows.key = key;
     h.app.open("ch:1");
     assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
     h.deck.focusItems.length = 0;
@@ -11724,6 +11746,10 @@ test("web static: 流れの列: 席を閉じた後の焦点は、通知の列（
   assert.equal(h.document.activeElement, h.nodes.bandButtons.find);
   // (b) 動いているから開いた項目がもう無い: pin: の項目で止まる
   assert.deepEqual(closeFrom("run:ch:1"), { items: ["run:ch:1", "turn:ch:1", "run:ch:1", "pin:ch:1"], bands: [] });
+  // (c) 「探す」の板から開いた（{ find: true }。key なし）: pin: は試さず帯の［探す］
+  assert.deepEqual(closeFrom(null), { items: ["turn:ch:1", "run:ch:1", "topic:ch:1"], bands: ["find"] });
+  // (d) 待機から開いた項目がもう無い: pin: の項目で止まる
+  assert.deepEqual(closeFrom("idle:ch:1"), { items: ["idle:ch:1", "turn:ch:1", "run:ch:1", "pin:ch:1"], bands: [] });
 });
 
 test("web static: 流れの列: 席を閉じている間は会話を読んでいる扱いにせず（readingChannelIds）、開くと読む。shownChannelIds は変わらない", async () => {

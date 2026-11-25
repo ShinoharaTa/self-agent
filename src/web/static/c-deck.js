@@ -105,8 +105,8 @@ function flowItem(state, o) {
 }
 
 const topicsOf = (state) => (state.topics && Array.isArray(state.topics.topics) ? state.topics.topics : []);
-/** 留めた話題の channelId（留めた順。ch: は付かない。文字列でない物は捨てる。#507） */
-const pinIds = (state) => (state.topics && Array.isArray(state.topics.pins) ? state.topics.pins.filter((id) => typeof id === "string") : []);
+/** 留めた話題の channelId（留めた順。ch: は付かない。文字列でない物と重なりは捨てる（最初の出現の順）。#507） */
+const pinIds = (state) => (state.topics && Array.isArray(state.topics.pins) ? [...new Set(state.topics.pins.filter((id) => typeof id === "string"))] : []);
 /** 留めた話題か（ch: の話題だけ） */
 const isPinned = (state, t) => typeof t.id === "string" && t.id.startsWith("ch:") && pinIds(state).includes(t.id.slice(3));
 const groupName = (state, key) => {

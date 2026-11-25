@@ -29,6 +29,8 @@
   /** 読んでいる途中の 1 回と、その間に頼まれたか（終わったらもう 1 回だけ読む） */
   let inflight = null;
   let again = false;
+  /** setPins の世代（#507）。読んでいる途中に留めた・外した物を、古い応答の pins で戻さない */
+  let pinGen = 0;
 
   /** 読み直しの最短の間（schedule） */
   const MIN_GAP_MS = 2000;
@@ -51,8 +53,14 @@
     inflight = (async () => {
       try {
         const asked = doneGroup;
+        const gen = pinGen;
         const next = await SA.api.get("/api/topics" + (asked ? "?done=" + encodeURIComponent(asked) : ""), { quiet: true });
         if (next && Array.isArray(next.groups) && Array.isArray(next.topics) && Array.isArray(next.turnIds) && Array.isArray(next.rightHands)) {
+          // 読んでいる間に setPins があれば、古い応答の pins・pinMax は今の値に置き換える
+          if (gen !== pinGen && data) {
+            next.pins = data.pins;
+            next.pinMax = data.pinMax;
+          }
           data = next;
           // 既読（M7）: 応答の reads を取り込み、こちらの方が進んでいる話題（ch:）と右腕を送る（描くのはこの後の render）
           const ids = next.topics
@@ -262,6 +270,7 @@
   /** POST …/pin の応答（{ pins, pinMax }）を取り込んで描き直す（load の後と同じ道）。形が違う・まだ読めていなければ何もしない */
   function setPins(res) {
     if (!data || !res || !Array.isArray(res.pins) || typeof res.pinMax !== "number") return;
+    pinGen++;
     data.pins = res.pins;
     data.pinMax = res.pinMax;
     render();
