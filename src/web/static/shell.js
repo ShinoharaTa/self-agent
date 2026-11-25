@@ -2135,7 +2135,10 @@
     if (!SA.deck) return;
     if (from && typeof from.key === "string" && SA.deck.focusItem(from.key)) return;
     if (S.active) {
-      for (const prefix of ["turn:", "run:", "pin:", "topic:"]) if (SA.deck.focusItem(prefix + S.active)) return;
+      // #507: 通知の列から開いた物は節「ピン留め」へ飛ばさない（スマホの列が横に送られる）
+      const fromFeed = from && typeof from.key === "string" && from.key.startsWith("topic:");
+      const prefixes = fromFeed ? ["turn:", "run:", "topic:"] : ["turn:", "run:", "pin:", "topic:"];
+      for (const prefix of prefixes) if (SA.deck.focusItem(prefix + S.active)) return;
     }
     SA.deck.focusBand("find");
   }
