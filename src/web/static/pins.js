@@ -1,5 +1,5 @@
-// 新しい殻（index.html）の留めた話題の会話の列（#507。docs/plan/web-ui-pins.md §4.1・§4.2・§4.6）: 帯（#v3-deck）の中の #v3-pins に、留めた順の列（見出し + 会話）を足す・消す・描き直す。
-// 見出しは入口 c-app.js の SA.pin.drawHead、会話は chat.js の render（右腕と同じ head: false の形）。見えている列（端まで見えて送りが止まっている）は c-deck.js の stripSeen で数える。
+// 新しい殻（index.html）の留めた話題の会話の列（#507。docs/plan/web-ui-pins.md §4.1・§4.2・§4.6）: 帯（#v3-deck）の中の #v3-pins に、SA.topics.pinColumns() の順の列（見出し + 会話）を足す・消す・描き直す。
+// 見出しは入口 c-app.js の SA.pin.drawHead、会話は chat.js の render（右腕と同じ head: false の形）。列ごとの枠の指定と見出しの題・状態は shell.js の on.frame・on.top が決める（null なら下の既定。#514 の R6）。見えている列（端まで見えて送りが止まっている）は c-deck.js の stripSeen で数える。
 // いつ出すか・帯の幅・押した先（見出しの「…」・ピンのボタン・見えている列が替わった）は shell.js が sync の on で渡す（shell.js は呼ぶだけ）
 "use strict";
 
@@ -7,20 +7,20 @@
   const SA = (window.SA = window.SA || {});
   const $ = (id) => document.getElementById(id);
 
-  /** chat.js に渡す枠の指定（毎回同じ物。見出しは SA.pin が描く） */
+  /** chat.js に渡す枠の指定の既定（毎回同じ物。見出しは SA.pin が描く） */
   const FRAME = { head: false };
 
   // ===== 状態 =====
-  /** 列（channelId → { id, section, head, ed, stick, on }）。DOM の順は留めた順（#v3-pins の子の順） */
+  /** 列（channelId → { id, section, head, ed, stick, on, frame }）。DOM の順は pinColumns の順（#v3-pins の子の順） */
   const cols = new Map();
   /** 最後に数えた、端まで見えている留めた列の channelId（DOM の順） */
   let seenIds = [];
   /** 帯を送っている途中か（shell.js の moved で立て、settle で下ろす）。立っている間は見えている列を減らすだけ（docs/plan/web-ui-pins.md §4.6 の「迷う時は見えていないに倒す」） */
   let moving = false;
-  /** shell.js から渡された押した先: { seen(), menu(channelId, opener), pin(channelId, opener) } */
+  /** shell.js から渡された押した先: { seen(), menu(channelId, opener), pin(channelId, opener), frame(channelId), top(channelId) } */
   let hooks = null;
   /**
-   * 前の sync の時の留めた話題（SA.topics.pins()。帯を出していない時も覚える。一覧をまだ読めていない間は null）。
+   * 前の sync の時の会話の列（SA.topics.pinColumns()。帯を出していない時も覚える。一覧をまだ読めていない間は null）。
    * ここに無い話題の列だけが「新しく留めた列」（data-new。shell.css の列が出る動き）。読み込み・幅が変わって・席を閉じて帯が出直した列は動かさない
    */
   let prevPins = null;
@@ -52,16 +52,23 @@
     return t && typeof t.title === "string" && t.title !== "" ? t.title : "会話";
   }
 
+  /** shell.js の on.top が答える見出しの題・状態（{ title, status }）。答えが無ければ null */
+  function topOf(id) {
+    const top = hooks && typeof hooks.top === "function" ? hooks.top(id) : null;
+    return top && typeof top.title === "string" && top.title !== "" ? top : null;
+  }
+
   /**
-   * 列の見出しの state（入口 c-app.js の TopBar の props）。題・状態は chat.js の head から。注記・場所・許可のモード・［会話］［端末］・［閉じる］は出さない。
+   * 列の見出しの state（入口 c-app.js の TopBar の props）。題・状態は shell.js の on.top が答えればそれ、無ければ chat.js の head から。注記・場所・許可のモード・［会話］［端末］・［閉じる］は出さない。
    * 幅 420（狭いときは 212〜299）は --c-top-full-min（520）より狭いので compact（場所・注記を渡さないので帯の中身は compact でない形と同じ）
    */
   function headState(c) {
+    const top = topOf(c.id);
     const head = SA.chat.head ? SA.chat.head(c.id) : null;
     return {
       view: "talk",
-      title: titleOf(c.id, head),
-      status: head ? head.status : null,
+      title: top ? top.title : titleOf(c.id, head),
+      status: top ? top.status || null : head ? head.status : null,
       note: null,
       place: null,
       views: null,
@@ -79,17 +86,20 @@
     const st = headState(c);
     c.section.setAttribute("aria-label", st.title);
     if (SA.pin && !SA.pin.drawHead(c.head, st)) SA.pin.drawHead(c.head, Object.assign({}, st, { status: null, menu: false }));
-    keepScroll(c.ed, () => SA.chat.render(c.ed, c.id, FRAME), c.stick);
+    keepScroll(c.ed, () => SA.chat.render(c.ed, c.id, c.frame), c.stick);
     c.stick = false;
   }
 
-  /** 列を作る（DOM だけ。描くのは呼ぶ側） */
+  /** 列を作る（DOM だけ。描くのは呼ぶ側）。会話の枠の指定は作る時に shell.js の on.frame に訊く（無ければ既定） */
   function make(id) {
     const { el } = SA.ui;
     const head = el("div", { class: "v3-slot v3-pin-head" });
     const ed = el("div", { class: "ed" });
-    const section = el("section", { class: "v3-pin", "data-pin": id, "aria-label": titleOf(id, null) }, [head, ed]);
-    const c = { id, section, head, ed, stick: true, on: null, newTimer: null, newEnd: null };
+    const top = topOf(id);
+    const section = el("section", { class: "v3-pin", "data-pin": id, "aria-label": top ? top.title : titleOf(id, null) }, [head, ed]);
+    const asked = hooks && typeof hooks.frame === "function" ? hooks.frame(id) : null;
+    const frame = asked && typeof asked === "object" ? asked : FRAME;
+    const c = { id, section, head, ed, stick: true, on: null, frame, newTimer: null, newEnd: null };
     // 見出しの押した先（列ごとに 1 回だけ作り、毎回同じ物を渡す）
     c.on = {
       menu: (opener) => {
@@ -145,15 +155,15 @@
   }
 
   /**
-   * 留めた話題（SA.topics.pins()）に列を合わせる。opts は { show, fit, on }（show は帯が出る幅で留めた数が 1 以上、fit は SA.deck.stripFit の結果、on は shell.js の押した先）。
-   * 要らない列を片付け、無い列を足し、DOM の順を留めた順にする。足した列は 1 回描き、会話を 1 回読む。show が false なら全部片付けて空にする。
-   * 足した列のうち前の sync の時に留めていなかった話題（prevPins に無い）の列にだけ data-new を付け、最後に今の留めた話題を prevPins に覚える
+   * 会話の列（SA.topics.pinColumns() の順）に列を合わせる。opts は { show, fit, on }（show は帯が出る幅で列が 1 本以上、fit は SA.deck.stripFit の結果、on は shell.js の押した先）。
+   * 要らない列を片付け、無い列を足し、DOM の順を pinColumns の順にする（今ある列は作り直さず差し込むだけ）。足した列は 1 回描き、会話を 1 回読む。show が false なら全部片付けて空にする。
+   * 足した列のうち前の sync の時に無かった物（prevPins に無い）の列にだけ data-new を付け、最後に今の pinColumns を prevPins に覚える
    */
   function sync(opts) {
     const o = opts || {};
     if (o.on) hooks = o.on;
     const box = $("v3-pins");
-    const want = box && o.show === true ? SA.topics.pins() : [];
+    const want = box && o.show === true ? SA.topics.pinColumns() : [];
     for (const [id, c] of [...cols]) {
       if (want.includes(id)) continue;
       clear(c);
@@ -177,8 +187,8 @@
     }
     // 列が無ければ送りの途中の旗を下ろす（立ったまま残さない）
     if (want.length === 0) moving = false;
-    // 一覧を読めていれば、帯を出していない時も今の留めた話題を覚える（次の sync で新しく留めた列を見分ける）
-    if (SA.topics.data() !== null) prevPins = SA.topics.pins();
+    // 一覧を読めていれば、帯を出していない時も今の会話の列を覚える（次の sync で新しく留めた列を見分ける）
+    if (SA.topics.data() !== null) prevPins = SA.topics.pinColumns();
     // 消えた列は見えている物から外す（帯が出ている間は呼ぶ側が続けて measure で数え直す）
     if (keepSeen() && hooks && hooks.seen) hooks.seen();
   }

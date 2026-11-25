@@ -58,10 +58,11 @@
         const gen = pinGen;
         const next = await SA.api.get("/api/topics" + (asked ? "?done=" + encodeURIComponent(asked) : ""), { quiet: true });
         if (next && Array.isArray(next.groups) && Array.isArray(next.topics) && Array.isArray(next.turnIds) && Array.isArray(next.rightHands)) {
-          // 読んでいる間に setPins があれば、古い応答の pins・pinMax は今の値に置き換える
+          // 読んでいる間に setPins があれば、古い応答の pins・pinMax・handPins は今の値に置き換える
           if (gen !== pinGen && data) {
             next.pins = data.pins;
             next.pinMax = data.pinMax;
+            next.handPins = data.handPins;
           }
           data = next;
           // 既読（M7）: 応答の reads を取り込み、こちらの方が進んでいる話題（ch:）と右腕を送る（描くのはこの後の render）
@@ -283,15 +284,46 @@
     return data && Number.isInteger(data.pinMax) && data.pinMax >= 1 ? data.pinMax : 0;
   }
 
-  /** POST …/pin の応答（{ pins, pinMax }）を取り込んで描き直す（load の後と同じ道）。形が違う・まだ読めていなければ何もしない */
+  /** POST …/pin の応答（{ pins, pinMax, handPins }）を取り込んで描き直す（load の後と同じ道）。形が違う・まだ読めていなければ何もしない。handPins は配列の時だけ（無ければ今の値のまま） */
   function setPins(res) {
     if (!data || !res || !Array.isArray(res.pins) || typeof res.pinMax !== "number") return;
     pinGen++;
     data.pins = res.pins;
     data.pinMax = res.pinMax;
+    if (Array.isArray(res.handPins)) data.handPins = res.handPins;
     render();
     SA.app.refreshTabs();
   }
 
-  SA.topics = { load, schedule, render, find, data: () => data, counts, setFilter, setCurrent, setSeen, pins, pinMax, setPins };
+  // ===== 右腕のピン留め（#514 の R6。応答の handPins。右腕は上限の外） =====
+  /** 右腕（rightHands[0]。サーバーが複数でも選ぶ口は作らない）。無ければ null */
+  function hand() {
+    return data && Array.isArray(data.rightHands) && data.rightHands.length > 0 && data.rightHands[0] ? data.rightHands[0] : null;
+  }
+
+  /** 右腕のチャンネル（ch: を外した物）。右腕が無い・ch: でなければ null */
+  function handChannel() {
+    const h = hand();
+    return h && typeof h.id === "string" && h.id.startsWith("ch:") ? h.id.slice(3) : null;
+  }
+
+  /** 右腕を留める口が在るか（応答の handPins が配列で、ピン留めの口が在る。古いサーバーの間は false） */
+  function handPinnable() {
+    return !!data && Array.isArray(data.handPins) && pinMax() >= 1;
+  }
+
+  /** 右腕を留めているか（handPins は表の順で rightHands の順と違う事が在るので、右腕のチャンネルが含まれるかで見る） */
+  function handPinned() {
+    const id = handChannel();
+    return id !== null && handPinnable() && data.handPins.includes(id);
+  }
+
+  /** 会話の列に出すチャンネル（右腕を留めていれば先頭に右腕、続けて留めた話題の順） */
+  function pinColumns() {
+    if (!handPinned()) return pins();
+    const id = handChannel();
+    return [id].concat(pins().filter((p) => p !== id));
+  }
+
+  SA.topics = { load, schedule, render, find, data: () => data, counts, setFilter, setCurrent, setSeen, pins, pinMax, setPins, hand, handPinnable, handPinned, pinColumns };
 })();
