@@ -5136,16 +5136,18 @@ test("web components: DeckBand は点・名前・探す・始める・ほかの�
   assert.ok(!calls.some((c) => c[0] === "hand"));
 });
 
-test("web components: 流れの列の本体（.c-col-body）の下の余白は var(--c-deck-tail)（tokens.css の既定は var(--space-2) = 今の 8。D6 の丸の分の上書きは #514 の R4 で外した）", () => {
-  assert.match(read("tokens.css"), /\n {2}--c-deck-tail: var\(--space-2\);\n/);
+test("web components: 流れの列の本体（.c-col-body）の下の余白は var(--space-2)（= 今の 8。D6 の丸の分の上書きは #514 の R4 で外し、上書きの無くなったトークン --c-deck-tail は R7 で消した）", () => {
   const body = parseCss(read("c-deck.css")).filter((r) => r.selectors.includes(".c-col-body") && r.at.length === 0);
   assert.equal(body.length, 1);
   const pads = body[0]!.body.split(";").map((d) => d.trim()).filter((d) => d.startsWith("padding"));
-  assert.deepEqual(pads, ["padding-bottom: var(--c-deck-tail)"]);
-  // 上書きは c-deck.css の中に無い（スマホ・落ち先・見本は既定のまま）
-  assert.equal((stripCssComments(read("c-deck.css")).match(/--c-deck-tail/g) ?? []).length, 1);
-  // shell.css も上書きしない（広い幅も既定のまま）
-  assert.doesNotMatch(stripCssComments(read("shell.css")), /--c-deck-tail/);
+  assert.deepEqual(pads, ["padding-bottom: var(--space-2)"]);
+  // ほかの規則（スマホ・落ち先・見本・広い幅）は .c-col-body の余白を上書きしない（余白を書く .c-col-body の規則は上の 1 つだけ）
+  const others = ["shell.css", ...CSS_FILES].flatMap((name) =>
+    parseCss(read(name)).filter((r) => r.selectors.some((sel) => sel.includes(".c-col-body")) && /padding/.test(r.body)).map((r) => `${name}: ${r.selectors.join(", ")}`),
+  );
+  assert.deepEqual(others, ["c-deck.css: .c-col-body"]);
+  // トークン --c-deck-tail はどこにも無い（tokens.css・新しい殻の CSS と JS）
+  for (const name of ["tokens.css", "shell.css", ...CSS_FILES, ...JS_FILES]) assert.doesNotMatch(stripCssComments(read(name)), /--c-deck-tail/, name);
 });
 
 test("web components: c-deck.css は区切りの線（左の線と 0 の外し・角丸のほかの border）・gradient・半透明・影・動きを書かない（帯の［右腕］とその作業中の輪は #514 の R3b で消した）", () => {

@@ -681,16 +681,6 @@
     openSheet(HAND_TALK.title + " の操作", items, opener);
   }
 
-  /** 席の入力欄に焦点（部品なら口に頼む）。無ければ席の［閉じる］ */
-  function focusSeatInput() {
-    const ed = $("ed");
-    const root = ed ? [...ed.children].find((child) => child.getAttribute("data-composer") !== null) : null;
-    if (root && SA.composer && SA.composer.focus(root)) return;
-    const input = ed ? ed.querySelector("textarea.composer-input") : null;
-    if (input) input.focus({ preventScroll: true });
-    else if (SA.top) SA.top.focus("close");
-  }
-
   /** 右腕の見出しの状態（席と会話の列で同じ）: あなたの番 > 作業中、どちらでもなければ null */
   function handStatus() {
     const data = SA.topics.data();

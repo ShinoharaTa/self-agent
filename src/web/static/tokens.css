@@ -197,7 +197,6 @@
   --c-deck-seat-in: 16px;
   --c-deck-col-w: 300px;
   --c-deck-conv-w: 420px;
-  --c-deck-tail: var(--space-2);
 }
 
 @media (min-width: 640px) and (hover: hover) and (pointer: fine) {

@@ -199,7 +199,7 @@ function groupModel(g, state, words, folded) {
 
 /**
  * 一覧のモデル（今の topics.js の draw・updateGroup・updateDone・updateOthers の判断）。
- * state.turnFrom は一覧から最後に開いた話題（右腕のように current にならない話題の先へ進むため）。
+ * state.turnFrom は一覧から最後に開いた話題（列に留めた話題のように current にならない話題の先へ進むため）。
  * handRow が true のときだけ鍵 hand（handRowModel）を足す。絞り込みで当たった右腕の行は hitCount に数える（#514）
  */
 export function listModel(state) {

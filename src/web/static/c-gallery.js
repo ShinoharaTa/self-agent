@@ -915,22 +915,12 @@ const BAND_TITLES = Object.freeze([
   { demo: "band-phone-feed", title: { name: "通知", count: 0 } },
 ]);
 
-/** 帯と 3 つの列の見本（列は見本の幅で 3 等分。deck-idle は待機の節の「ほか n 件」。deck-empty は待機も無い形。帯に右腕は出さない（#514 の R3b）ので band・band-running・band-no-hand は同じ中身（名前の片付けは R7）。
+/** 帯と 3 つの列の見本（列は見本の幅で 3 等分。deck-idle は待機の節の「ほか n 件」。deck-empty は待機も無い形。帯に右腕は出さない（#514 の R3b）ので、広い幅の帯は band の 1 つ（同じ中身の band-running・band-no-hand は R7 で畳んだ）。
  * band-turn は番の列が見えない間の「あなたの番 2」の帯、deck-strip は帯の中の流れの列（3 列が 300 で並び、包みの中で横に送る。#507）。band-phone・deck-paged・deck-phone-ops はスマホの幅の枠で、列は 1 列ずつ横に送る。
- * deck-hand-* は右腕の行（#514 の R1。本番にはまだ出していない）の あなたの番 の列だけ）。押しても何も起きない */
+ * deck-hand-* は右腕の行（#514 の R1）の あなたの番 の列だけ）。押しても何も起きない */
 function Decks() {
   return html`<${Section} name="deck" title="流れの列と上の帯">
     <div class="c-gallery-slide" data-demo="band">
-      <div class="c-gallery-deck c-gallery-band">
-        <${DeckBand} conn=${{ tone: "ok", label: "見本の Bot: 接続中" }} on=${BAND_ON} />
-      </div>
-    </div>
-    <div class="c-gallery-slide" data-demo="band-running">
-      <div class="c-gallery-deck c-gallery-band">
-        <${DeckBand} conn=${{ tone: "ok", label: "見本の Bot: 接続中" }} on=${BAND_ON} />
-      </div>
-    </div>
-    <div class="c-gallery-slide" data-demo="band-no-hand">
       <div class="c-gallery-deck c-gallery-band">
         <${DeckBand} conn=${{ tone: "ok", label: "見本の Bot: 接続中" }} on=${BAND_ON} />
       </div>

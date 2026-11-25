@@ -97,7 +97,7 @@
   flex-direction: column;
   gap: var(--space-1);
   min-height: 0;
-  padding-bottom: var(--c-deck-tail);
+  padding-bottom: var(--space-2);
   overflow-y: auto;
   overscroll-behavior-y: contain;
 }
