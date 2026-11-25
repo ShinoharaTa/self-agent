@@ -442,7 +442,7 @@ function countLabel(name, count) {
   return { counted, label: counted ? name + " " + count + " 件" : name };
 }
 
-/** 1 本の列。見出し（名前と数）と、縦に送る本体（同じ要素を使い回すので縦の位置が残る）。節に more があれば項目の後ろに［ほか n 件］（on.more(列の id)。#505） */
+/** 1 本の列。見出し（名前と数）と、縦に送る本体（同じ要素を使い回すので縦の位置が残る）。節に more があれば項目の後ろに［ほか n 件］（on.more(列の id)。list の子なので listitem で包み、key は節の語（ほかの節が出入りしても作り直さない）。#505） */
 export function Column({ col, on }) {
   const { counted, label } = countLabel(col.name, col.count);
   let body;
@@ -453,7 +453,9 @@ export function Column({ col, on }) {
       s.label ? html`<p class="c-col-label" key=${"label:" + i}>${s.label}</p>` : null,
       ...s.items.map((item) => html`<${Item} key=${item.key} item=${item} on=${on} />`),
       s.more
-        ? html`<button class="c-col-more" type="button" key=${"more:" + i} onClick=${() => on.more && on.more(col.id)}>${s.more.label}</button>`
+        ? html`<div role="listitem" key=${"more:" + s.label}>
+            <button class="c-col-more" type="button" onClick=${() => on.more && on.more(col.id)}>${s.more.label}</button>
+          </div>`
         : null,
     ]);
   return html`<section class="c-col" data-col=${col.id} aria-label=${label}>
