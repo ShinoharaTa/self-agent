@@ -447,7 +447,7 @@
   }
 
   /**
-   * 画面に描かれていて見えている会話のチャンネル（ch: を外したもの）。列 2 の会話の 1 つ（[端末] の間は無い）と、見えている右腕。
+   * 画面に描かれていて見えている会話のチャンネル（ch: を外したもの）。列 2 の会話の 1 つ（[端末] の間は無い）と、見えている右腕と、帯の見えている留めた話題の列（#507）。
    * スマホで一覧を出している間（会話の列が隠れている間）も、最後に開いた会話を返す（M2a からの動き。変えるなら polling・音が一緒に変わる（既読は readingChannelIds））
    */
   function shownChannelIds() {
@@ -455,19 +455,27 @@
     const ids = tabId && tabId.startsWith("ch:") ? [tabId.slice(3)] : [];
     const hand = handVisible() ? handChannelId() : null;
     if (hand && !ids.includes(hand)) ids.push(hand);
+    for (const id of pinsSeen()) if (!ids.includes(id)) ids.push(id);
     return ids;
+  }
+
+  /** 帯の端まで見えている留めた話題の列（#507。pins.js が送りの止まった後に数えた物。帯が出ていなければ空） */
+  function pinsSeen() {
+    return SA.pins && pinsShown() ? SA.pins.seen() : [];
   }
 
   /**
    * 既読を付ける会話（chat.js の markSeen。M7）。shownChannelIds から、スマホで一覧を出している間の列 2 の会話と、
-   * 重ねた右腕の下の会話を除いたもの（見えている右腕は入れる）
+   * 重ねた右腕の下の会話を除いたもの（見えている右腕は入れる）。帯の留めた話題の列（#507）は、右腕の枠が重なっている間と「探す」の板が開いている間は入れない
    */
   function readingChannelIds() {
     const tabId = shownTabId();
-    const covered = mainHidden() || (S.handMode === "over" && S.handOver);
+    const over = S.handMode === "over" && S.handOver;
+    const covered = mainHidden() || over;
     const ids = !covered && tabId && tabId.startsWith("ch:") ? [tabId.slice(3)] : [];
     const hand = handVisible() ? handChannelId() : null;
     if (hand && !ids.includes(hand)) ids.push(hand);
+    if (!over && !findOpen()) for (const id of pinsSeen()) if (!ids.includes(id)) ids.push(id);
     return ids;
   }
 
@@ -741,6 +749,8 @@
     if (!visible) handStick = true;
     renderHand();
     renderHandEntries();
+    // 帯の見えている列を数え直す（#507。変わった時だけ pins.js が読み直す）
+    if (SA.pins) SA.pins.measure();
     // 右腕を開いた・重ねた右腕を畳んで下の会話が出た（readingChannelIds が変わる）
     SA.chat.markSeenShown();
     // 列 2 の幅が変わった（右腕の開閉・形）
@@ -1987,7 +1997,10 @@
     if (first && SA.flows) SA.flows.init();
     // 留めた話題の会話の列（#507）。帯を出す・やめるが替わったら流れの列も描き直す
     if (fitPins(full)) changed = true;
-    if (!changed) return;
+    if (!changed) {
+      measurePins();
+      return;
+    }
     S.deckCols = fit.cols;
     S.deckCurrent = current;
     if (SA.flows) {
@@ -2001,6 +2014,7 @@
     fitTop();
     // 列を描き直した後に今の列へ送る（列の入れ物が幅 0 の間は入口が何もしない）
     if (full) SA.deck.page(S.deckPage);
+    measurePins();
   }
 
   /** 列を今の値で描き直す（流れの列の間だけ） */
@@ -2009,8 +2023,10 @@
   }
 
   // ===== 留めた話題の会話の列（#507。docs/plan/web-ui-pins.md §4.1〜§4.3。状態と描き出しは pins.js） =====
-  /** pins.js に渡す押した先（1 回だけ作り、毎回同じ物を渡す） */
-  const PINS_ON = {};
+  /** pins.js に渡す押した先（1 回だけ作り、毎回同じ物を渡す）。seen は見えている列が替わった時（節「ピン留め」の行の線） */
+  const PINS_ON = {
+    seen: () => renderFlows(),
+  };
 
   /** 帯が出ているか（#v3 の data-pins） */
   function pinsShown() {
@@ -2084,6 +2100,34 @@
     const was = S.deckPins;
     S.deckPins = show;
     return was !== show;
+  }
+
+  /** 帯が出ていれば見えている列を数え直す（流れの列を描き直した後。列の位置が決まってから） */
+  function measurePins() {
+    if (S.deckPins && SA.pins) SA.pins.measure();
+  }
+
+  /** 送り（帯の横の送り）が止まったら・ページが見えるようになったら、見えている列を数え直す（#507）。wheel は取らない。scrollend が無ければ最後の scroll から PINS_SCROLL_MS */
+  const PINS_SCROLL_MS = 150;
+
+  function bindPins() {
+    const band = $("v3-deck");
+    if (!band || !SA.pins) return;
+    if ("onscrollend" in window) band.addEventListener("scrollend", () => SA.pins.measure());
+    else {
+      let timer = null;
+      band.addEventListener(
+        "scroll",
+        () => {
+          clearTimeout(timer);
+          timer = setTimeout(() => SA.pins.measure(), PINS_SCROLL_MS);
+        },
+        { passive: true },
+      );
+    }
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") SA.pins.measure();
+    });
   }
 
   /** 上の帯の押した先（1 回だけ作り、毎回同じ物を渡す） */
@@ -2188,6 +2232,8 @@
         list.setAttribute("aria-label", "話題を探す");
       }
       applyInert();
+      // 帯の見えている列を数え直す（#507。板の下の列は readingChannelIds が既読から外す）
+      if (SA.pins) SA.pins.measure();
     }
     refs.searchBox.hidden = false;
     if (refs.searchToggle) refs.searchToggle.setAttribute("aria-expanded", "true");
@@ -2221,6 +2267,11 @@
       list.setAttribute("aria-label", "話題");
     }
     applyInert();
+    // 帯の見えている列を数え直し、板の下で読めなかった列に既読を付け直す（#507。帯の列が見えている時だけ）
+    if (SA.pins) {
+      SA.pins.measure();
+      if (pinsSeen().length > 0) SA.chat.markSeenShown();
+    }
     const input = $("v3-search");
     if (input && input.value !== "") {
       input.value = "";
@@ -2434,6 +2485,7 @@
     renderConn();
     renderBottom(handMark());
     bindStart();
+    bindPins();
     $("v3-sheet").addEventListener("close", () => {
       // 閉じてすぐ同じ板を開き直したとき、後から届いた close が新しい opener を消さない
       if ($("v3-sheet").open) return;

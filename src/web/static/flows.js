@@ -113,8 +113,8 @@
       busy: [...busy.keys()],
       busyOp: Object.fromEntries(busy),
       on: FLOW_ON,
-      // 帯（#507）の間だけ、帯の中の流れの列。帯が出ていなければ鍵を足さない
-      ...(strip ? { strip: true } : {}),
+      // 帯（#507）の間だけ: 帯の中の流れの列と、見えている留めた列の話題（節「ピン留め」の行の線）。帯が出ていなければ鍵を足さない
+      ...(strip ? { strip: true, seen: SA.pins ? SA.pins.seen().map((id) => "ch:" + id) : [] } : {}),
     };
   }
 

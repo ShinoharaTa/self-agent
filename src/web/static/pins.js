@@ -1,6 +1,6 @@
 // 新しい殻（index.html）の留めた話題の会話の列（#507。docs/plan/web-ui-pins.md §4.1・§4.2・§4.6）: 帯（#v3-deck）の中の #v3-pins に、留めた順の列（見出し + 会話）を足す・消す・描き直す。
-// 見出しは入口 c-app.js の SA.pin.drawHead、会話は chat.js の render（右腕と同じ head: false の形）。
-// いつ出すか・帯の幅・押した先（見出しの「…」・ピンのボタン）は shell.js が sync の on で渡す（shell.js は呼ぶだけ）
+// 見出しは入口 c-app.js の SA.pin.drawHead、会話は chat.js の render（右腕と同じ head: false の形）。見えている列（端まで見えて送りが止まっている）は c-deck.js の stripSeen で数える。
+// いつ出すか・帯の幅・押した先（見出しの「…」・ピンのボタン・見えている列が替わった）は shell.js が sync の on で渡す（shell.js は呼ぶだけ）
 "use strict";
 
 (function () {
@@ -13,7 +13,9 @@
   // ===== 状態 =====
   /** 列（channelId → { id, section, head, ed, stick, on }）。DOM の順は留めた順（#v3-pins の子の順） */
   const cols = new Map();
-  /** shell.js から渡された押した先: { menu(channelId, opener), pin(channelId, opener) } */
+  /** 最後に数えた、端まで見えている留めた列の channelId（DOM の順） */
+  let seenIds = [];
+  /** shell.js から渡された押した先: { seen(), menu(channelId, opener), pin(channelId, opener) } */
   let hooks = null;
 
   // ===== 描く =====
@@ -106,6 +108,14 @@
     c.section.remove();
   }
 
+  /** 見えている列を今在る列に絞る（消えた列を数えない）。変わったら true */
+  function keepSeen() {
+    const next = seenIds.filter((id) => cols.has(id));
+    if (next.length === seenIds.length) return false;
+    seenIds = next;
+    return true;
+  }
+
   /**
    * 留めた話題（SA.topics.pins()）に列を合わせる。opts は { show, fit, on }（show は帯が出る幅で留めた数が 1 以上、fit は SA.deck.stripFit の結果、on は shell.js の押した先）。
    * 要らない列を片付け、無い列を足し、DOM の順を留めた順にする。足した列は 1 回描き、会話を 1 回読む。show が false なら全部片付けて空にする
@@ -135,6 +145,8 @@
       draw(c);
       SA.store.load.turns(c.id);
     }
+    // 消えた列は見えている物から外す（帯が出ている間は呼ぶ側が続けて measure で数え直す）
+    if (keepSeen() && hooks && hooks.seen) hooks.seen();
   }
 
   function has(id) {
@@ -155,5 +167,49 @@
     return box ? [...box.children].map((n) => n.getAttribute("data-pin")).filter((id) => typeof id === "string" && cols.has(id)) : [];
   }
 
-  SA.pins = { sync, has, refresh, ids };
+  // ===== 見えている列（docs/plan/web-ui-pins.md §4.6） =====
+  /** 帯の送りの位置と見える幅（帯が無い・入口に stripSeen が無ければ null） */
+  function viewOf() {
+    const band = $("v3-deck");
+    if (!band || !SA.deck || typeof SA.deck.stripSeen !== "function") return null;
+    return { band, view: { left: band.scrollLeft, width: band.clientWidth } };
+  }
+
+  /** 列の帯の中の位置と幅（帯が offsetParent。shell.css の data-pins の間の .v3-deck は position: relative） */
+  const boxOf = (id, node) => ({ id, x: node.offsetLeft, w: node.offsetWidth });
+
+  /**
+   * 見えている列を数え直す: 帯が在り・ページが見えていて、列の左右の端が帯の見える範囲の内（1px の遊び）。判定は c-deck.js の stripSeen だけ。
+   * 結果が前と変わった時だけ、新しく見えた列を 1 回読んで描き直して既読を付け直し（SA.chat.markSeenShown）、shell.js の seen を呼ぶ。送りが止まった後に呼ぶ
+   */
+  function measure() {
+    const v = cols.size > 0 && document.visibilityState === "visible" ? viewOf() : null;
+    const next = v === null ? [] : SA.deck.stripSeen(v.view, ids().map((id) => boxOf(id, cols.get(id).section)));
+    if (next.length === seenIds.length && next.every((id, i) => id === seenIds[i])) return;
+    const fresh = next.filter((id) => !seenIds.includes(id));
+    seenIds = next;
+    for (const id of fresh) {
+      SA.store.load.turns(id);
+      draw(cols.get(id));
+    }
+    SA.chat.markSeenShown();
+    if (hooks && hooks.seen) hooks.seen();
+  }
+
+  /** 最後に数えた、見えている留めた列の channelId */
+  function seen() {
+    return seenIds.slice();
+  }
+
+  /** 番の列（#c-deck-root の最初の列）が端まで見えているか（P5 の上の帯の「あなたの番 n」が使う）。帯が出ていなければ true（帯で送って隠せない）、列が無ければ false */
+  function turnSeen() {
+    if (cols.size === 0) return true;
+    const root = $("c-deck-root");
+    const col = root ? root.querySelector("[data-col]") : null;
+    const v = viewOf();
+    if (!col || v === null) return false;
+    return SA.deck.stripSeen(v.view, [boxOf("turn", col)]).length === 1;
+  }
+
+  SA.pins = { sync, has, refresh, measure, seen, turnSeen, ids };
 })();
