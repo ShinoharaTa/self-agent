@@ -367,6 +367,8 @@
 
 /* 番の列が見えない間の「あなたの番 n」（#507）: 素のボタンの見た目を消し、字は帯の名前（.c-band-name）のまま。名前と数は横に並べ、名前は省き数は縮めない */
 .c-band-turn {
+  flex: 0 1 auto;
+  margin-right: auto;
   display: flex;
   align-items: center;
   gap: var(--space-2);
