@@ -11,6 +11,7 @@
 // スマホの流れの列の下のバー（D2）は #c-foot-root が在るときだけ SA.deck.drawBar(bar)・SA.deck.page(id)・SA.deck.focusBar(act)（指で送った列は bar.on.paged(id) で知らせる）
 // スマホの上の帯の題（今いる列の名前と数）は drawBand の state.page の列を最後に描けた列のモデルから引き、列を描き直して題が変われば帯も描き直す
 // 広い幅の右腕の丸（D6）は #c-orb-root が在るときだけ shell.js が SA.deck.drawOrb(state) で押し込み、焦点は SA.deck.focusOrb()
+// 留めた会話の列（#507）の見出しは SA.pin.drawHead(root, state)・SA.pin.clear(root)、帯の幅と端まで見えている列は SA.deck.stripFit・SA.deck.stripSeen（配線は P4）
 import { html, render } from "./c-lib.js";
 import { TopicList, listKey, listModel } from "./c-list.js";
 import { BottomBar, HandOrb, TopBar } from "./c-shell.js";
@@ -20,7 +21,7 @@ import { cardsMouth } from "./c-cards.js";
 import { termMouth } from "./c-term.js";
 import { HandHead } from "./c-hand.js";
 import { Confirm, Toast } from "./c-sheet.js";
-import { Deck, DeckBand, deckFit, deckModel, focusAfter, pressableKeys } from "./c-deck.js";
+import { Deck, DeckBand, deckFit, deckModel, focusAfter, pressableKeys, stripFit, stripSeen } from "./c-deck.js";
 
 const listRoot = document.getElementById("c-list-root");
 
@@ -162,33 +163,36 @@ if (listRoot) {
     return node.matches("button") ? node : node.querySelector("button");
   }
 
-  /** 見出しを描く。state は { view, title, status, note, place, views, hand, compact, menu, mode, close, backLabel, controls, on }。形（スマホか広い幅か）はここで、compact は state のまま */
+  /** 見出しの vnode（drawTop と、留めた列の見出しの SA.pin.drawHead で同じ形。pin は #507） */
+  function topBar(state, variant) {
+    return html`<${TopBar}
+      variant=${variant}
+      view=${state.view}
+      title=${state.title}
+      status=${state.status}
+      note=${state.note}
+      place=${state.place}
+      views=${state.views}
+      hand=${state.hand}
+      menu=${state.menu}
+      compact=${state.compact === true}
+      mode=${state.mode}
+      close=${state.close === true}
+      pin=${state.pin}
+      backLabel=${state.backLabel}
+      controls=${state.controls}
+      on=${state.on}
+    />`;
+  }
+
+  /** 見出しを描く。state は { view, title, status, note, place, views, hand, compact, menu, mode, close, pin, backLabel, controls, on }。形（スマホか広い幅か）はここで、compact は state のまま */
   function drawTop(state) {
     lastTop = state;
     if (!topRoot) return true;
     const before = document.activeElement;
     const inside = !!before && topRoot.contains(before);
     try {
-      render(
-        html`<${TopBar}
-          variant=${env.phone.matches ? "phone" : "wide"}
-          view=${state.view}
-          title=${state.title}
-          status=${state.status}
-          note=${state.note}
-          place=${state.place}
-          views=${state.views}
-          hand=${state.hand}
-          menu=${state.menu}
-          compact=${state.compact === true}
-          mode=${state.mode}
-          close=${state.close === true}
-          backLabel=${state.backLabel}
-          controls=${state.controls}
-          on=${state.on}
-        />`,
-        topRoot,
-      );
+      render(topBar(state, env.phone.matches ? "phone" : "wide"), topRoot);
     } catch (error) {
       // draw と同じく名前だけ
       console.error("[web] top draw failed", error instanceof Error ? error.name : "");
@@ -200,6 +204,27 @@ if (listRoot) {
       if (next) next.focus({ preventScroll: true });
     }
     return true;
+  }
+
+  /**
+   * 留めた会話の列（#507）の見出しを root に描く。state は drawTop と同じ形。形は広い幅に決め、lastTop・#c-top-root には触らない（焦点は持ち直さない）。
+   * root が無い・描けなければ false
+   */
+  function drawPinHead(root, state) {
+    if (!root) return false;
+    try {
+      render(topBar(state, "wide"), root);
+    } catch (error) {
+      // drawTop と同じく名前だけ
+      console.error("[web] pin head draw failed", error instanceof Error ? error.name : "");
+      return false;
+    }
+    return true;
+  }
+
+  /** 留めた会話の列の見出しを外す */
+  function clearPinHead(root) {
+    if (root) render(null, root);
   }
 
   /** 見出しのボタン（back・place・mode・menu・hand・close）にフォーカス。無い・押せなければ false */
@@ -383,6 +408,7 @@ if (listRoot) {
   window.SA.composer = { draw: drawComposer, set: setComposer, focus: focusComposer, drop: dropComposer };
   window.SA.cards = { draw: drawCards, focus: focusCards, drop: dropCards };
   window.SA.term = { draw: drawTerm, drop: dropTerm };
+  window.SA.pin = { drawHead: drawPinHead, clear: clearPinHead };
 }
 
 /** 流れの列と上の帯の入れ物。両方が無ければ口を置かない（shell.js は今の広い幅の形のまま） */
@@ -638,6 +664,8 @@ if (deckRoot && bandRoot) {
 
   window.SA = window.SA || {};
   window.SA.deck = { draw: drawDeck, drawBand, fit: deckFit, focusItem, focusBand, drawOrb, focusOrb };
+  // 帯の幅と端まで見えている列（#507。配線は shell.js の P4）
+  Object.assign(window.SA.deck, { stripFit, stripSeen });
   if (footRoot) {
     deckRoot.addEventListener("scroll", onScroll, { capture: true, passive: true });
     Object.assign(window.SA.deck, { drawBar, page, focusBar });

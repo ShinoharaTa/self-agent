@@ -125,9 +125,10 @@ const TOP_VIEWS = [
  * place は text が空でない文字列のときだけ場所として扱う。広い幅の帯のボタンは名前だけを見せ、「場所: 」付きは読み上げの名前（label）。
  * mode（プロジェクトのセッションの許可のモード）は、広い幅で compact でない会話の見出しで、value が default・acceptEdits・plan のときだけ帯のボタンにする
  * （スマホ・compact は帯にも補足の語にも出さない。「…」の板から）。
- * close（流れの列の席。D1）は true のときだけ帯の右端に［閉じる］を出す
+ * close（流れの列の席。D1）は true のときだけ帯の右端に［閉じる］を出す。
+ * pin（ピン留めのボタン。#507）は広い幅（compact も）の会話の見出しで物のときだけ { on, disabled, why }（why は押せないときの理由）。ほかは null
  */
-export function topModel({ variant, view, title, status, note, place, views, hand, menu, compact, mode, close }) {
+export function topModel({ variant, view, title, status, note, place, views, hand, menu, compact, mode, close, pin }) {
   if (view !== "talk" && view !== "other") return null;
   const v = variant === "wide" ? "wide" : "phone";
   const narrow = v === "wide" && compact === true;
@@ -173,15 +174,19 @@ export function topModel({ variant, view, title, status, note, place, views, han
     menu: talk && menu === true,
     hand: hd,
     close: close === true,
+    pin:
+      talk && v === "wide" && pin !== null && typeof pin === "object"
+        ? { on: pin.on === true, disabled: pin.disabled === true, why: pin.disabled === true && filled(pin.why) ? pin.why : null }
+        : null,
   };
 }
 
 /**
- * 会話の見出し（列 2 の上）。on: { back(), place(opener), mode(opener), view(value), menu(opener), hand(opener), close() }。直下の子は決まった key（増減しても残る子を作り直さない）。
+ * 会話の見出し（列 2 の上）。on: { back(), place(opener), mode(opener), view(value), menu(opener), hand(opener), pin(opener), close() }。直下の子は決まった key（増減しても残る子を作り直さない）。
  * backLabel は［‹］の名前（空でない文字列のときだけ。既定は「一覧へ」）
  */
-export function TopBar({ variant, view, title, status, note, place, views, hand, menu, compact, mode, close, backLabel, controls, on }) {
-  const m = topModel({ variant, view, title, status, note, place, views, hand, menu, compact, mode, close });
+export function TopBar({ variant, view, title, status, note, place, views, hand, menu, compact, mode, close, pin, backLabel, controls, on }) {
+  const m = topModel({ variant, view, title, status, note, place, views, hand, menu, compact, mode, close, pin });
   if (m === null) return null;
   const wide = m.variant === "wide";
   const statusEl = m.status ? html`<span class="c-top-status" key="status" data-tone=${m.status.tone}>${m.status.text}</span>` : null;
@@ -232,6 +237,10 @@ export function TopBar({ variant, view, title, status, note, place, views, hand,
           <span class="c-top-hand-label">右腕</span>
           ${m.hand.mark ? html`<span class="c-top-hand-mark" data-state=${m.hand.mark} aria-hidden="true"></span>` : null}
         </button>`
+      : null}
+    ${m.pin
+      ? html`<span class="c-top-act" key="pin" data-act="pin"><${IconButton} icon="pin" label=${m.pin.on ? "ピン留めを外す" : "ピン留めする"} pressed=${m.pin.on}
+          disabled=${m.pin.disabled} reason=${m.pin.why ?? undefined} onPress=${(event) => on.pin(event.currentTarget)} /></span>`
       : null}
     ${m.close ? html`<span class="c-top-act" key="close" data-act="close"><${IconButton} icon="x" label="閉じる" onPress=${() => on.close()} /></span>` : null}
   </header>`;

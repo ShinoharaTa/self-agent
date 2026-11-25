@@ -55,11 +55,12 @@ export function iconButtonLabel(label, badge) {
   return text === "" ? label : `${label}（${text} 件）`;
 }
 
-/** title は label（押せないときは reason があればそれ）。onPress は押した事象を受ける */
-export function IconButton({ icon, label, size = "md", badge = 0, badgeTone = "warning", disabled = false, reason, onPress }) {
+/** title は label（押せないときは reason があればそれ）。onPress は押した事象を受ける。pressed（切り替えのボタン。#507）は true・false のときだけ aria-pressed */
+export function IconButton({ icon, label, size = "md", badge = 0, badgeTone = "warning", disabled = false, reason, pressed, onPress }) {
   const sz = size === "sm" ? "sm" : "md";
   return html`<button class="c-iconbtn" type="button" data-size=${sz}
       aria-label=${iconButtonLabel(label, badge)} title=${disabled && reason ? reason : label} aria-disabled=${disabled ? "true" : undefined}
+      aria-pressed=${pressed === true ? "true" : pressed === false ? "false" : undefined}
       onClick=${(event) => {
         if (disabled) {
           event.preventDefault();

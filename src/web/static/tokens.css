@@ -196,6 +196,9 @@
   --c-deck-col-max: 420px;
   --c-deck-line: 3px;
   --c-deck-seat-in: 16px;
+  --c-deck-col-w: 300px;
+  --c-deck-conv-w: 420px;
+  --c-deck-lane: 80px;
   --c-orb: 56px;
   --c-deck-tail: var(--space-2);
 }
