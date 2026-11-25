@@ -6145,3 +6145,15 @@ test("web components: .c-col-top と .c-list-hand は余白だけ（position・b
   const gallery = read("c-gallery.js");
   for (const demo of ["deck-hand-turn", "deck-hand-unread", "deck-hand-running", "deck-hand-idle", "deck-hand-none", "list-hand", "list-hand-unread", "list-hand-none"]) assert.ok(gallery.includes(`"${demo}"`), demo);
 });
+
+test("web components: 右腕の行が番で あなたの番 の列の節が空なら、空の文を出さず .c-col-body[role=list] は空のまま。番でない・top が無い時は空の文が在る（#514）", () => {
+  const on = { open: () => undefined };
+  const colOf = (topics: Obj, o: Obj = {}): El => find(one(html`<${deck.Deck} model=${deck.deckModel(flowOf({ topics, ...o }))} on=${on} />`), "c-col")[0]!;
+  const turned = colOf(handTopics([handOf({ turn: { kind: "question", summary: "", since: "S" } })], { turnIds: ["ch:20"] }), { handRow: true });
+  const body = find(turned, "c-col-body")[0]!;
+  assert.deepEqual([body.props.role, body.children.length, find(turned, "c-empty").length], ["list", 0, 0]);
+  assert.equal(textOf(find(turned, "c-badge")), "1");
+  for (const [topics, o] of [[handTopics([handOf()]), { handRow: true }], [handTopics([]), { handRow: true }], [handTopics([handOf()]), {}]] as const) {
+    assert.equal(textOf(find(find(colOf(topics, o), "c-col-body")[0]!, "c-empty-text")), "今は待たせている事がありません", JSON.stringify(o));
+  }
+});

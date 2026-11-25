@@ -574,13 +574,14 @@ function countLabel(name, count) {
 
 /**
  * 1 本の列。見出し（名前と数）と、縦に送る本体（同じ要素を使い回すので縦の位置が残る）。節に more があれば項目の後ろに［ほか n 件］（on.more(列の id)。list の子なので listitem で包み、key は節の語（ほかの節が出入りしても作り直さない）。#505）。
- * col.top（右腕の行。#514）が在れば、見出しと本体の間に送られない .c-col-top を置き、中に Item を 1 つ
+ * col.top（右腕の行。#514）が在れば、見出しと本体の間に送られない .c-col-top を置き、中に Item を 1 つ。右腕の行が番で節が空なら空の文を出さない
  */
 export function Column({ col, on }) {
   const { counted, label } = countLabel(col.name, col.count);
   let body;
   if (col.phase === "loading") body = html`<${Loading} key="loading" />`;
-  else if (col.sections.length === 0) body = html`<${Empty} key="empty" text=${col.empty} />`;
+  // 右腕の行が番の時は、数と食い違うので空の文を出さない（本体は空のまま置く。#514）
+  else if (col.sections.length === 0) body = col.top && col.top.turn === true ? null : html`<${Empty} key="empty" text=${col.empty} />`;
   else
     body = col.sections.flatMap((s, i) => [
       s.label ? html`<p class="c-col-label" key=${"label:" + i}>${s.label}</p>` : null,
