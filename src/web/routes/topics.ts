@@ -7,6 +7,7 @@
 // POST /api/topics/moves/<id>/accept・/keep（M6g）は、その確認に Web から答える（Discord の [変える][このまま] と同じ accept・keep。proposals の配線があるときだけ）
 // POST /api/topics/ch:<id>/mode（H4b）はプロジェクトのセッションの許可のモードを変える（app/session-mode.ts の setSessionMode。mode の配線があるときだけ）
 // 既読（M7。docs/plan/web-ui-v3.md §3.3）: GET の応答に reads（{ [channelId]: lastReadId }）を足し、POST /api/topics/ch:<id>/read で進める（reads の配線があるときだけ。log は出さない）
+// ピン留め（#507）: GET の応答に pins（生きている留めた話題の channelId）と pinMax を足し、POST /api/topics/ch:<id>/pin で留める・外す（pins の配線があるときだけ。log は出さない）
 import { CC_CONFIRM_TTL_MS } from "../../app/commands/cc-confirm.ts";
 import { SESSION_LIST_LIMITS } from "../../app/commands/sessions.ts";
 import type { Handler } from "../../app/handler.ts";
@@ -51,6 +52,7 @@ import type { CcStartStore } from "../../store/cc-starts.ts";
 import type { GuildSettingsStore } from "../../store/guild-settings.ts";
 import { type HistoryStore, type LatestHistory, recordHistory } from "../../store/history.ts";
 import type { SdkSessionStore } from "../../store/sdk-sessions.ts";
+import { TOPIC_PIN_MAX, type TopicPinStore } from "../../store/topic-pins.ts";
 import type { TopicReadStore } from "../../store/topic-reads.ts";
 import type { TopicSessionStore } from "../../store/topic-sessions.ts";
 import type { Route, RouteResult } from "../server.ts";
@@ -104,6 +106,11 @@ export type TopicRouteDeps = {
    * lookup は Web で開ける会話かの判定（main の webChannelOf。/turns・/messages と同じ引き方）
    */
   reads?: { store: Pick<TopicReadStore, "all" | "get" | "advance">; lookup: ReturnType<typeof webChannelLookup> };
+  /**
+   * ピン留め（#507。topic_pins）。渡したときだけ GET /api/topics の pins・pinMax に値を入れ、POST /api/topics/ch:<id>/pin を足す。
+   * lookup は reads と同じ判定。完了・削除の時に行は消さない（完了した話題の行は残り、pins に出ないだけ）
+   */
+  pins?: { store: Pick<TopicPinStore, "all" | "has" | "add" | "remove">; lookup: ReturnType<typeof webChannelLookup> };
   now?: () => Date;
 };
 
@@ -495,11 +502,26 @@ function readsOfResult(result: TopicsResult, store: Pick<TopicReadStore, "all"> 
   return out;
 }
 
+/**
+ * 生きている留めた話題の channelId（all の順）。応答の話題（右腕は入らない）に ch:<channelId> が在り、完了でない物だけ。
+ * all は TopicPinStore.all の値
+ */
+export function pinsOfResult(result: TopicsResult, all: string[]): string[] {
+  const states = new Map(result.topics.map((topic) => [topic.id, topic.state]));
+  return all.filter((channelId) => {
+    const state = states.get(`ch:${channelId}`);
+    return state !== undefined && state !== "done";
+  });
+}
+
 export function topicRoutes(deps: TopicRouteDeps): Route[] {
-  const { cfg, guildSettings, places, move, mode, proposals, reads } = deps;
+  const { cfg, guildSettings, places, move, mode, proposals, reads, pins } = deps;
   const now = deps.now ?? (() => new Date());
   const collect = deps.collect ?? createTopicCollector(deps);
   const readsOf = (result: TopicsResult): Record<string, number> => readsOfResult(result, reads?.store);
+  /** GET /api/topics と POST /pin の 200 の pins・pinMax。pins の配線が無ければ [] と 0 */
+  const pinsOf = (result: TopicsResult): { pins: string[]; pinMax: number } =>
+    pins === undefined ? { pins: [], pinMax: 0 } : { pins: pinsOfResult(result, pins.store.all()), pinMax: TOPIC_PIN_MAX };
 
   const routes: Route[] = [
     {
@@ -509,7 +531,7 @@ export function topicRoutes(deps: TopicRouteDeps): Route[] {
         const done = query.get("done");
         if (done !== null && !TOPIC_GROUP_PATTERN.test(done)) return BAD_REQUEST;
         const result = buildTopics(collect(now().getTime(), done));
-        return { status: 200, json: { ...result, reads: readsOf(result) } };
+        return { status: 200, json: { ...result, reads: readsOf(result), ...pinsOf(result) } };
       },
     },
   ];
@@ -526,6 +548,35 @@ export function topicRoutes(deps: TopicRouteDeps): Route[] {
         const latest = deps.history.list(channelId, { limit: 1 })[0];
         if (latest === undefined) return { status: 200, json: { lastReadId: reads.store.get(channelId) } };
         return { status: 200, json: { lastReadId: reads.store.advance(channelId, Math.min(lastId, latest.id)) } };
+      },
+    });
+  }
+  if (pins !== undefined) {
+    routes.push({
+      method: "POST",
+      pattern: /^\/api\/topics\/ch:(\d{1,25})\/pin$/,
+      handle: async ({ params, body }) => {
+        const channelId = params[0] ?? "";
+        const on: unknown = body?.on;
+        if (typeof on !== "boolean") return BAD_REQUEST;
+        // 外すのは、留めていなくても・引けない話題でも成功
+        if (!on) {
+          pins.store.remove(channelId);
+          return { status: 200, json: pinsOf(buildTopics(collect(now().getTime(), null))) };
+        }
+        if (pins.lookup(channelId) === undefined) return NOT_FOUND;
+        const result = buildTopics(collect(now().getTime(), null));
+        const id = `ch:${channelId}`;
+        if (result.rightHands.some((hand) => hand.id === id)) return BAD_REQUEST;
+        const topic = result.topics.find((item) => item.id === id);
+        if (topic === undefined || topic.state === "done") return NOT_FOUND;
+        if (!pins.store.has(channelId)) {
+          if (pinsOfResult(result, pins.store.all()).length >= TOPIC_PIN_MAX) {
+            return { status: 409, json: { error: "pin_limit", max: TOPIC_PIN_MAX } };
+          }
+          pins.store.add(channelId);
+        }
+        return { status: 200, json: pinsOf(result) };
       },
     });
   }

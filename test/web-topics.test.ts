@@ -25,6 +25,7 @@ import { CcSendStore } from "../src/store/cc-sends.ts";
 import { CcStartStore } from "../src/store/cc-starts.ts";
 import { PlaceSettingStore } from "../src/store/place-settings.ts";
 import { TopicMoveStore } from "../src/store/topic-moves.ts";
+import { TOPIC_PIN_MAX, TopicPinStore } from "../src/store/topic-pins.ts";
 import { CLOSE_CONFIRM_NOTICE, webChannelLookup } from "../src/web/routes/channels.ts";
 import { TOPIC_START_DUPLICATE_MS, topicRoutes } from "../src/web/routes/topics.ts";
 import { createTopicCollector, type TopicRouteDeps } from "../src/web/routes/topics.ts";
@@ -98,6 +99,7 @@ function view(sessionId: string, cwd: string | undefined, overrides: Partial<CcS
  * fakeProposals を渡すと、本物の代わりにそれを渡す（proposals より優先）
  * queued を渡すと、そのチャンネルを順番待ちとする handler.queuedChannels を渡す（無ければ queuedChannels を渡さない）
  * reads を true にすると既読（topic_reads）を渡す。会話の判定は main と同じ webChannelLookup（cc のときだけ Claude Code のチャンネルも通す）
+ * pins を true にするとピン留め（topic_pins）を渡す。会話の判定は reads と同じ
  */
 async function setup(
   t: TestContext,
@@ -112,6 +114,7 @@ async function setup(
     proposals?: boolean;
     fakeProposals?: Pick<TopicProposals, "pendingAll" | "accept" | "keep" | "channelOf">;
     reads?: boolean;
+    pins?: boolean;
     mode?: boolean;
     queued?: string[];
   } = {},
@@ -286,19 +289,17 @@ async function setup(
   const waitLog = (match: (line: string) => boolean): Promise<void> =>
     logs.some(match) ? Promise.resolve() : new Promise((resolve) => logWaiters.push({ match, resolve }));
   const allowedGuildIds = options.allowed ?? [GUILD, GUILD_NOT_SET_UP];
-  const reads =
-    options.reads === true
-      ? {
-          store: stores.topicReads,
-          lookup: webChannelLookup({
-            cfg: { allowedGuildIds, personas: [MIKA], publicBaseUrl: undefined },
-            resolveChannel: createChannelResolver({ inboxChannelId: undefined, personas: [MIKA] }, guildSettings, topicSessions),
-            guildSettings,
-            topicSessions,
-            ...(options.cc === true ? { ccChannels: ccStore } : {}),
-          }),
-        }
-      : undefined;
+  const channelLookup = (): ReturnType<typeof webChannelLookup> =>
+    webChannelLookup({
+      cfg: { allowedGuildIds, personas: [MIKA], publicBaseUrl: undefined },
+      resolveChannel: createChannelResolver({ inboxChannelId: undefined, personas: [MIKA] }, guildSettings, topicSessions),
+      guildSettings,
+      topicSessions,
+      ...(options.cc === true ? { ccChannels: ccStore } : {}),
+    });
+  const reads = options.reads === true ? { store: stores.topicReads, lookup: channelLookup() } : undefined;
+  const topicPins = new TopicPinStore(db, () => NOW);
+  const pins = options.pins === true ? { store: topicPins, lookup: channelLookup() } : undefined;
   const routes = topicRoutes({
     cfg: { allowedGuildIds, personas: [MIKA], workspaceDir: workspace },
     guildSettings,
@@ -315,6 +316,7 @@ async function setup(
       ? { cc: { registry, channels: ccStore, permissions, sends, starts, holdSec: 300, questionHoldSec: 900 } }
       : {}),
     ...(reads === undefined ? {} : { reads }),
+    ...(pins === undefined ? {} : { pins }),
     // 許可のモードの配線（mode のときだけ）。変えた文の投稿は posts に入る
     ...(options.mode === true
       ? { mode: { deps: { topicSessions, runningTurns: () => handler.runningTurns(), turnQueue, moves, history, log }, post } }
@@ -358,6 +360,7 @@ async function setup(
     proposalClock,
     cardEdits,
     topicReads: stores.topicReads,
+    topicPins,
   };
 }
 
@@ -1394,7 +1397,7 @@ test("createTopicCollector: 同じ依存で集めて buildTopics した物が GE
   t.after(() => server.close());
   const fromRoute = await topics(server);
   const fromCollector = JSON.parse(
-    JSON.stringify({ ...buildTopics(createTopicCollector(deps)(NOW.getTime(), null)), reads: {} }),
+    JSON.stringify({ ...buildTopics(createTopicCollector(deps)(NOW.getTime(), null)), reads: {}, pins: [], pinMax: 0 }),
   ) as TopicsResult;
   assert.deepEqual(fromCollector, fromRoute);
   assert.ok(fromRoute.topics.length >= 4);
@@ -1777,4 +1780,110 @@ test("POST /mode: mode の配線が無ければルートが無い", async (t) =>
   assert.deepEqual(await postJson(s.server, "/api/topics/ch:201/mode", { mode: "plan" }), { status: 404, json: { error: "not_found" } });
   assert.deepEqual(s.posts, []);
   assert.deepEqual(s.topicSessions.projectDirOf("201"), { projectDir: "alpha", permissionMode: "default" });
+});
+
+// ---- ピン留め（#507 の P1） ----
+
+async function pinsOf(server: WebServer, path = "/api/topics"): Promise<{ pins: unknown; pinMax: unknown }> {
+  const { status, json } = await getJson(server, path);
+  assert.equal(status, 200);
+  return { pins: json.pins, pinMax: json.pinMax };
+}
+
+const pin = (s: Awaited<ReturnType<typeof setup>>, channelId: string, body: unknown) =>
+  postJson(s.server, `/api/topics/ch:${channelId}/pin`, body);
+
+test("web topics: pins を渡さないと GET の pins は [] で pinMax は 0、POST /api/topics/ch:<id>/pin は 404", async (t) => {
+  const s = await setup(t);
+  s.topicPins.add("200");
+  assert.deepEqual(await pinsOf(s.server), { pins: [], pinMax: 0 });
+  assert.deepEqual(await pin(s, "201", { on: true }), { status: 404, json: { error: "not_found" } });
+  assert.deepEqual(s.topicPins.all(), ["200"]);
+});
+
+test("GET /api/topics: pins は留めた順の生きている話題（ch: の無い ID）で pinMax は 4。完了・一覧に無い ID・/setup 前のサーバー・右腕は入らない", async (t) => {
+  const s = await setup(t, { pins: true });
+  for (const channelId of ["205", "202", "200", "999", "100", "400", "203"]) s.topicPins.add(channelId);
+  assert.equal(TOPIC_PIN_MAX, 4);
+  assert.deepEqual(await pinsOf(s.server), { pins: ["205", "200", "203"], pinMax: 4 });
+  // 完了・右腕などの行は消さない
+  assert.deepEqual(s.topicPins.all(), ["205", "202", "200", "999", "100", "400", "203"]);
+});
+
+test("GET /api/topics: done=<群> 付きでも完了の話題は pins に入らない", async (t) => {
+  const s = await setup(t, { pins: true });
+  s.topicPins.add("202");
+  s.topicPins.add("200");
+  const withDone = await topics(s.server, "/api/topics?done=general");
+  assert.equal(byId(withDone, "ch:202")?.state, "done");
+  assert.deepEqual(await pinsOf(s.server, "/api/topics?done=general"), { pins: ["200"], pinMax: 4 });
+});
+
+test("GET /api/topics: 上限を越えて生きている物が在っても切らずに全部返す", async (t) => {
+  const s = await setup(t, { pins: true });
+  for (const channelId of ["200", "201", "203", "204", "205"]) s.topicPins.add(channelId);
+  assert.deepEqual(await pinsOf(s.server), { pins: ["200", "201", "203", "204", "205"], pinMax: 4 });
+});
+
+test("POST /api/topics/ch:<id>/pin: on: true で留め、返事は書いた後の pins（留めた順）と pinMax。on: false で外す", async (t) => {
+  const s = await setup(t, { pins: true });
+  assert.deepEqual(await pin(s, "205", { on: true }), { status: 200, json: { pins: ["205"], pinMax: 4 } });
+  assert.deepEqual(await pin(s, "200", { on: true }), { status: 200, json: { pins: ["205", "200"], pinMax: 4 } });
+  assert.deepEqual(await pin(s, "205", { on: false }), { status: 200, json: { pins: ["200"], pinMax: 4 } });
+  assert.deepEqual(await pin(s, "205", { on: true }), { status: 200, json: { pins: ["200", "205"], pinMax: 4 } });
+  assert.deepEqual(await pinsOf(s.server), { pins: ["200", "205"], pinMax: 4 });
+});
+
+test("POST /api/topics/ch:<id>/pin: on が真偽値でない・本文なしは 400 で、何も変えない", async (t) => {
+  const s = await setup(t, { pins: true });
+  for (const body of [{}, { on: "true" }, { on: 1 }, { on: null }, undefined]) {
+    assert.deepEqual(await pin(s, "200", body), { status: 400, json: { error: "bad_request" } }, JSON.stringify(body));
+  }
+  // 知らない ID でも 400 を先に見る
+  assert.deepEqual(await pin(s, "999", { on: "x" }), { status: 400, json: { error: "bad_request" } });
+  assert.deepEqual(s.topicPins.all(), []);
+});
+
+test("POST /api/topics/ch:<id>/pin: 引けない（知らない ID・/setup 前のサーバー・削除済み）・一覧に無い（終わった Claude Code のチャンネル）・完了の話題は 404 で、留めない", async (t) => {
+  const s = await setup(t, { pins: true, cc: true });
+  s.topicSessions.create({ channelId: "206", guildId: GUILD, title: "消した話", categoryId: "c" });
+  s.topicSessions.markDeleted("206");
+  for (const channelId of ["999", "400", "206", "301", "202"]) {
+    assert.deepEqual(await pin(s, channelId, { on: true }), { status: 404, json: { error: "not_found" } }, channelId);
+  }
+  assert.deepEqual(await postJson(s.server, `/api/topics/cc:${S1}/pin`, { on: true }), { status: 404, json: { error: "not_found" } });
+  assert.deepEqual(s.topicPins.all(), []);
+});
+
+test("POST /api/topics/ch:<id>/pin: 右腕（#inbox）は 400 で、留めない", async (t) => {
+  const s = await setup(t, { pins: true });
+  assert.deepEqual(await pin(s, "100", { on: true }), { status: 400, json: { error: "bad_request" } });
+  assert.deepEqual(s.topicPins.all(), []);
+});
+
+test("POST /api/topics/ch:<id>/pin: 生きている留めた話題が 4 つなら 5 つ目は 409 pin_limit。完了した留めた話題は数に入らない", async (t) => {
+  const s = await setup(t, { pins: true });
+  // 完了した話題の行（数えない）
+  s.topicPins.add("202");
+  for (const channelId of ["200", "201", "203", "205"]) {
+    assert.equal((await pin(s, channelId, { on: true })).status, 200, channelId);
+  }
+  assert.deepEqual(await pin(s, "204", { on: true }), { status: 409, json: { error: "pin_limit", max: 4 } });
+  assert.deepEqual(s.topicPins.all(), ["202", "200", "201", "203", "205"]);
+  // もう留めてある物は上限でも 200 で、何も変えない
+  assert.deepEqual(await pin(s, "201", { on: true }), { status: 200, json: { pins: ["200", "201", "203", "205"], pinMax: 4 } });
+  // 1 つ外せば留められる
+  assert.equal((await pin(s, "200", { on: false })).status, 200);
+  assert.deepEqual(await pin(s, "204", { on: true }), { status: 200, json: { pins: ["201", "203", "205", "204"], pinMax: 4 } });
+});
+
+test("POST /api/topics/ch:<id>/pin: 冪等。同じ on: true を 2 回でも 1 つで順も変わらず、留めていない物・引けない物への on: false は 200", async (t) => {
+  const s = await setup(t, { pins: true });
+  await pin(s, "200", { on: true });
+  await pin(s, "201", { on: true });
+  assert.deepEqual(await pin(s, "200", { on: true }), { status: 200, json: { pins: ["200", "201"], pinMax: 4 } });
+  assert.deepEqual(s.topicPins.all(), ["200", "201"]);
+  assert.deepEqual(await pin(s, "203", { on: false }), { status: 200, json: { pins: ["200", "201"], pinMax: 4 } });
+  assert.deepEqual(await pin(s, "999", { on: false }), { status: 200, json: { pins: ["200", "201"], pinMax: 4 } });
+  assert.deepEqual(s.topicPins.all(), ["200", "201"]);
 });
