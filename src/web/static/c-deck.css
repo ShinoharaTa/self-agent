@@ -98,11 +98,11 @@
   font-size: var(--font-xs);
 }
 
-/* 節の後ろの［ほか n 件］（待機。#505）: 字は節の見出しと同じ、地も枠も無く幅いっぱい */
+/* 節の後ろの［ほか n 件］（待機。#505）: 字は節の見出しと同じ、地も枠も無く幅いっぱい。高さは当たりの --c-tap */
 .c-col-more {
   box-sizing: border-box;
   width: 100%;
-  min-height: var(--c-btn-sm-h);
+  min-height: var(--c-tap);
   padding: 0 var(--c-gutter);
   border: 0;
   background: transparent;

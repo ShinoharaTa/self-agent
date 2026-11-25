@@ -5071,6 +5071,75 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
   }
 
   /**
+   * 作り物のデータの印の無い・完了でない ch: の話題（#tasks（pinned）は除く）の題。activityAt の新しい順（#505）。
+   * 始めは「RSS」「CSV の書き出し」（IDLE_UNREAD）が未読で通知の列にあり、前の段で開くと既読になって待機に移る（作り物のサーバーは組をまたいで 1 つ）
+   */
+  const IDLE_ALL = ["吹き出しの確かめ", "引っ越しの段取り", "週末の買い物", "RSS", "記事の下書き", "ファームウェアの更新手順を README に書く。古い手順は消して、写真も撮り直す前提で", "カテゴリの色", "CSV の書き出し", "月ごとの集計がずれる"];
+  const IDLE_UNREAD = ["RSS", "CSV の書き出し"];
+  /** 待機の節に出す数（c-deck.js の IDLE_MAX） */
+  const IDLE_SHOWN = 8;
+
+  /**
+   * あなたの番の列の待機の節（#505。段 deck の a-deck を撮る前。絵に残る物は変えない）: 節の見出しが上から「動いている」「待機」・待機の項目の題が作り物のデータの既読の待機の話題と同じ並び・
+   * ［ほか n 件］は 8 件を越えたときだけ・同じ題が通知の列に無い。足りない物の文
+   */
+  async function idleListLines(page: Page): Promise<string[]> {
+    const lines: string[] = [];
+    const say = (text: string): void => void lines.push(`流れの列（待機）: ${text}`);
+    const seen = await page.evaluate(() => {
+      const turn = document.querySelector('#c-deck-root .c-col[data-col="turn"]');
+      const feed = document.querySelector('#c-deck-root .c-col[data-col="feed"]');
+      const texts = (root: Element | null, sel: string): string[] => (root === null ? [] : [...root.querySelectorAll(sel)].map((el) => (el.textContent ?? "").trim()));
+      return {
+        labels: texts(turn, ".c-col-label"),
+        idle: texts(turn, '.c-item[data-kind="idle"] .c-item-title'),
+        more: texts(turn, "button.c-col-more"),
+        feed: texts(feed, ".c-item .c-item-title"),
+      };
+    });
+    if (JSON.stringify(seen.labels) !== JSON.stringify(["動いている", "待機"])) say(`あなたの番の列の節の見出しが「${seen.labels.join("・")}」（動いている・待機 のはず）`);
+    // 既読の物（始めから既読の 7 つと、通知の列に無い IDLE_UNREAD）が新しい順に IDLE_SHOWN 件まで。残りは［ほか n 件］
+    const want = IDLE_ALL.filter((t) => !IDLE_UNREAD.includes(t) || !seen.feed.includes(t));
+    const shown = want.slice(0, IDLE_SHOWN);
+    if (JSON.stringify(seen.idle) !== JSON.stringify(shown)) say(`待機の項目の題が「${seen.idle.join("・")}」（${shown.join("・")} のはず）`);
+    const rest = want.length - shown.length;
+    const moreWant = rest > 0 ? [`ほか ${rest} 件`] : [];
+    if (JSON.stringify(seen.more) !== JSON.stringify(moreWant)) say(`［ほか n 件］が「${seen.more.join(",")}」（${rest > 0 ? moreWant[0] : "無い"} のはず）`);
+    const both = seen.idle.filter((t) => seen.feed.includes(t));
+    if (both.length > 0) say(`通知の列にも出ている題「${both.join("・")}」（1 つの話題は 1 か所のはず）`);
+    return lines;
+  }
+
+  /** 待機の項目を 1 つ押すと席（スマホはスレッド）の見出しの題がその話題（#505。段 deck の最後。スマホは列に戻り、下のバーであなたの番の列へ送ってから）。足りない物の文 */
+  async function idleOpenLines(page: Page, vp: Viewport): Promise<string[]> {
+    const lines: string[] = [];
+    const say = (text: string): void => void lines.push(`流れの列（待機を開く）: ${text}`);
+    if (vp === "phone") {
+      // スレッドを開いたまま（ライトのスマホ）なら列へ戻る
+      if ((await page.getAttribute("#v3", "data-view")) !== "list") {
+        await page.evaluate(() => history.back());
+        await page.waitForSelector('#v3[data-view="list"]', { timeout: 5000 });
+        await settled(page);
+      }
+      await page.click('#c-foot-root button[data-act="page"][data-page="turn"]');
+      await settled(page);
+    }
+    const idle = page.locator('#c-deck-root .c-col[data-col="turn"] .c-item[data-kind="idle"] button.c-item-main').first();
+    if ((await idle.count()) === 0) {
+      say("待機の項目が無い");
+      return lines;
+    }
+    const want = ((await idle.locator(".c-item-title").textContent()) ?? "").trim();
+    await idle.click();
+    await page.waitForSelector('#v3[data-view="body"] #ed textarea', { timeout: 5000 });
+    await page.waitForFunction((t: string) => (document.querySelector("#c-top-root .c-top-title")?.textContent ?? "").trim() === t, want, { timeout: 5000 }).catch(() => undefined);
+    await settled(page);
+    const now = await page.evaluate(() => (document.querySelector("#c-top-root .c-top-title")?.textContent ?? "").trim());
+    if (now !== want) say(`待機の「${want}」を押した後の見出しの題が「${now}」`);
+    return lines;
+  }
+
+  /**
    * 広い幅の列だけの画面の右腕の丸（D6。段 deck の続き。a-deck を撮った後で、絵に残る物は変えない）: 右端の見える列を一番下まで送ると最後の項目の下端が丸の上端より上
    * （送りは元に戻す）・知らせを 1 つ出すと丸の箱と重ならない（消して戻す）。足りない物の文
    */
@@ -5355,6 +5424,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           problems.push(...(await page.evaluate(accentProblems, { label: "列", areaMax: ACCENT_AREA_MAX, bigMax: ACCENT_BIG_MAX, min: 1 })));
           // スマホの帯の題は今の列（あなたの番）の名前と数で、帯のボタンに重ならない
           if (vp === "phone") problems.push(...bandTitleProblems(await page.evaluate(bandTitleState), `スマホの帯（${theme}）`).map((l) => `流れの列: ${l}`));
+          // あなたの番の列の待機の節（#505）
+          problems.push(...(await idleListLines(page)));
           await shot(page, `${p}-a-deck`);
           // 広い幅の右腕の丸（D6）: 列の最後の項目と知らせに重ならない
           if (vp !== "phone") problems.push(...(await orbListLines(page)));
@@ -5408,6 +5479,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           if (openerBox !== null) await page.mouse.move(openerBox.x + openerBox.width / 2, openerBox.y + openerBox.height / 2);
           await shot(page, `${p}-a-deck-seat`);
           if (vp === "phone" && theme === "dark") problems.push(...(await phoneDeck(page, p)));
+          // 待機の項目から開く（#505。絵を撮った後）
+          problems.push(...(await idleOpenLines(page, vp)));
           for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
           if (problems.length > 0) throw new Error(`流れの列の検査で ${problems.length} 件`);
         });
@@ -5429,16 +5502,19 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
               return { left: r.left, top: r.top, width: r.width, height: r.height, opacity: Number(getComputedStyle(main).opacity) };
             });
           const want = vp === "phone" ? 300 : 200;
-          // 押しても何も起きない所（あなたの番の列の左下。押せる物・項目の上でない）を押して離す
+          // 押しても何も起きない所（あなたの番の列の左下。押せる物・項目の上でない）を押して離す。
+          // 列が項目で埋まっている（待機の節。#505）ときは、同じ左の縦の線を下から上へ 1px ずつ見て、最初の項目でない所（項目の間・節の見出し）
           const pressBlank = async (): Promise<void> => {
             const at = await page.evaluate(() => {
               const col = document.querySelector<HTMLElement>('#c-deck-root .c-col[data-col="turn"]');
               if (col === null) return null;
               const r = col.getBoundingClientRect();
               const x = r.left + 8;
-              const y = r.bottom - 8;
-              const hit = document.elementFromPoint(x, y);
-              return hit === null || hit.closest("button, a, input, textarea, select, .c-item") !== null ? null : { x, y };
+              for (let y = r.bottom - 8; y > r.top; y--) {
+                const hit = document.elementFromPoint(x, y);
+                if (hit !== null && col.contains(hit) && hit.closest("button, a, input, textarea, select, .c-item") === null) return { x, y };
+              }
+              return null;
             });
             if (at === null) throw new Error("押しても何も起きない所が見つからない");
             await page.mouse.click(at.x, at.y);
@@ -6702,6 +6778,15 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         if (got !== kind || text !== count) out.push(`${demo}: 数が ${got}「${text}」（${kind}「${count}」のはず）`);
         if (name.getBoundingClientRect().right > ops.getBoundingClientRect().left + 0.5) out.push(`${demo}: 題が帯のボタンに重なる`);
         if (cut(b)) out.push(`${demo}: 帯が横にはみ出している`);
+      }
+      // deck-idle（待機が 10 件。#505）: あなたの番の列に［ほか 2 件］が 1 つ・待機の項目が 8 個
+      const idleCol = document.querySelector('[data-demo="deck-idle"] .c-col[data-col="turn"]');
+      if (idleCol === null) out.push("deck-idle: あなたの番の列が無い");
+      else {
+        const more = [...idleCol.querySelectorAll("button.c-col-more")].map((el) => (el.textContent ?? "").trim());
+        if (more.join(",") !== "ほか 2 件") out.push(`deck-idle: ［ほか n 件］が「${more.join(",")}」（「ほか 2 件」1 つのはず）`);
+        const idle = idleCol.querySelectorAll('.c-item[data-kind="idle"]').length;
+        if (idle !== 8) out.push(`deck-idle: 待機の項目が ${idle} 個（8 個のはず）`);
       }
       const box = document.querySelector('[data-demo="deck-paged"] .c-gallery-phone');
       const deck = box?.querySelector(".c-deck") ?? null;
