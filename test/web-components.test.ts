@@ -4320,11 +4320,12 @@ test("web components: termMouth の draw は根に札を 1 つ描き、同じ根
 // ===== 流れの列（c-deck.js。docs/plan/web-ui-deck.md の D1） =====
 type FlowItem = { key: string; kind: string; word: string; place: string; time: string; at: string | null; title: string; summary: string; mark: string; turn: boolean; target: string | null; href: string | null; ops: FlowOp[]; opsRow: boolean; current: boolean };
 type FlowOp = { id: string; label: string; name: string | null; kind?: string; disabled: boolean; busy: boolean; reason: string | null };
-type FlowColumn = { id: string; name: string; count: number | null; tone: string; phase: string; empty: string; sections: Array<{ label: string | null; items: FlowItem[] }> };
+type FlowColumn = { id: string; name: string; count: number | null; tone: string; phase: string; empty: string; sections: Array<{ label: string | null; items: FlowItem[]; more?: { count: number; label: string } | null }> };
 const deckUrl = new URL("../src/web/static/c-deck.js", import.meta.url).href;
 const deck = (await import(deckUrl)) as Record<string, Fn> & {
   DECK: Readonly<Record<string, number>>;
   FEED_MAX: number;
+  IDLE_MAX: number;
   ACT_REASON: Readonly<Record<string, string>>;
   focusAfter: (before: string[], after: string[], key: string) => string | null;
   pressableKeys: (entries: Array<{ key: string; pressable: boolean; kind?: string }>, kind?: string) => string[];
@@ -4332,6 +4333,7 @@ const deck = (await import(deckUrl)) as Record<string, Fn> & {
   itemWord: (kind: unknown, src: unknown, state: Obj) => string;
   turnItems: (state: Obj) => FlowItem[];
   runningItems: (state: Obj) => FlowItem[];
+  idleItems: (state: Obj) => FlowItem[];
   taskItems: (state: Obj) => FlowItem[];
   reminderItems: (state: Obj) => FlowItem[];
   feedItems: (state: Obj) => FlowItem[];
@@ -4550,6 +4552,131 @@ test("web components: deckModel の 3 つの列（名前・数・tone・phase・
   assert.deepEqual(rem.sections.map((s) => s.label), ["リマインド"]);
   // cols は 0〜3 に丸め、数でなければ 3
   assert.deepEqual([5, -1, 1.7, "x"].map((c) => deck.deckModel(flowOf({ cols: c })).cols), [3, 0, 1, 3]);
+});
+
+/** 待機の見本の話題（既読・印なし・ch:。h は時刻の時） */
+const idleTopic = (id: string, h: number, o: Obj = {}): Obj => ({ id, title: "題 " + id, group: "p:a", mark: null, turn: null, state: "active", activityAt: `2026-01-01T${String(h).padStart(2, "0")}:00:00Z`, last: null, ...o });
+
+test("web components: idleItems は既読・印なし・完了でない ch: の話題（入口でない）を新しい順に全部。未読・番・作業中・done・pinned・cc: は出さない。語は一覧の行の状態の語か「待機」（#505）", () => {
+  const topics = {
+    turnIds: ["ch:3"],
+    groups: [{ key: "p:a", name: "A" }],
+    topics: [
+      idleTopic("ch:1", 1),
+      idleTopic("ch:2", 5),
+      idleTopic("ch:3", 9, { mark: "turn", turn: { kind: "permission", since: "s" } }),
+      idleTopic("ch:4", 9, { mark: "running" }),
+      idleTopic("ch:5", 9, { state: "done" }),
+      idleTopic("ch:6", 9, { pinned: true }),
+      idleTopic("cc:7", 9),
+      idleTopic("ch:8", 9, { last: { id: 1 } }),
+      idleTopic("ch:9", 3, { state: "waiting" }),
+      idleTopic("ch:10", 4, { queued: true }),
+      idleTopic("ch:11", 2, { stopped: true, ended: "aborted" }),
+      idleTopic("ch:12", 0, { activityAt: null }),
+    ],
+    rightHands: [],
+  };
+  const asked: unknown[][] = [];
+  const state = flowOf({ topics, isUnread: (ch: string, last: unknown) => (asked.push([ch, last]), ch === "8") });
+  const items = deck.idleItems(state);
+  assert.deepEqual(items.map((i) => [i.key, i.kind, i.word, i.place, i.time, i.title, i.mark, i.turn, i.target, i.href]), [
+    ["idle:ch:2", "idle", "待機", "A", "t:2026-01-01T05:00:00Z", "題 ch:2", "none", false, "ch:2", null],
+    ["idle:ch:10", "idle", "順番待ち", "A", "t:2026-01-01T04:00:00Z", "題 ch:10", "none", false, "ch:10", null],
+    ["idle:ch:9", "idle", "待機", "A", "t:2026-01-01T03:00:00Z", "題 ch:9", "none", false, "ch:9", null],
+    ["idle:ch:11", "idle", "中断", "A", "t:2026-01-01T02:00:00Z", "題 ch:11", "none", false, "ch:11", null],
+    ["idle:ch:1", "idle", "待機", "A", "t:2026-01-01T01:00:00Z", "題 ch:1", "none", false, "ch:1", null],
+    ["idle:ch:12", "idle", "待機", "A", "", "題 ch:12", "none", false, "ch:12", null],
+  ]);
+  assert.ok(items.every((i) => i.ops.length === 0 && i.summary === ""));
+  // isUnread にはチャンネル ID と last を渡す
+  assert.ok(asked.some(([ch, last]) => ch === "8" && (last as { id: number }).id === 1));
+  // isUnread が関数でなければ未読でない扱い
+  for (const isUnread of [undefined, null, "x"]) assert.ok(deck.idleItems(flowOf({ topics, isUnread })).some((i) => i.key === "idle:ch:8"), String(isUnread));
+  // 開いている物は current
+  assert.deepEqual(deck.idleItems(flowOf({ topics, current: "ch:2" })).filter((i) => i.current).map((i) => i.target), ["ch:2"]);
+  assert.deepEqual(deck.idleItems(flowOf({ topics: null })), []);
+  // 語: 上限で停止・失敗・停止も一覧の行と同じ。元の物が無ければ「待機」
+  const st = flowOf();
+  assert.deepEqual(
+    [{ stopped: true, ended: "max_turns" }, { stopped: true, ended: "failed" }, { stopped: true, ended: "x" }, { queued: true, stopped: true }, {}].map((o) => deck.itemWord("idle", idleTopic("ch:1", 1, o), st)),
+    ["上限で停止", "失敗", "停止", "順番待ち", "待機"],
+  );
+  assert.equal(deck.itemWord("idle", undefined, st), "待機");
+});
+
+test("web components: deckModel のあなたの番の列は 番・動いている・待機 の節。待機は IDLE_MAX（8）件までで、残りは more（count・label「ほか n 件」）。列の数は番だけ（#505）", () => {
+  assert.equal(deck.IDLE_MAX, 8);
+  const turnCol = (topics: Obj[], turnIds: string[] = []) => deck.deckModel(flowOf({ topics: { turnIds, groups: [], topics, rightHands: [] } })).columns[0]!;
+  const many = (n: number) => Array.from({ length: n }, (_, i) => idleTopic("ch:" + (100 + i), i % 24));
+  const mixed = turnCol([idleTopic("ch:1", 1, { mark: "turn", turn: { kind: "permission", since: "s" } }), idleTopic("ch:2", 2, { mark: "running" }), ...many(9)], ["ch:1"]);
+  assert.deepEqual(mixed.sections.map((s) => [s.label, s.items.length, s.more ?? null]), [
+    [null, 1, null],
+    ["動いている", 1, null],
+    ["待機", 8, { count: 1, label: "ほか 1 件" }],
+  ]);
+  assert.equal(mixed.count, 1);
+  // 新しい順の先頭 8 件
+  assert.deepEqual(mixed.sections[2]!.items.map((i) => i.target), ["ch:108", "ch:107", "ch:106", "ch:105", "ch:104", "ch:103", "ch:102", "ch:101"]);
+  // ちょうど 8 件は more なし、20 件は ほか 12 件
+  assert.equal(turnCol(many(8)).sections[0]!.more, null);
+  assert.deepEqual(turnCol(many(20)).sections[0]!.more, { count: 12, label: "ほか 12 件" });
+  assert.equal(turnCol(many(20)).count, 0);
+  // 待機が 0 件なら節が無い
+  assert.deepEqual(turnCol([idleTopic("ch:2", 2, { mark: "running" })]).sections.map((s) => s.label), ["動いている"]);
+  // 待機だけでも節（見出し「待機」）。3 つとも空なら empty（節 0）
+  assert.deepEqual(turnCol(many(1)).sections.map((s) => s.label), ["待機"]);
+  const none = turnCol([idleTopic("ch:5", 1, { state: "done" })]);
+  assert.deepEqual([none.sections.length, none.empty], [0, "今は待たせている事がありません"]);
+  // 話題が読めていない間は節なし
+  assert.deepEqual(deck.deckModel(flowOf({ topics: null })).columns[0]!.sections, []);
+});
+
+test("web components: 1 つの話題は 1 か所: 同じ state で idleItems と feedItems（未読）・runningItems・turnItems の target が重ならない（#505）", () => {
+  const topics = {
+    turnIds: ["ch:1", "hand:1"],
+    groups: [],
+    topics: [
+      idleTopic("ch:1", 1, { mark: "turn", turn: { kind: "question", since: "s" } }),
+      idleTopic("ch:2", 2, { mark: "running" }),
+      idleTopic("ch:3", 3, { last: { id: 1 } }),
+      idleTopic("ch:4", 4),
+      idleTopic("ch:5", 5, { last: { id: 2 } }),
+      idleTopic("ch:6", 6),
+    ],
+    rightHands: [{ id: "hand:1", title: "右腕", turn: { kind: "question", since: "s" } }],
+  };
+  const state = flowOf({ topics, isUnread: (_ch: string, last: unknown) => last !== null });
+  const lists = [deck.idleItems(state), deck.feedItems(state), deck.runningItems(state), deck.turnItems(state)].map((l) => l.map((i) => i.target));
+  assert.deepEqual(lists, [["ch:6", "ch:4"], ["ch:5", "ch:3"], ["ch:2"], ["ch:1", "hand:1"]]);
+  const all = lists.flat();
+  assert.equal(new Set(all).size, all.length);
+});
+
+test("web components: Column は more の節で項目の後ろに［ほか n 件］（button.c-col-more）を出し、押すと on.more(列の id)。more が無い節は出さない・on.more が無くても投げない（#505）", () => {
+  const calls: unknown[] = [];
+  const on = { open: () => undefined, op: () => undefined, more: (id: unknown) => void calls.push(id) };
+  const topics = { turnIds: [], groups: [], topics: Array.from({ length: 10 }, (_, i) => idleTopic("ch:" + (1 + i), i)), rightHands: [] };
+  const model = deck.deckModel(flowOf({ topics }));
+  const root = one(html`<${deck.Deck} model=${model} on=${on} />`);
+  const turnBox = find(root, "c-col")[0]!;
+  const body = find(turnBox, "c-col-body")[0]!;
+  const more = find(turnBox, "c-col-more");
+  assert.equal(more.length, 1);
+  assert.deepEqual([more[0]!.type, more[0]!.props.type, textOf(more[0]!)], ["button", "button", "ほか 2 件"]);
+  // 節の見出し → 8 件 → ［ほか 2 件］の順
+  const kids = body.children.filter((c): c is El => typeof c !== "string");
+  assert.deepEqual(kids.map((c) => String(c.props.class)), ["c-col-label", ...Array(8).fill("c-item"), "c-col-more"]);
+  assert.deepEqual(find(turnBox, "c-col-label").map(textOf), ["待機"]);
+  (more[0]!.props.onClick as () => void)();
+  assert.deepEqual(calls, ["turn"]);
+  // ほかの列・more の無い節には出さない
+  assert.equal(find(root, "c-col-more").length, 1);
+  const eight = one(html`<${deck.Deck} model=${deck.deckModel(flowOf({ topics: { ...topics, topics: topics.topics.slice(0, 8) } }))} on=${on} />`);
+  assert.equal(find(eight, "c-col-more").length, 0);
+  // on.more が無くても投げない
+  const bare = one(html`<${deck.Deck} model=${model} on=${{ open: () => undefined, op: () => undefined }} />`);
+  assert.doesNotThrow(() => (find(bare, "c-col-more")[0]!.props.onClick as () => void)());
 });
 
 test("web components: Deck は 3 つの section.c-col を常に出し、項目の data-*・aria-current、席に開けない物は div、外へのリンクは新しいタブ。押すと on.open(item, key)", () => {

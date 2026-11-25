@@ -57,6 +57,10 @@
       if (plan.ask) SA.ui.confirm(Object.assign({}, plan.ask, { run: start }));
       else start();
     },
+    // 節の［ほか n 件］（あなたの番の列の待機。#505）→ 流れの列では「探す」の板
+    more: () => {
+      if (SA.app && typeof SA.app.palette === "function") SA.app.palette();
+    },
   };
 
   /** 繰り返しのリマインドか（c-deck.js の項目と同じ条件） */

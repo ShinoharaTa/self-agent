@@ -98,6 +98,26 @@
   font-size: var(--font-xs);
 }
 
+/* 節の後ろの［ほか n 件］（待機。#505）: 字は節の見出しと同じ、地も枠も無く幅いっぱい */
+.c-col-more {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: var(--c-btn-sm-h);
+  padding: 0 var(--c-gutter);
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--font-xs);
+  text-align: start;
+  cursor: pointer;
+}
+
+/* 輪は base.css の物。列の送りで切れないよう内側へ（項目と同じ） */
+.c-col-more:focus-visible {
+  outline-offset: calc(-1 * var(--ring-width));
+}
+
 /* ===== 1 つの項目（線は左の 1 本だけ。ふだんは面と同じ色、番は --warning、開いている項目は --accent） ===== */
 .c-item {
   box-sizing: border-box;
@@ -247,6 +267,10 @@
   .c-item:not([data-turn="true"]):not([data-current="true"]):has(> button.c-item-main:hover),
   .c-item:not([data-turn="true"]):not([data-current="true"]):has(> .c-item-link:hover) {
     border-left-color: var(--muted);
+  }
+
+  .c-col-more:hover {
+    background: var(--muted);
   }
 }
 
