@@ -171,6 +171,8 @@ function newShellNames(vp: Viewport, theme: Theme, full: boolean): string[] {
     ...(theme === "dark" && vp !== "tablet" ? ["a-deck-seat-0", "a-deck-seat-50", "a-deck-seat-100"] : []),
     // スマホの流れの列（D2。ダークだけ）: 下のバーでタスク・通知へ送った所と、歯車の板
     ...(vp === "phone" && theme === "dark" ? ["a-deck-tasks", "a-deck-feed", "a-deck-more"] : []),
+    // あなたの番の列の節「ピン留め」（#507 の P2。ダークのスマホだけ）: 動いている話題と待機の話題を「…」から留めた所
+    ...(vp === "phone" && theme === "dark" ? ["a-deck-pins"] : []),
     // 列の中の操作（D1 の PR-2。ダークの PC と、D2 からダークのスマホ）: タスクを［完了］にした直後
     ...(vp !== "tablet" && theme === "dark" ? ["a-deck-done"] : []),
     // 列のリマインドの［次を飛ばす］［止める］（#472 の PR-1。ダークの PC だけ）: ［止める］の確認が出た所
@@ -5483,6 +5485,105 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           problems.push(...(await idleOpenLines(page, vp)));
           for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
           if (problems.length > 0) throw new Error(`流れの列の検査で ${problems.length} 件`);
+        });
+      }
+      // あなたの番の列の節「ピン留め」（#507 の P2。ダークのスマホだけ）: 動いている話題（番の無い物）と待機の話題を、それぞれ開いて「…」→「ピン留めする」で留め、列へ戻る。
+      // 知らせ「ピン留めした」・節の見出しが上から「ピン留め」「動いている」「待機」（項目の残る物だけ）・節の項目が留めた 2 つで留めた順・同じ題が「動いている」「待機」に無い・
+      // 下のバーの あなたの番 の数が留める前と同じ・節の項目を押すと全面でその話題が開く。撮った後に 2 つとも「ピン留めを外す」で外し、元の節に戻った事を見る（後の段に留めた物を残さない）
+      if (vp === "phone" && theme === "dark") {
+        await step(`${p} pins`, [`${p}-a-deck-pins`], async () => {
+          const TURN = '#c-deck-root .c-col[data-col="turn"]';
+          const problems: string[] = [];
+          const say = (text: string): void => void problems.push(`節「ピン留め」: ${text}`);
+          const seen = (): Promise<{ labels: string[]; pin: string[]; running: string[]; idle: string[]; bar: string }> =>
+            page.evaluate((sel: string) => {
+              const col = document.querySelector(sel);
+              const texts = (q: string): string[] => (col === null ? [] : [...col.querySelectorAll(q)].map((el) => (el.textContent ?? "").trim()));
+              return {
+                labels: texts(".c-col-label"),
+                pin: texts('.c-item[data-kind="pin"] .c-item-title'),
+                running: texts('.c-item[data-kind="running"] .c-item-title'),
+                idle: texts('.c-item[data-kind="idle"] .c-item-title'),
+                bar: (document.querySelector('#c-foot-root button[data-page="turn"] .c-badge')?.textContent ?? "").trim(),
+              };
+            }, TURN);
+          /** 列の項目（kind の最初の 1 つか、題が title の物）を押して全面で開き、見出しの題を返す */
+          const openItem = async (kind: string, title?: string): Promise<string> => {
+            const items = page.locator(`${TURN} .c-item[data-kind="${kind}"]`);
+            const item = title === undefined ? items.first() : items.filter({ has: page.locator(".c-item-title", { hasText: title }) }).first();
+            if ((await item.count()) === 0) throw new Error(`あなたの番の列に ${kind} の項目${title === undefined ? "" : "「" + title + "」"}が無い`);
+            const want = ((await item.locator(".c-item-title").textContent()) ?? "").trim();
+            await item.locator("button.c-item-main").click();
+            await page.waitForSelector('#v3[data-view="body"] #ed textarea', { timeout: 5000 });
+            await page.waitForFunction((t: string) => (document.querySelector("#c-top-root .c-top-title")?.textContent ?? "").trim() === t, want, { timeout: 5000 }).catch(() => undefined);
+            await settled(page);
+            const now = await page.evaluate(() => (document.querySelector("#c-top-root .c-top-title")?.textContent ?? "").trim());
+            if (now !== want) say(`「${want}」を押した後の見出しの題が「${now}」`);
+            return want;
+          };
+          /** 開いている話題の「…」→ label を押し、知らせ notice を待って、知らせを閉じて列へ戻る */
+          const pinVia = async (label: string, notice: string): Promise<boolean> => {
+            await page.click(TOP_MENU);
+            await page.waitForSelector("#v3-sheet[open]", { timeout: 5000 });
+            const rows = await sheetRows(page);
+            if (!rows.includes(label)) {
+              say(`「…」の板に「${label}」が無い（${rows.join("・")}）`);
+              await escSheet(page);
+            } else {
+              await page.locator("#v3-sheet .more-row").filter({ hasText: label }).first().click();
+              const told = await page.waitForFunction(noticeHas, { role: "status" as const, text: notice }, { timeout: 5000 }).then(() => true, () => false);
+              if (!told) say(`「${label}」の後に知らせ「${notice}」が出ない（${await page.evaluate(noticeText, "status" as const)}）`);
+              // 知らせは × で閉じる（撮る絵に残さない。部品の DOM を外から外さない）
+              await page.evaluate(() => {
+                for (const b of document.querySelectorAll<HTMLButtonElement>('#c-notice-root .c-toast-list[role="status"] .c-toast-item button[aria-label="閉じる"]')) b.click();
+              });
+              await settled(page);
+            }
+            await page.evaluate(() => history.back());
+            await page.waitForSelector('#v3[data-view="list"]', { timeout: 5000 });
+            await settled(page);
+            return rows.includes(label);
+          };
+          await load(page, "/");
+          await page.waitForSelector(`${TURN} .c-item`, { timeout: 5000 });
+          await settled(page);
+          const before = await seen();
+          if (before.labels.includes("ピン留め") || before.pin.length > 0) throw new Error(`始めから節「ピン留め」が在る（${before.pin.join("・")}）`);
+          const pinned: string[] = [];
+          try {
+            for (const kind of ["running", "idle"] as const) {
+              const title = await openItem(kind);
+              if (await pinVia("ピン留めする", "ピン留めした")) pinned.push(title);
+            }
+            const after = await seen();
+            const want = ["ピン留め", ...(after.running.length > 0 ? ["動いている"] : []), ...(after.idle.length > 0 ? ["待機"] : [])];
+            if (JSON.stringify(after.labels) !== JSON.stringify(want)) say(`節の見出しが「${after.labels.join("・")}」（${want.join("・")} のはず）`);
+            if (JSON.stringify(after.pin) !== JSON.stringify(pinned)) say(`節「ピン留め」の項目の題が「${after.pin.join("・")}」（留めた順の ${pinned.join("・")} のはず）`);
+            const twice = pinned.filter((t) => after.running.includes(t) || after.idle.includes(t));
+            if (twice.length > 0) say(`留めた題「${twice.join("・")}」が「動いている」か「待機」にも出る（1 か所のはず）`);
+            if (after.bar !== before.bar) say(`下のバーの あなたの番 の数が「${after.bar}」（留める前の「${before.bar}」のはず）`);
+            await shot(page, `${p}-a-deck-pins`);
+            // 節の項目を押すと全面でその話題（openItem が題を確かめる）
+            if (pinned.length > 0) {
+              await openItem("pin", pinned[0]);
+              await page.evaluate(() => history.back());
+              await page.waitForSelector('#v3[data-view="list"]', { timeout: 5000 });
+              await settled(page);
+            }
+          } finally {
+            // 片付け: 2 つとも節の項目から開いて「ピン留めを外す」
+            for (const title of [...pinned]) {
+              await openItem("pin", title);
+              if (await pinVia("ピン留めを外す", "ピン留めを外した")) pinned.splice(pinned.indexOf(title), 1);
+            }
+          }
+          if (pinned.length > 0) throw new Error(`外せなかった話題が ${pinned.length} 個（後の段に残る）`);
+          const end = await seen();
+          if (end.labels.includes("ピン留め") || end.pin.length > 0) say(`外した後も節「ピン留め」が在る（${end.pin.join("・")}）`);
+          if (JSON.stringify(end.running) !== JSON.stringify(before.running) || JSON.stringify(end.idle) !== JSON.stringify(before.idle))
+            say(`外した後の「動いている」「待機」が「${end.running.join("・")}」「${end.idle.join("・")}」（留める前の「${before.running.join("・")}」「${before.idle.join("・")}」のはず）`);
+          for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
+          if (problems.length > 0) throw new Error(`節「ピン留め」の検査で ${problems.length} 件`);
         });
       }
       // 席が開くときの動き（D5 の PR-1。ダークのスマホと PC）: 読み込み（hash）で開いた席は動かず印（data-moves）が無い。最初の操作の後に項目を押すと、
