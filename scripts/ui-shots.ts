@@ -1991,7 +1991,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         const more = buttons[buttons.length - 1];
         if (more !== undefined) (more as unknown as { __k: number }).__k = 2;
       });
-      // 開いたボタンの無い戻り: 焦点の無いまま右腕のチャンネルを開き（SA.app.open は右腕を開く）、閉じたら下のバーの右腕のボタンへ
+      // 開いたボタンの無い戻り: 焦点の無いまま右腕のチャンネルを開く。#514 の R2 から右腕は枠でなく全画面の会話に開く（枠は閉じたまま）。
+      // 戻ると一覧で、焦点は一覧の右腕の行（focusCurrentRow。流れの列の無い落ち先だけが通る道で、今の撮る組では通らない）
       const opened = await page.evaluate(() => {
         const sa = (window as unknown as { SA: { topics: { data: () => { rightHands: Array<{ id: string }> } | null }; app: { open: (id: string) => void } } }).SA;
         const hand = sa.topics.data()?.rightHands[0];
@@ -2002,15 +2003,18 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       });
       if (!opened) lines.push("バー: 作り物のデータに右腕が無い（開いたボタンの無い戻り）");
       else {
-        await page.waitForSelector('#v3[data-hand="open"]', { timeout: 5000 });
+        await page.waitForSelector('#v3[data-view="body"] #ed textarea', { timeout: 5000 });
+        await settled(page);
+        if ((await page.getAttribute("#v3", "data-hand")) !== "closed") lines.push("バー: 開いたボタンの無い右腕で枠が開いた（席に開くはず）");
         await page.evaluate(() => history.back());
-        await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
+        await page.waitForSelector('#v3[data-view="list"]', { timeout: 5000 });
         await settled(page);
         const focused = await page.evaluate(() => {
           const a = document.activeElement;
-          return a !== null && a.matches('#c-bottom-root button[data-act="hand"]');
+          const hand = (window as unknown as { SA: { topics: { data: () => { rightHands: Array<{ id: string }> } | null } } }).SA.topics.data()?.rightHands[0]?.id ?? null;
+          return a !== null && hand !== null && a.matches("#c-list-root button[data-topic]") && a.getAttribute("data-topic") === hand;
         });
-        if (!focused) lines.push("バー: 開いたボタンの無い右腕を閉じた後の焦点が下のバーの右腕のボタンに無い");
+        if (!focused) lines.push("バー: 開いたボタンの無い右腕を閉じた後の焦点が一覧の右腕の行に無い");
       }
     }
     // 「ほか」の板: スマホは先頭にタスク・リマインド、広い幅は無い。閉じたら「ほか」へ
@@ -2299,7 +2303,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     }));
     if (narrow.foot !== 4 || JSON.stringify(narrow.band) !== JSON.stringify(["find", "start", "more"]) || narrow.current !== "turn") say(`390 に戻しても下のバー 4 つ・帯 3 つ・今の列 あなたの番 にならない（${narrow.foot}・${narrow.band.join("・")}・${String(narrow.current)}）`);
     for (const line of bandTitleProblems(await page.evaluate(bandTitleState), "390 に戻した後の帯")) say(line);
-    // 開いたボタンの無い戻り（7）: 焦点の無いまま右腕のチャンネルを開き、閉じたら下のバーの右腕のボタンへ
+    // 開いたボタンの無い戻り（7）: 焦点の無いまま右腕のチャンネルを開く。#514 の R2 から右腕は枠でなく全画面の会話（席）に開く（枠は閉じたまま・#v3-hand-ed は空）。
+    // 戻ると列で、焦点は開いた項目の無い時の決まりの先（上の帯の［探す］。ほかの話題を同じ道で開いて閉じた時と同じ）
     const opened = await page.evaluate(() => {
       const sa = (window as unknown as { SA: { topics: { data: () => { rightHands: Array<{ id: string }> } | null }; app: { open: (id: string) => void } } }).SA;
       const hand = sa.topics.data()?.rightHands[0];
@@ -2310,11 +2315,14 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     });
     if (!opened) say("作り物のデータに右腕が無い（開いたボタンの無い戻り）");
     else {
-      await page.waitForSelector('#v3[data-hand="open"]', { timeout: 5000 });
-      await page.evaluate(() => history.back());
-      await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
+      await page.waitForSelector('#v3[data-view="body"] #ed textarea', { timeout: 5000 });
       await settled(page);
-      if (!(await activeIs(page, BAR_HAND))) say("開いたボタンの無い右腕を閉じた後の焦点が下のバーの右腕のボタンに無い");
+      const seat = await page.evaluate(() => ({ hand: document.querySelector("#v3")?.getAttribute("data-hand") ?? null, frame: document.querySelector("#v3-hand-ed")?.children.length ?? -1 }));
+      if (seat.hand !== "closed" || seat.frame !== 0) say(`開いたボタンの無い右腕が枠 ${String(seat.hand)}・枠の中の子 ${seat.frame} 個（closed・0 のはず。席に開く）`);
+      await page.evaluate(() => history.back());
+      await page.waitForSelector('#v3[data-view="list"]', { timeout: 5000 });
+      await settled(page);
+      if (!(await activeIs(page, bandButton("find")))) say(`開いたボタンの無い右腕を閉じた後の焦点が上の帯の［探す］に無い（${await activeTag(page)}）`);
     }
     return lines;
   }
