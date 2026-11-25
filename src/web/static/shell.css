@@ -370,6 +370,11 @@
   scrollbar-width: thin;
 }
 
+/* 流れの 3 列（.c-deck[data-strip]）も会話の列も縮めない（帯が送る） */
+.v3[data-deck][data-pins="true"] .c-deck {
+  flex: none;
+}
+
 .v3[data-deck][data-pins="true"] .v3-pins {
   display: flex;
   flex: none;
