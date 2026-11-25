@@ -403,50 +403,8 @@
   display: inline-flex;
 }
 
-/* 右腕（開閉を読み上げるので自前のボタン。見た目は ghost の sm と同じ） */
-.c-band-hand {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-height: var(--c-tap);
-  padding: 0 var(--space-3);
-  border: 0;
-  border-radius: var(--radius-md);
-  background: transparent;
-  color: var(--text-secondary);
-  font: inherit;
-  font-size: var(--font-sm);
-  font-weight: var(--weight-medium);
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.c-band-hand-label {
-  min-width: 0;
-}
-
-.c-band-hand-mark {
-  flex: none;
-  width: var(--c-mark);
-  height: var(--c-mark);
-  border-radius: var(--radius-full);
-}
-
-.c-band-hand-mark[data-state="turn"] {
-  background: var(--warning);
-}
-
-.c-band-hand-mark[data-state="unread"] {
-  background: var(--accent);
-}
-
-.c-band-hand-mark[data-state="running"] {
-  border: var(--c-mark-ring) solid var(--accent);
-}
-
 @media (hover: hover) and (pointer: fine) {
-  .c-band-conn:hover,
-  .c-band-hand:hover {
+  .c-band-conn:hover {
     background: var(--muted);
   }
 }

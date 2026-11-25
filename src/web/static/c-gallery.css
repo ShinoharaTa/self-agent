@@ -82,7 +82,7 @@
   color: var(--text-secondary);
 }
 
-/* 一覧・下のバーの見本の入れ物（高さは決めない。一覧が全部見える。幅は見本だけの --c-gallery-pane-w で、右腕の枠の幅 --c-hand-w とは別） */
+/* 一覧・下のバーの見本の入れ物（高さは決めない。一覧が全部見える。幅は見本だけの --c-gallery-pane-w） */
 .c-gallery-pane {
   display: flex;
   flex-direction: column;
@@ -144,31 +144,12 @@
   max-width: 100%;
 }
 
-/* 右腕の見本の入れ物（右腕の列と同じ幅。地は右腕の枠と同じ --surface） */
-.c-gallery-hand {
-  display: flex;
-  flex-direction: column;
-  box-sizing: border-box;
-  width: var(--c-hand-w);
-  max-width: 100%;
-  border: var(--border-width) solid var(--border);
-  background: var(--surface);
-}
-
 /* 流れの列と上の帯の見本の入れ物（列の幅いっぱい。地は列の間の台と同じ地（--bg）） */
 .c-gallery-deck {
   box-sizing: border-box;
   width: 100%;
   border: var(--border-width) solid var(--border);
   background: var(--bg);
-}
-
-/* 右腕の丸の見本（D6）: 地は台（--bg）のまま、6 つを横に並べる（入りきらなければ折り返す） */
-.c-gallery-orbs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-  padding: var(--space-3);
 }
 
 /* 帯は 640px 以上でだけ出るので、スマホの幅でも縮めずに横に送る（幅は見出しの見本の一番きつい幅と同じ） */

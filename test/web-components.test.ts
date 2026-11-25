@@ -13,7 +13,7 @@ const JS_FILES = readdirSync(STATIC_DIR).filter((n) => /^c-.*\.js$/.test(n)).sor
 
 /** §7.2 の寸法のトークンの名前（tokens.css の末尾） */
 const C_TOKENS = [
-  "tap", "bar-h", "bottom-h", "row-h", "gutter", "list-w", "hand-w", "card-r", "btn-sm-h", "round-r",
+  "tap", "bar-h", "bottom-h", "row-h", "gutter", "list-w", "card-r", "btn-sm-h", "round-r",
   "icon", "icon-sm", "mark", "mark-ring", "badge-h", "badge-pad", "seg-h", "seg-pad", "toast-w", "spin", "font-body", "row-indent", "list-gap",
   "top-full-min", "top-place-min", "talk-max", "bubble-pad-y", "bubble-pad-x", "card-max", "check", "deck-band-h", "deck-col-max", "deck-line",
   "deck-seat-in", "orb", "gallery-pane-w",
@@ -33,11 +33,10 @@ const SELECTOR_HEAD: Record<string, RegExp> = {
   "c-atoms.css": /^\.c-(?:icon|btn|iconbtn|badge|mark|seg|field|input|empty|loading)(?![a-z])/,
   "c-sheet.css": /^\.c-(?:sheet|confirm|toast)(?![a-z])/,
   "c-list.css": /^\.c-(?:list|turns|turn|group|rows|row|fold)(?![a-z])/,
-  "c-shell.css": /^\.c-(?:bottom|top|orb)(?![a-z])/,
+  "c-shell.css": /^\.c-(?:bottom|top)(?![a-z])/,
   "c-talk.css": /^\.c-(?:talk|msg|bubble|md|steps|run|notice|divider|refs|ref)(?![a-z])/,
   "c-composer.css": /^\.c-composer(?![a-z])/,
   "c-cards.css": /^\.c-(?:cards|card|note|status)(?![a-z])/,
-  "c-hand.css": /^\.c-hand(?![a-z])/,
   "c-term.css": /^\.c-term(?![a-z])/,
   "c-deck.css": /^\.c-(?:deck|col|item|band)(?![a-z])/,
   "c-gallery.css": /^\.c-gallery(?![a-z])/,
@@ -183,8 +182,9 @@ const partProblems = (name: string, text: string): string[] => forbidden(name, t
 const entryProblems = (name: string, text: string): string[] => forbidden(name, text, ENTRY_WORDS, ENTRY_PARTS);
 
 test("web components: c-*.css・c-*.js がそろっている", () => {
-  for (const name of ["c-atoms.css", "c-sheet.css", "c-list.css", "c-shell.css", "c-talk.css", "c-composer.css", "c-cards.css", "c-hand.css", "c-term.css", "c-deck.css", "c-gallery.css"]) assert.ok(CSS_FILES.includes(name), name);
-  for (const name of ["c-atoms.js", "c-sheet.js", "c-list.js", "c-shell.js", "c-talk.js", "c-composer.js", "c-cards.js", "c-hand.js", "c-term.js", "c-deck.js", "c-gallery.js", "c-lib.js", "c-app.js"]) assert.ok(JS_FILES.includes(name), name);
+  for (const name of ["c-atoms.css", "c-sheet.css", "c-list.css", "c-shell.css", "c-talk.css", "c-composer.css", "c-cards.css", "c-term.css", "c-deck.css", "c-gallery.css"]) assert.ok(CSS_FILES.includes(name), name);
+  for (const name of ["c-hand.css", "c-hand.js"]) assert.ok(!CSS_FILES.includes(name) && !JS_FILES.includes(name), name);
+  for (const name of ["c-atoms.js", "c-sheet.js", "c-list.js", "c-shell.js", "c-talk.js", "c-composer.js", "c-cards.js", "c-term.js", "c-deck.js", "c-gallery.js", "c-lib.js", "c-app.js"]) assert.ok(JS_FILES.includes(name), name);
 });
 
 test("web components: c-*.css のセレクタ・at-rule・色・変数・単位・:hover の決まり", () => {
@@ -336,7 +336,7 @@ test("web components: 入口の TOP_FULL_MIN は tokens.css の --c-top-full-min
   assert.doesNotMatch(app, /v3-main/);
 });
 
-test("web components: import の先（c-atoms は c-lib だけ、c-sheet・c-list・c-shell は c-lib と c-atoms だけ、c-talk・c-composer・c-cards・c-hand・c-term は c-lib と c-atoms だけ、c-deck は c-lib・c-atoms・c-list だけ、c-app は c-lib・c-list・c-shell・c-talk・c-composer・c-cards・c-sheet・c-hand・c-term・c-deck だけ。c-atoms・c-list・c-shell・c-talk・c-composer・c-cards・c-hand・c-term・c-deck・c-app は hook なし）・動的な import と createPortal が無い", () => {
+test("web components: import の先（c-atoms は c-lib だけ、c-sheet・c-list・c-shell は c-lib と c-atoms だけ、c-talk・c-composer・c-cards・c-term は c-lib と c-atoms だけ、c-deck は c-lib・c-atoms・c-list だけ、c-app は c-lib・c-list・c-shell・c-talk・c-composer・c-cards・c-sheet・c-term・c-deck だけ。c-atoms・c-list・c-shell・c-talk・c-composer・c-cards・c-term・c-deck・c-app は hook なし）・動的な import と createPortal が無い", () => {
   const allowed: Record<string, string[]> = {
     "c-atoms.js": ["./c-lib.js"],
     "c-sheet.js": ["./c-lib.js", "./c-atoms.js"],
@@ -345,10 +345,9 @@ test("web components: import の先（c-atoms は c-lib だけ、c-sheet・c-lis
     "c-talk.js": ["./c-lib.js", "./c-atoms.js"],
     "c-composer.js": ["./c-lib.js", "./c-atoms.js"],
     "c-cards.js": ["./c-lib.js", "./c-atoms.js"],
-    "c-hand.js": ["./c-lib.js", "./c-atoms.js"],
     "c-term.js": ["./c-lib.js", "./c-atoms.js"],
     "c-deck.js": ["./c-lib.js", "./c-atoms.js", "./c-list.js"],
-    "c-app.js": ["./c-lib.js", "./c-list.js", "./c-shell.js", "./c-talk.js", "./c-composer.js", "./c-cards.js", "./c-sheet.js", "./c-hand.js", "./c-term.js", "./c-deck.js"],
+    "c-app.js": ["./c-lib.js", "./c-list.js", "./c-shell.js", "./c-talk.js", "./c-composer.js", "./c-cards.js", "./c-sheet.js", "./c-term.js", "./c-deck.js"],
   };
   for (const [name, targets] of Object.entries(allowed)) {
     if (!JS_FILES.includes(name)) continue;
@@ -356,13 +355,13 @@ test("web components: import の先（c-atoms は c-lib だけ、c-sheet・c-lis
     for (const target of from) assert.ok(targets.includes(target), `${name}: ${target}`);
     assert.equal(dynamic, false, `${name}: 動的な import`);
   }
-  for (const name of ["c-atoms.js", "c-list.js", "c-shell.js", "c-talk.js", "c-composer.js", "c-cards.js", "c-hand.js", "c-term.js", "c-deck.js", "c-app.js"]) if (JS_FILES.includes(name)) assert.doesNotMatch(read(name), /import\s*\{[^}]*\buse[A-Z]/, name);
+  for (const name of ["c-atoms.js", "c-list.js", "c-shell.js", "c-talk.js", "c-composer.js", "c-cards.js", "c-term.js", "c-deck.js", "c-app.js"]) assert.doesNotMatch(read(name), /import\s*\{[^}]*\buse[A-Z]/, name);
   for (const name of JS_FILES) assert.doesNotMatch(read(name), /createPortal/, name);
 });
 
-test("web components: 一覧と下のバー（c-list・c-shell）と会話（c-talk）と入力欄（c-composer）とカード（c-cards）と右腕（c-hand）と札（c-term）と流れの列（c-deck）は id を出さず、K2 の部品のクラスを書くのは決めた 3 つのセレクタだけ。一覧と下のバーと入力欄とカードと右腕と札と流れの列は動きを付けず、会話は実行中の輪だけ。下のバーと右腕と札は position の fixed・absolute を書かない", () => {
+test("web components: 一覧と下のバー（c-list・c-shell）と会話（c-talk）と入力欄（c-composer）とカード（c-cards）と札（c-term）と流れの列（c-deck）は id を出さず、K2 の部品のクラスを書くのは決めた 3 つのセレクタだけ。一覧と下のバーと入力欄とカードと札と流れの列は動きを付けず、会話は実行中の輪だけ。下のバーと札は position の fixed・absolute を書かない", () => {
   // 部品は id を出さない（モデルのキー id: や data-topic=${id} は当たらない）
-  for (const name of ["c-list.js", "c-shell.js", "c-talk.js", "c-composer.js", "c-cards.js", "c-hand.js", "c-term.js", "c-deck.js"]) if (JS_FILES.includes(name)) assert.doesNotMatch(stripJsComments(read(name)), /(?<![\w-])id=/, name);
+  for (const name of ["c-list.js", "c-shell.js", "c-talk.js", "c-composer.js", "c-cards.js", "c-term.js", "c-deck.js"]) assert.doesNotMatch(stripJsComments(read(name)), /(?<![\w-])id=/, name);
   // 部品の色・高さ・字を外から変えない（印の位置・PC の [+] の当たりを戻す・下のバーの並べ方だけ）
   const ALLOWED_OUTSIDE = new Set([".c-turn > .c-mark", '.c-group-head > .c-iconbtn[data-size="sm"]::after', '.c-bottom > .c-btn[data-size="sm"]']);
   // K2 の部品のクラス（c-atoms.css・c-sheet.css のセレクタに出る全部。その下のクラスも）は外から宛てない
@@ -378,8 +377,7 @@ test("web components: 一覧と下のバー（c-list・c-shell）と会話（c-t
     if (/(?:^|; ?)(?:animation|transition)(?:-[a-z-]+)?\s*:/.test(rule.body)) assert.deepEqual(rule.selectors, [".c-run-spin"], `c-talk.css: ${rule.selectors.join(",")}`);
   }
   assert.equal((stripCssComments(read("c-talk.css")).match(/@keyframes\b/g) ?? []).length, 1, "c-talk.css: @keyframes は 1 つ");
-  for (const name of ["c-list.css", "c-shell.css", "c-composer.css", "c-cards.css", "c-hand.css", "c-term.css", "c-deck.css"]) {
-    if (!CSS_FILES.includes(name)) continue;
+  for (const name of ["c-list.css", "c-shell.css", "c-composer.css", "c-cards.css", "c-term.css", "c-deck.css"]) {
     const rules = parseCss(read(name));
     for (const rule of rules) {
       for (const selector of rule.selectors) if (classesInSelector(selector).some((cls) => atomClasses.has(cls))) assert.ok(ALLOWED_OUTSIDE.has(selector), `${name}: ${selector}`);
@@ -394,18 +392,13 @@ test("web components: 一覧と下のバー（c-list・c-shell）と会話（c-t
     assert.match(shell, /env\(safe-area-inset-bottom/);
     assert.doesNotMatch(shell, /position:\s*(?:fixed|absolute)/);
   }
-  if (CSS_FILES.includes("c-hand.css")) assert.doesNotMatch(stripCssComments(read("c-hand.css")), /position:\s*(?:fixed|absolute)/, "c-hand.css");
   if (CSS_FILES.includes("c-term.css")) assert.doesNotMatch(stripCssComments(read("c-term.css")), /position:\s*(?:fixed|absolute)/, "c-term.css");
 });
 
-test("web components: shell.css の動きは流れの列の席が開くとき（D5 の PR-1）と新しく留めた会話の列が出るとき（#507 の P5）と右腕の枠と幕が出るとき（D6 の PR-4）だけ。transition と @starting-style を書くのは決めた 6 つと 5 つの規則で、どれも [data-moves=\"on\"] 付き。対象は opacity と transform（幕は opacity だけ）、長さは --dur-short（スマホの全面は --dur-long）、曲線は --ease-out、ずれは --c-deck-seat-in（席・会話の列・広い幅の枠は X、スマホの枠は Y）。all・will-change・animation・@keyframes は無い", () => {
+test("web components: shell.css の動きは流れの列の席が開くとき（D5 の PR-1）と新しく留めた会話の列が出るとき（#507 の P5）だけ（右腕の枠と幕の動きは #514 の R3b で枠ごと消した）。transition と @starting-style を書くのは決めた 3 つと 2 つの規則で、どれも [data-moves=\"on\"] 付き。対象は opacity と transform、長さは --dur-short（スマホの全面は --dur-long）、曲線は --ease-out、ずれは --c-deck-seat-in（X）。all・will-change・animation・@keyframes は無い", () => {
   const SEAT = '.v3[data-deck][data-moves="on"][data-view="body"] .v3-main';
   const FULL = '.v3[data-deck][data-moves="on"][data-seat="full"][data-view="body"] .v3-main';
   const PIN = '.v3[data-deck][data-moves="on"] .v3-pin[data-new]';
-  const HAND = '.v3[data-deck][data-moves="on"][data-hand="open"] .v3-hand';
-  const BACK = '.v3[data-deck][data-moves="on"][data-hand="open"] .v3-hand-backdrop';
-  const HAND_FULL = '.v3[data-deck][data-moves="on"][data-seat="full"][data-hand="open"] .v3-hand';
-  const BACK_FULL = '.v3[data-deck][data-moves="on"][data-seat="full"][data-hand="open"] .v3-hand-backdrop';
   const rules = parseCss(read("shell.css"));
   const MOVE = /(?:^|; ?)(?:transition|animation)(?:-[a-z-]+)?\s*:/;
   // 動きの宣言を持つ規則と、@starting-style の中の規則（0 個なら落ちる）
@@ -415,30 +408,24 @@ test("web components: shell.css の動きは流れの列の席が開くとき（
     { at: [], selectors: [SEAT], body: "transition-property: opacity, transform; transition-duration: var(--dur-short); transition-timing-function: var(--ease-out);" },
     { at: [], selectors: [FULL], body: "transition-duration: var(--dur-long);" },
     { at: [], selectors: [PIN], body: "transition-property: opacity, transform; transition-duration: var(--dur-short); transition-timing-function: var(--ease-out);" },
-    { at: [], selectors: [HAND], body: "transition-property: opacity, transform; transition-duration: var(--dur-short); transition-timing-function: var(--ease-out);" },
-    { at: [], selectors: [BACK], body: "transition-property: opacity; transition-duration: var(--dur-short); transition-timing-function: var(--ease-out);" },
-    { at: [], selectors: [HAND_FULL, BACK_FULL], body: "transition-duration: var(--dur-long);" },
   ]);
   assert.deepEqual(starting, [
     { at: ["@starting-style"], selectors: [SEAT], body: "opacity: 0; transform: translateX(var(--c-deck-seat-in));" },
     { at: ["@starting-style"], selectors: [PIN], body: "opacity: 0; transform: translateX(var(--c-deck-seat-in));" },
-    { at: ["@starting-style"], selectors: [HAND], body: "opacity: 0; transform: translateX(var(--c-deck-seat-in));" },
-    { at: ["@starting-style"], selectors: [BACK], body: "opacity: 0;" },
-    { at: ["@starting-style"], selectors: [HAND_FULL], body: "transform: translateY(var(--c-deck-seat-in));" },
   ]);
   for (const r of [...moving, ...starting]) {
-    for (const s of r.selectors) assert.ok(s.startsWith(".v3[data-deck]") && s.includes('[data-moves="on"]') && [" .v3-main", " .v3-pin[data-new]", " .v3-hand", " .v3-hand-backdrop"].some((tail) => s.endsWith(tail)), s);
+    for (const s of r.selectors) assert.ok(s.startsWith(".v3[data-deck]") && s.includes('[data-moves="on"]') && [" .v3-main", " .v3-pin[data-new]"].some((tail) => s.endsWith(tail)), s);
   }
   const src = stripCssComments(read("shell.css"));
   assert.doesNotMatch(src, /@keyframes|will-change|(?:^|[\s;{])animation(?:-[a-z-]+)?\s*:|transition(?:-property)?\s*:[^;]*\ball\b/);
-  // 動く値は opacity と transform だけ（@starting-style の中の決めた 5 つの規則のほかに opacity・transform を書かない）
-  const ALLOWED = [[SEAT], [PIN], [HAND], [BACK], [HAND_FULL]].map((selectors) => JSON.stringify([["@starting-style"], selectors]));
+  // 動く値は opacity と transform だけ（@starting-style の中の決めた 2 つの規則のほかに opacity・transform を書かない）
+  const ALLOWED = [[SEAT], [PIN]].map((selectors) => JSON.stringify([["@starting-style"], selectors]));
   for (const r of rules) {
     if (r.body.split(";").some((d) => /^\s*(?:opacity|transform)\s*:/.test(d))) assert.ok(ALLOWED.includes(JSON.stringify([r.at, r.selectors])), `${r.at.join(" ")} ${r.selectors.join(",")}`);
   }
   // ずれのトークンは tokens.css に在り、shell.css だけが使う
   assert.match(read("tokens.css"), /--c-deck-seat-in: 16px;/);
-  assert.equal((src.match(/var\(--c-deck-seat-in\)/g) ?? []).length, 4);
+  assert.equal((src.match(/var\(--c-deck-seat-in\)/g) ?? []).length, 2);
   // 新しい列が出る間だけ列の入れ物を横に切る（transform のはみ出しで帯の送れる幅が伸びて帯が送られないように。#507 の P5）。切るのはこの 1 つの規則だけ
   const CLIP = '.v3[data-deck][data-moves="on"] .v3-pins:has(> .v3-pin[data-new])';
   const clips = rules.filter((r) => /(?:^|; ?)overflow(?:-x)?\s*:\s*clip/.test(r.body)).map((r) => ({ at: r.at, selectors: r.selectors, body: r.body }));
@@ -1540,21 +1527,17 @@ test("web components: Group・TopicRow・Fold の属性と押したとき（[+] 
 // ===== 下のバー（c-shell.js。docs/plan/web-ui-components.md §6 の K3） =====
 const shellUrl = new URL("../src/web/static/c-shell.js", import.meta.url).href;
 const shell = (await import(shellUrl)) as Record<string, Fn> & {
-  handLabel: (mark: unknown) => string;
   listLabel: (turns: unknown) => string;
   bottomModel: (o: Obj) => { variant: string; items: Obj[] };
   topModel: (o: Obj) => Obj | null;
 };
 
-test("web components: handLabel・listLabel（0 件は数を言わない・99+）", () => {
-  assert.equal(shell.handLabel(null), "右腕に頼む・訊く");
-  assert.equal(shell.handLabel("turn"), "右腕に頼む・訊く（あなたの番）");
-  assert.equal(shell.handLabel("unread"), "右腕に頼む・訊く（未読）");
-  assert.equal(shell.handLabel("running"), "右腕に頼む・訊く（作業中）");
-  assert.equal(shell.handLabel("x"), "右腕に頼む・訊く");
+test("web components: listLabel（0 件は数を言わない・99+）。右腕の名前の handLabel と丸 HandOrb は c-shell.js に無い（#514 の R3b）", () => {
   assert.equal(shell.listLabel(0), "一覧");
   assert.equal(shell.listLabel(2), "一覧（あなたの番 2 件）");
   assert.equal(shell.listLabel(120), "一覧（あなたの番 99+ 件）");
+  assert.equal("handLabel" in shell, false);
+  assert.equal("HandOrb" in shell, false);
 });
 
 test("web components: bottomModel は phone で 一覧・ほか、wide で tabs の順と「ほか」。知らない値を丸める", () => {
@@ -1964,56 +1947,6 @@ test("web components: TopBar は view が none・知らない値で null。c-she
 
 // ===== 右腕の丸（HandOrb。c-shell.js。#463 の D6） =====
 
-test("web components: HandOrb は button.c-orb（data-act=hand・data-tone は accent か quiet）で、中は bot のアイコン 1 つと印だけ（字・id なし）。名前は handLabel、aria-controls・aria-expanded、押すと on.hand にそのボタン", () => {
-  const calls: unknown[][] = [];
-  const on = { hand: (opener: unknown) => void calls.push(["hand", opener]) };
-  const ids = (t: Tree): string[] => (typeof t === "string" ? [] : [...(t.props.id === undefined ? [] : [String(t.props.id)]), ...t.children.flatMap(ids)]);
-  for (const [tone, face] of [["accent", "accent"], ["quiet", "quiet"], ["x", "quiet"], [undefined, "quiet"], [null, "quiet"]] as const) {
-    for (const mark of ["turn", "unread", null, undefined, "running", "x"]) {
-      const orb = one(html`<${shell.HandOrb} mark=${mark} tone=${tone} open=${false} controls="v3-hand" on=${on} />`);
-      const what = `${String(tone)} ${String(mark)}`;
-      assert.equal(orb.type, "button", what);
-      assert.equal(orb.props.class, "c-orb", what);
-      assert.deepEqual([orb.props.type, orb.props["data-act"], orb.props["data-tone"]], ["button", "hand", face], what);
-      const state = mark === "turn" || mark === "unread" || mark === "running" ? mark : null;
-      const label = shell.handLabel(state);
-      assert.deepEqual([orb.props["aria-label"], orb.props.title], [label, label], what);
-      if (mark === "running") assert.equal(label, "右腕に頼む・訊く（作業中）", what);
-      assert.deepEqual([orb.props["aria-controls"], orb.props["aria-expanded"]], ["v3-hand", "false"], what);
-      const icons = find(orb, "c-icon");
-      assert.equal(icons.length, 1, what);
-      assert.match(String(((icons[0] as El).children[0] as El).props.href), /#bot$/, what);
-      assert.equal(textOf(orb), "", what);
-      assert.deepEqual(ids(orb), [], what);
-      // 印: 静かな顔は K2 の Mark、accent の顔は自前の点。どちらも置き場所（.c-orb-mark）の中に 1 つ。無い・知らない値は 0
-      const marks = find(orb, "c-mark");
-      const dots = find(orb, "c-orb-dot");
-      const places = find(orb, "c-orb-mark");
-      if (state !== null) {
-        assert.equal(places.length, 1, what);
-        const placed = face === "accent" ? dots : marks;
-        assert.deepEqual([marks.length, dots.length], face === "accent" ? [0, 1] : [1, 0], what);
-        assert.deepEqual([placed[0]?.props["data-state"], placed[0]?.props["aria-hidden"]], [mark, "true"], what);
-        assert.equal(find(places[0] as El, face === "accent" ? "c-orb-dot" : "c-mark").length, 1, what);
-      } else {
-        assert.deepEqual([places.length, marks.length, dots.length], [0, 0, 0], what);
-      }
-    }
-  }
-  // open が真なら aria-expanded は true。controls が空・無しなら aria-controls を出さない
-  const opened = one(html`<${shell.HandOrb} mark=${null} tone="accent" open=${true} controls="v3-hand" on=${on} />`);
-  assert.equal(opened.props["aria-expanded"], "true");
-  for (const controls of ["", undefined, null]) {
-    const bare = one(html`<${shell.HandOrb} mark=${null} tone="accent" open=${false} controls=${controls} on=${on} />`);
-    assert.equal(bare.props["aria-controls"], undefined, String(controls));
-  }
-  // 押すと押したボタンを渡す
-  const target = { scrollIntoView: () => undefined };
-  (opened.props.onClick as (e: unknown) => void)({ currentTarget: target });
-  assert.deepEqual(calls, [["hand", target]]);
-  assert.match(stripJsComments(read("c-shell.js")), /export function HandOrb\(/);
-});
-
 // ===== 会話の行（c-talk.js。docs/plan/web-ui-components.md §6 の K4） =====
 const talkUrl = new URL("../src/web/static/c-talk.js", import.meta.url).href;
 const talk = (await import(talkUrl)) as Record<string, Fn> & {
@@ -2380,12 +2313,12 @@ test("web components: talkModel: fmt.noticeRefs の札は知らせ（notice）�
   }
 });
 
-test("web components: 右腕の枠（shell.js の HAND_FRAME）だけが noticeText に handNoticeText を持ち、chat.js の部品の道が fmt.notice に渡す。.c-notice は改行をそのまま出す（#457 の L2）", () => {
+test("web components: 右腕の会話の指定（shell.js の HAND_TALK）だけが noticeText に handNoticeText を持ち、chat.js の部品の道が fmt.notice に渡す。.c-notice は改行をそのまま出す（#457 の L2）", () => {
   const shell = stripJsComments(read("shell.js"));
-  const hand = /const HAND_FRAME = \{[^\n]*\};/.exec(shell)?.[0];
-  assert.ok(hand, "shell.js から HAND_FRAME の 1 行を抜き出せない（書き方が変わった）");
-  assert.ok(hand.includes("noticeText: handNoticeText"));
-  // 話題の会話の枠には足さない（noticeText は HAND_FRAME の 1 か所だけ）
+  const hand = /const HAND_TALK = \{\n[^}]*\n {2}\};/.exec(shell)?.[0];
+  assert.ok(hand, "shell.js から HAND_TALK の塊を抜き出せない（書き方が変わった）");
+  assert.ok(hand.includes("noticeText: handNoticeText,"));
+  // 話題の会話の枠には足さない（noticeText は HAND_TALK の 1 か所だけ）
   assert.equal((shell.match(/noticeText/g) ?? []).length, 1);
   assert.match(read("chat.js"), /notice: frame && frame\.noticeText \? frame\.noticeText : null,/);
   const rule = parseCss(read("c-talk.css")).find((r) => r.at.length === 0 && r.selectors.length === 1 && r.selectors[0] === ".c-notice");
@@ -2445,7 +2378,7 @@ test("web components: talkModel: fmt.reply は Bot の返事の本文だけを�
   assert.deepEqual(talk.refsOf([{ id: "a", title: "A" }, { id: "a", title: "A2" }, { id: "b", title: "B" }]), [{ id: "a", title: "A", meta: "" }, { id: "b", title: "B", meta: "" }]);
 });
 
-test("web components: Refs と HandHead は Node で呼べる: 札は role も名前も持たず（題を 2 回読ませない）・meta が空なら span を作らない・［開く］の名前は「<題> を開く」で onOpen(id)（TalkRows の札の行は on.ref(id)。無ければ何もしない）。見出しは h2 と data-act（menu は menu のときだけ。seat のときだけ題と「…」の間にアイコンだけの［広げる］で on.seat(押した要素)）・［畳む］の名前は「<題>を畳む」で on.close()", async () => {
+test("web components: Refs は Node で呼べる: 札は role も名前も持たず（題を 2 回読ませない）・meta が空なら span を作らない・［開く］の名前は「<題> を開く」で onOpen(id)（TalkRows の札の行は on.ref(id)。無ければ何もしない。右腕の枠の見出し HandHead は #514 の R3b で消した）", () => {
   // press は後ろ（カードの節）で宣言されるので、ここでは自前で押す
   const tap = (b: El | undefined): void => (b?.props.onClick as (e: unknown) => void)(fakeEvent());
   const opened: unknown[] = [];
@@ -2469,57 +2402,6 @@ test("web components: Refs と HandHead は Node で呼べる: 札は role も�
   tap(find(expand(talk.TalkRows({ older: false, items, on: { ref: (id: unknown) => got.push(id) } })), "c-btn")[0]);
   assert.deepEqual(got, ["t9"]);
   tap(find(expand(talk.TalkRows({ older: false, items, on: {} })), "c-btn")[0]);
-  // 右腕の見出し（c-hand.js）
-  const hand = (await import(new URL("../src/web/static/c-hand.js", import.meta.url).href)) as Record<string, Fn>;
-  const handCalls: unknown[][] = [];
-  const handOn = { menu: (opener: unknown) => void handCalls.push(["menu", opener]), close: (...a: unknown[]) => void handCalls.push(["close", ...a]) };
-  const head = one(html`<${hand.HandHead} title="右腕" menu=${true} on=${handOn} />`);
-  assert.deepEqual([head.type, head.props.class], ["header", "c-hand-head"]);
-  assert.deepEqual(head.children.map((c) => [(c as El).type, (c as El).props.class, (c as El).props["data-act"]]), [["h2", "c-hand-title", undefined], ["span", "c-hand-act", "menu"], ["span", "c-hand-act", "close"]]);
-  assert.equal(textOf(find(head, "c-hand-title")), "右腕");
-  const menuBtn = find(head, "c-iconbtn")[0] as El;
-  assert.equal(menuBtn.props["aria-label"], "ほかの操作");
-  const ev = fakeEvent();
-  (menuBtn.props.onClick as (e: unknown) => void)(ev);
-  const close = find(head, "c-btn")[0] as El;
-  assert.deepEqual([close.props["data-kind"], close.props["data-size"], textOf(close), close.props["aria-label"]], ["ghost", "sm", "畳む", "右腕を畳む"]);
-  tap(close);
-  assert.deepEqual(handCalls, [["menu", ev.currentTarget], ["close"]]);
-  const v2 = hand.HandHead({ title: "右腕", menu: true, on: handOn }) as VNode;
-  assert.deepEqual(keysOf(v2.props.children), ["title", "menu", "close"]);
-  for (const menu of [false, undefined]) {
-    const bare = one(html`<${hand.HandHead} title="右腕" menu=${menu} on=${handOn} />`);
-    assert.deepEqual(bare.children.map((c) => (c as El).props["data-act"]), [undefined, "close"]);
-    assert.equal(find(bare, "c-iconbtn").length, 0);
-  }
-  // seat（#463 の D6）: 無い・偽なら今の並び（上の断言と同じ）、真なら 題・広げる・…・畳む
-  for (const seat of [false, undefined]) {
-    const plainHead = one(html`<${hand.HandHead} title="右腕" menu=${true} seat=${seat} on=${handOn} />`);
-    assert.deepEqual(plainHead.children.map((c) => (c as El).props["data-act"]), [undefined, "menu", "close"]);
-    assert.equal(find(plainHead, "c-iconbtn").length, 1);
-    assert.deepEqual(keysOf((hand.HandHead({ title: "右腕", menu: true, seat, on: handOn }) as VNode).props.children), ["title", "menu", "close"]);
-  }
-  const seatCalls: unknown[][] = [];
-  const seatOn = { ...handOn, seat: (...a: unknown[]) => void seatCalls.push(["seat", ...a]) };
-  const seatHead = one(html`<${hand.HandHead} title="右腕" menu=${true} seat=${true} on=${seatOn} />`);
-  assert.deepEqual(seatHead.children.map((c) => [(c as El).type, (c as El).props.class, (c as El).props["data-act"]]), [["h2", "c-hand-title", undefined], ["span", "c-hand-act", "seat"], ["span", "c-hand-act", "menu"], ["span", "c-hand-act", "close"]]);
-  assert.deepEqual(keysOf((hand.HandHead({ title: "右腕", menu: true, seat: true, on: seatOn }) as VNode).props.children), ["title", "seat", "menu", "close"]);
-  const seatBtns = find(seatHead.children[1] as El, "c-iconbtn");
-  assert.equal(seatBtns.length, 1);
-  const seatBtn = seatBtns[0] as El;
-  // アイコンだけ（字は出さない）。名前は「広げる」、アイコンは app の sprite の maximize
-  assert.deepEqual([seatBtn.type, seatBtn.props.type, seatBtn.props["aria-label"], seatBtn.props.title, textOf(seatBtn)], ["button", "button", "広げる", "広げる", ""]);
-  assert.equal(((find(seatBtn, "c-icon")[0] as El).children[0] as El).props.href, "/static/icons-app.svg#maximize");
-  assert.match(readFileSync(join(STATIC_DIR, "icons-app.svg"), "utf8"), /<symbol id="maximize"/);
-  const seatEv = fakeEvent();
-  (seatBtn.props.onClick as (e: unknown) => void)(seatEv);
-  assert.deepEqual(seatCalls, [["seat", seatEv.currentTarget]]);
-  // menu が偽で seat が真なら 題・広げる・畳む
-  for (const menu of [false, undefined]) {
-    const seatBare = one(html`<${hand.HandHead} title="右腕" menu=${menu} seat=${true} on=${seatOn} />`);
-    assert.deepEqual(seatBare.children.map((c) => (c as El).props["data-act"]), [undefined, "seat", "close"]);
-    assert.equal(find(seatBare, "c-iconbtn").length, 1);
-  }
 });
 
 const bubbleOf = (o: Obj = {}): Obj => ({
@@ -5207,16 +5089,15 @@ test("web components: 項目の入れ物は、操作のボタン（［完了］�
   assert.equal(keydown("turn:ch:1", "Enter", ".c-item-main", true), false);
 });
 
-test("web components: DeckBand は点・名前・探す・右腕・始める・ほかの順で、右腕は aria-controls と aria-expanded、押すと on の 5 つ", () => {
+test("web components: DeckBand は点・名前・探す・始める・ほかの順で、押すと on の 4 つ。右腕は出さない（hand・controls を渡しても。#514 の R3b）", () => {
   const calls: unknown[][] = [];
   const on = {
     status: () => void calls.push(["status"]),
     find: (o: unknown) => void calls.push(["find", o]),
-    hand: (o: unknown) => void calls.push(["hand", o]),
     start: (o: unknown) => void calls.push(["start", o]),
     more: (o: unknown) => void calls.push(["more", o]),
   };
-  const band = one(html`<${deck.DeckBand} conn=${{ tone: "ok", label: "見本の Bot: 接続中" }} hand=${{ mark: "turn", open: true }} controls="v3-hand" on=${on} />`);
+  const band = one(html`<${deck.DeckBand} conn=${{ tone: "ok", label: "見本の Bot: 接続中" }} on=${on} />`);
   assert.deepEqual([band.type, band.props.class], ["header", "c-band"]);
   const acts = (t: El): unknown[] => {
     const out: unknown[] = [];
@@ -5228,67 +5109,32 @@ test("web components: DeckBand は点・名前・探す・右腕・始める・�
     walk(t);
     return out;
   };
-  assert.deepEqual(acts(band), ["status", "find", "hand", "start", "more"]);
+  assert.deepEqual(acts(band), ["status", "find", "start", "more"]);
   const conn = find(band, "c-band-conn")[0]!;
   assert.deepEqual([conn.props["aria-label"], conn.props.title, find(conn, "c-band-dot")[0]?.props["data-tone"]], ["見本の Bot: 接続中", "見本の Bot: 接続中", "ok"]);
   assert.equal(textOf(find(band, "c-band-name")), "self-agent");
-  const hand = find(band, "c-band-hand")[0]!;
-  assert.deepEqual([hand.props["aria-controls"], hand.props["aria-expanded"], hand.props["aria-label"], find(hand, "c-band-hand-mark")[0]?.props["data-state"]], ["v3-hand", "true", "右腕（あなたの番）", "turn"]);
   assert.deepEqual(find(band, "c-btn-label").map(textOf), ["探す", "始める"]);
   assert.equal(find(band, "c-iconbtn")[0]?.props["aria-label"], "ほか");
   const ev = fakeEvent();
   (conn.props.onClick as () => void)();
-  (hand.props.onClick as (e: unknown) => void)(ev);
   for (const b of [...find(band, "c-btn"), ...find(band, "c-iconbtn")]) (b.props.onClick as (e: unknown) => void)(ev);
-  assert.deepEqual(calls.map((c) => c[0]), ["status", "hand", "find", "start", "more"]);
+  assert.deepEqual(calls.map((c) => c[0]), ["status", "find", "start", "more"]);
   assert.equal(calls[1]?.[1], ev.currentTarget);
-  // 状態をまだ読めていなければ点を出さない。印が無ければ名前は見える字のまま、閉じていれば aria-expanded=false
-  const quiet = one(html`<${deck.DeckBand} conn=${null} hand=${{ mark: null, open: false }} on=${on} />`);
-  assert.equal(find(quiet, "c-band-conn").length, 0);
-  const qh = find(quiet, "c-band-hand")[0]!;
-  assert.deepEqual([qh.props["aria-label"], qh.props["aria-expanded"], qh.props["aria-controls"], find(qh, "c-band-hand-mark").length], [undefined, "false", undefined, 0]);
-  // 作業中は輪の印と「右腕（作業中）」、知らない値は印なし
-  const runningHand = find(one(html`<${deck.DeckBand} conn=${null} hand=${{ mark: "running", open: false }} on=${on} />`), "c-band-hand")[0]!;
-  assert.deepEqual([runningHand.props["aria-label"], find(runningHand, "c-band-hand-mark").map((m) => [m.props["data-state"], m.props["aria-hidden"]])], ["右腕（作業中）", [["running", "true"]]]);
-  const unknownHand = find(one(html`<${deck.DeckBand} conn=${null} hand=${{ mark: "x", open: false }} on=${on} />`), "c-band-hand")[0]!;
-  assert.deepEqual([unknownHand.props["aria-label"], find(unknownHand, "c-band-hand-mark").length], [undefined, 0]);
-  assert.equal(find(one(html`<${deck.DeckBand} conn=${{ tone: "bad", label: "x" }} hand=${null} on=${on} />`), "c-band-dot")[0]?.props["data-tone"], "bad");
-});
-
-test("web components: DeckBand の hand が無い（null・undefined。広い幅で右腕の丸を描けた間。D6）なら［右腕］を出さず 点・探す・始める・ほか の順。ほかの出力は hand ありと同じ。phone は hand によらず同じ", () => {
-  const calls: unknown[][] = [];
-  const rec = (name: string) => (o?: unknown): void => void calls.push([name, o]);
-  const on = { status: rec("status"), find: rec("find"), hand: rec("hand"), start: rec("start"), more: rec("more") };
-  const acts = (t: El): unknown[] => {
-    const out: unknown[] = [];
-    const walk = (n: Tree) => {
-      if (typeof n === "string") return;
-      if (n.props["data-act"] !== undefined) out.push(n.props["data-act"]);
-      n.children.forEach(walk);
-    };
-    walk(t);
-    return out;
-  };
-  const conn = { tone: "ok", label: "見本の Bot: 接続中" };
-  const withHand = one(html`<${deck.DeckBand} conn=${conn} hand=${{ mark: "turn", open: false }} controls="v3-hand" on=${on} />`);
-  assert.deepEqual(acts(withHand), ["status", "find", "hand", "start", "more"]);
-  for (const hand of [null, undefined]) {
-    const band = one(html`<${deck.DeckBand} conn=${conn} hand=${hand} controls="v3-hand" on=${on} />`);
-    assert.deepEqual(acts(band), ["status", "find", "start", "more"], String(hand));
-    assert.equal(find(band, "c-band-hand").length, 0, String(hand));
-    assert.equal(find(band, "c-band-hand-mark").length, 0, String(hand));
-    assert.equal(textOf(find(band, "c-band-name")), "self-agent", String(hand));
-    assert.deepEqual(find(band, "c-btn-label").map(textOf), ["探す", "始める"], String(hand));
-    assert.deepEqual(find(band, "c-iconbtn").map((b) => b.props["aria-label"]), ["ほか"], String(hand));
-    // 右腕のほかは hand ありと同じ字
-    assert.equal(textOf(band), textOf(withHand).replace("右腕", ""), String(hand));
-    // phone は hand によらず同じ出力
-    const phone = one(html`<${deck.DeckBand} variant="phone" conn=${conn} hand=${hand} controls="v3-hand" on=${on} />`);
-    const phoneHand = one(html`<${deck.DeckBand} variant="phone" conn=${conn} hand=${{ mark: "turn", open: false }} controls="v3-hand" on=${on} />`);
-    assert.deepEqual(acts(phone), acts(phoneHand), String(hand));
-    assert.equal(textOf(phone), textOf(phoneHand), String(hand));
+  // 状態をまだ読めていなければ点を出さない
+  assert.equal(find(one(html`<${deck.DeckBand} conn=${null} on=${on} />`), "c-band-conn").length, 0);
+  assert.equal(find(one(html`<${deck.DeckBand} conn=${{ tone: "bad", label: "x" }} on=${on} />`), "c-band-dot")[0]?.props["data-tone"], "bad");
+  // 古い呼び方（hand・controls・on.hand を渡す）でも同じ出力で、［右腕］は無い（広い幅も phone も）
+  const withHand = { ...on, hand: () => void calls.push(["hand"]) };
+  for (const variant of [undefined, "wide", "phone"]) {
+    for (const hand of [{ mark: "turn", open: true }, { mark: "running", open: false }, null]) {
+      const a = expand(html`<${deck.DeckBand} variant=${variant} conn=${{ tone: "ok", label: "x" }} hand=${hand} controls="v3-hand" on=${withHand} />`);
+      const b = expand(html`<${deck.DeckBand} variant=${variant} conn=${{ tone: "ok", label: "x" }} on=${on} />`);
+      assert.deepEqual(shapeOf(a), shapeOf(b), String(variant) + JSON.stringify(hand));
+      assert.equal(find(one(a), "c-band-hand").length, 0);
+      assert.ok(!acts(one(a)).includes("hand"));
+    }
   }
-  assert.deepEqual(calls, []);
+  assert.ok(!calls.some((c) => c[0] === "hand"));
 });
 
 test("web components: 流れの列の本体（.c-col-body）の下の余白は var(--c-deck-tail)（tokens.css の既定は var(--space-2) = 今の 8。丸の出る広い幅は shell.css が上書き。D6）", () => {
@@ -5301,21 +5147,18 @@ test("web components: 流れの列の本体（.c-col-body）の下の余白は v
   assert.equal((stripCssComments(read("c-deck.css")).match(/--c-deck-tail/g) ?? []).length, 1);
 });
 
-test("web components: c-deck.css は区切りの線（左の線と 0 の外し・角丸と、帯の［右腕］の作業中の輪のほかの border）・gradient・半透明・影・動きを書かない", () => {
+test("web components: c-deck.css は区切りの線（左の線と 0 の外し・角丸のほかの border）・gradient・半透明・影・動きを書かない（帯の［右腕］とその作業中の輪は #514 の R3b で消した）", () => {
   const rules = parseCss(read("c-deck.css"));
   assert.ok(rules.length > 0);
-  const rings: string[] = [];
   for (const rule of rules) {
     for (const decl of rule.body.split(";").map((d) => d.trim()).filter((d) => d !== "")) {
       const prop = decl.slice(0, decl.indexOf(":")).trim();
       const what = `${rule.selectors.join(",")}: ${decl}`;
-      // 作業中の輪（K2 の Mark の running と同じ形）は帯の［右腕］の 1 つだけ
-      if (prop === "border" && /^border: var\(--c-mark-ring\) solid /.test(decl)) rings.push(what);
-      else if (prop.startsWith("border")) assert.ok(["border-left", "border-left-color", "border-radius"].includes(prop) || decl === "border: 0", what);
+      if (prop.startsWith("border")) assert.ok(["border-left", "border-left-color", "border-radius"].includes(prop) || decl === "border: 0", what);
       assert.doesNotMatch(decl, /gradient|rgba\(|^opacity\s*:|^box-shadow\s*:|^animation|^transition/, `${rule.selectors.join(",")}: ${decl}`);
     }
   }
-  assert.deepEqual(rings, ['.c-band-hand-mark[data-state="running"]: border: var(--c-mark-ring) solid var(--accent)']);
+  assert.ok(!rules.some((r) => r.selectors.some((s) => s.includes("c-band-hand"))));
   assert.doesNotMatch(stripCssComments(read("c-deck.css")), /@keyframes|@media \(min-width|1340/);
 });
 
@@ -5354,7 +5197,7 @@ test("web components: c-deck.css の開いていて番の項目は、地が番�
   assert.ok(open >= 0 && hover > open, `${open} ${hover}`);
 });
 
-test("web components: 新しい殻の CSS（shell.css と c-*.css。c-gallery.css を除く）で accent の塗りを書くのは、accent のボタン・accent の数の印・未読の点 2 つ・右腕の丸（accent の顔）だけ", () => {
+test("web components: 新しい殻の CSS（shell.css と c-*.css。c-gallery.css を除く）で accent の塗りを書くのは、accent のボタン・accent の数の印・未読の点だけ（帯の［右腕］の未読の点と右腕の丸は #514 の R3b で消した）", () => {
   const files = ["shell.css", ...CSS_FILES.filter((n) => n !== "c-gallery.css")];
   const painted = new Set<string>();
   for (const name of files) {
@@ -5364,64 +5207,21 @@ test("web components: 新しい殻の CSS（shell.css と c-*.css。c-gallery.cs
     }
   }
   assert.deepEqual([...painted].sort(), [
-    '.c-btn[data-kind="accent"]', '.c-badge[data-tone="accent"]', '.c-mark[data-state="unread"]', '.c-band-hand-mark[data-state="unread"]', '.c-orb[data-tone="accent"]',
+    '.c-btn[data-kind="accent"]', '.c-badge[data-tone="accent"]', '.c-mark[data-state="unread"]',
   ].sort());
 });
 
-test("web components: 右腕の丸（c-shell.css の .c-orb）は幅・高さ var(--c-orb)（tokens.css で 56px）の円。静かな顔は --surface と 1px の輪郭、accent の顔は --accent・border: 0・--primary-text。影・gradient を書かず、opacity は乗った時だけ。印は格子の右上で円の中へ寄せ、当たりの箱は ::after で角まで覆う", () => {
-  assert.match(read("tokens.css"), /--c-orb: 56px;/);
-  const rules = parseCss(read("c-shell.css"));
-  const orbRules = rules.filter((r) => r.selectors.some((s) => /^\.c-orb(?![a-z])/.test(s)));
-  assert.ok(orbRules.length > 0);
-  const declsOf = (sel: string, at: string[] = []): string[] =>
-    rules.filter((r) => r.selectors.includes(sel) && r.at.join("|") === at.join("|")).flatMap((r) => r.body.split(";").map((d) => d.trim()).filter((d) => d !== ""));
-  const base = declsOf(".c-orb");
-  for (const decl of [
-    "display: grid", "box-sizing: border-box", "width: var(--c-orb)", "height: var(--c-orb)", "border: var(--border-width) solid var(--border)",
-    "border-radius: var(--radius-full)", "background: var(--surface)", "color: var(--text)",
-  ]) assert.ok(base.includes(decl), decl);
-  assert.deepEqual(declsOf('.c-orb[data-tone="accent"]'), ["border: 0", "background: var(--accent)", "color: var(--primary-text)"]);
-  // アイコンと印は同じ升に重ね、印は右上
-  assert.deepEqual(declsOf(".c-orb > *"), ["grid-area: 1 / 1"]);
-  const place = declsOf(".c-orb-mark");
-  assert.ok(place.includes("align-self: start") && place.includes("justify-self: end"), place.join("; "));
-  // 印は円の中へ寄せる（点と accent の番の輪が円の外に出ない。画面写しの checkOrbs が隅を測る）
-  assert.ok(place.includes("margin: calc(var(--space-2) + var(--c-mark-ring))"), place.join("; "));
-  // 当たりの箱は角も四角に覆う（.c-btn::after と同じ考え方。position を使わず格子の同じ升）
-  assert.deepEqual(declsOf(".c-orb::after"), ['content: ""', "grid-area: 1 / 1", "place-self: stretch"]);
-  // 押した・乗った（K2 の .c-btn と同じ押した形）
-  assert.deepEqual(declsOf(".c-orb:active"), ["transform: scale(0.97)"]);
-  assert.deepEqual(declsOf(".c-orb:hover", [`@media ${FINE}`]), ["opacity: 0.9"]);
-  for (const r of orbRules) {
-    const decls = r.body.split(";").map((d) => d.trim()).filter((d) => d !== "");
-    const sel = r.selectors.join(",");
-    // 影は accent の顔の番の点の輪（下のバーと同じ）だけ
-    if (sel !== '.c-orb-dot[data-state="turn"]') assert.ok(!decls.some((d) => /^box-shadow\s*:/.test(d)), sel);
-    assert.ok(!decls.some((d) => /gradient\(|backdrop-filter|^filter\s*:/.test(d)), sel);
-    if (sel !== ".c-orb:hover") assert.ok(!decls.some((d) => /^opacity\s*:/.test(d)), sel);
-  }
-});
-
-test("web components: 見出し（c-shell.css の .c-top・c-hand.css の .c-hand-head）と下のバーと入力欄の帯は区切りの線を書かない。残る線は押す所の輪郭と欄の枠だけ", () => {
+test("web components: 見出し（c-shell.css の .c-top）と下のバーと入力欄の帯は区切りの線を書かない。残る線は押す所の輪郭と欄の枠だけ", () => {
   const declsOf = (name: string): { sel: string; decl: string; prop: string }[] =>
     parseCss(read(name)).flatMap((r) =>
       r.body.split(";").map((d) => d.trim()).filter((d) => d !== "").map((decl) => ({ sel: r.selectors.join(", "), decl, prop: decl.slice(0, decl.indexOf(":")).trim() })),
     );
-  // c-hand.css は border・box-shadow を書かない
-  for (const { sel, decl, prop } of declsOf("c-hand.css")) assert.ok(!prop.startsWith("border") && prop !== "box-shadow", `c-hand.css ${sel}: ${decl}`);
-  // c-shell.css の box-shadow は右腕の番の印の輪（区切りでない。丸の accent の顔）だけ。border（border-radius と border: 0 を除く）は場所・モードのボタンと右腕の丸（静かな顔）の輪郭と、丸の accent の顔の作業中の輪だけ
+  // c-shell.css は box-shadow を書かず、border（border-radius と border: 0 を除く）は場所・モードのボタンの輪郭だけ（右腕の丸とその印の輪は #514 の R3b で消した）
   const shell = declsOf("c-shell.css");
-  assert.deepEqual(shell.filter((d) => d.prop === "box-shadow").map((d) => `${d.sel}: ${d.decl}`), [
-    '.c-orb-dot[data-state="turn"]: box-shadow: 0 0 0 var(--c-mark-ring) var(--primary-text)',
-  ]);
+  assert.deepEqual(shell.filter((d) => d.prop === "box-shadow").map((d) => `${d.sel}: ${d.decl}`), []);
   assert.deepEqual(
     shell.filter((d) => d.prop.startsWith("border") && d.prop !== "border-radius" && d.decl !== "border: 0").map((d) => d.sel),
-    [".c-top-place, .c-top-mode", ".c-orb", '.c-orb-dot[data-state="running"]'],
-  );
-  // 作業中の輪は K2 の Mark の running と同じ形（border だけ。地は塗らない）。色は accent の地の上で --primary-text
-  assert.deepEqual(
-    shell.filter((d) => /-mark\[data-state="running"\]$|^\.c-orb-dot\[data-state="running"\]$/.test(d.sel)).map((d) => `${d.sel}: ${d.decl}`),
-    ['.c-orb-dot[data-state="running"]: border: var(--c-mark-ring) solid var(--primary-text)'],
+    [".c-top-place, .c-top-mode"],
   );
   // c-composer.css の border は欄と写しの共通の規則の border・border-radius と、写しの border-color だけ
   assert.deepEqual(
@@ -5470,10 +5270,10 @@ test("web components: deckModel の paged は true のときだけ true。Deck �
   assert.equal(find(plain, "c-col").length, 3);
 });
 
-test("web components: DeckBand の phone は点・探す・始める・ほかの順で右腕を出さず、［始める］は名前「始める」の IconButton。variant なし・wide は今と同じ出力", () => {
+test("web components: DeckBand の phone は点・探す・始める・ほかの順で、［始める］は名前「始める」の IconButton。variant なし・wide は今の形（［始める］は字つき）", () => {
   const calls: unknown[][] = [];
   const rec = (name: string) => (o?: unknown): void => void calls.push([name, o]);
-  const on = { status: rec("status"), find: rec("find"), hand: rec("hand"), start: rec("start"), more: rec("more") };
+  const on = { status: rec("status"), find: rec("find"), start: rec("start"), more: rec("more") };
   const acts = (t: El): unknown[] => {
     const out: unknown[] = [];
     const walk = (n: Tree) => {
@@ -5484,7 +5284,7 @@ test("web components: DeckBand の phone は点・探す・始める・ほかの
     walk(t);
     return out;
   };
-  const props = { conn: { tone: "ok", label: "見本の Bot: 接続中" }, hand: { mark: "turn", open: false }, controls: "v3-hand", on };
+  const props = { conn: { tone: "ok", label: "見本の Bot: 接続中" }, on };
   const band = one(html`<${deck.DeckBand} variant="phone" ...${props} />`);
   assert.deepEqual(acts(band), ["status", "find", "start", "more"]);
   assert.equal(find(band, "c-band-hand").length, 0);
@@ -5498,7 +5298,7 @@ test("web components: DeckBand の phone は点・探す・始める・ほかの
   const ev = fakeEvent();
   (startBtn.props.onClick as (e: unknown) => void)(ev);
   assert.deepEqual(calls, [["start", ev.currentTarget]]);
-  // variant なし・wide・知らない値は今の形（右腕あり・［始める］は字つき）
+  // variant なし・wide・知らない値は今の形（［始める］は字つき）
   const now = one(html`<${deck.DeckBand} ...${props} />`);
   for (const variant of ["wide", "tablet", null]) {
     const other = one(html`<${deck.DeckBand} variant=${variant} ...${props} />`);
@@ -5506,12 +5306,12 @@ test("web components: DeckBand の phone は点・探す・始める・ほかの
     assert.equal(textOf(other), textOf(now), String(variant));
     assert.deepEqual(find(other, "c-btn-label").map(textOf), ["探す", "始める"], String(variant));
   }
-  assert.deepEqual(acts(now), ["status", "find", "hand", "start", "more"]);
+  assert.deepEqual(acts(now), ["status", "find", "start", "more"]);
 });
 
 test("web components: DeckBand の title（phone で name が空でないときだけ h2 data-kind=page に列の名前と数。warning は Badge・ほかは c-band-count・0 と null は数なし。ほかは「self-agent」）", () => {
-  const on = { status: () => undefined, find: () => undefined, hand: () => undefined, start: () => undefined, more: () => undefined };
-  const props = { conn: { tone: "ok", label: "見本の Bot: 接続中" }, hand: { mark: "turn", open: false }, controls: "v3-hand", on };
+  const on = { status: () => undefined, find: () => undefined, start: () => undefined, more: () => undefined };
+  const props = { conn: { tone: "ok", label: "見本の Bot: 接続中" }, on };
   const nameOf = (title: unknown, variant: unknown = "phone"): El => {
     const names = find(one(html`<${deck.DeckBand} variant=${variant} title=${title} ...${props} />`), "c-band-name");
     assert.equal(names.length, 1);
@@ -5546,8 +5346,8 @@ test("web components: DeckBand の title（phone で name が空でないとき�
 test("web components: DeckBand の turn（phone でなく count が 1 以上の数のときだけ、名前の所を data-act=turn のボタン「あなたの番」+ warning の Badge に。読み上げ「あなたの番 n 件」・押すと on.turn(opener)）。ほかは今の描き出しのまま（#507）", () => {
   const calls: unknown[][] = [];
   const rec = (name: string) => (o?: unknown): void => void calls.push([name, o]);
-  const on = { status: rec("status"), find: rec("find"), hand: rec("hand"), start: rec("start"), more: rec("more"), turn: rec("turn") };
-  const props = { conn: { tone: "ok", label: "見本の Bot: 接続中" }, hand: { mark: "turn", open: false }, controls: "v3-hand", on };
+  const on = { status: rec("status"), find: rec("find"), start: rec("start"), more: rec("more"), turn: rec("turn") };
+  const props = { conn: { tone: "ok", label: "見本の Bot: 接続中" }, on };
   const band = one(html`<${deck.DeckBand} turn=${{ count: 2 }} ...${props} />`);
   const names = find(band, "c-band-name");
   assert.equal(names.length, 1);
@@ -5831,7 +5631,9 @@ test("web components: 入口の下のバーの 3 つの口（drawBar・page・fo
   const guard = app.lastIndexOf("if (footRoot) {", at);
   assert.ok(guard > 0 && app.slice(guard, at).split("{").length === app.slice(guard, at).split("}").length + 1, "口を足すのが if (footRoot) の中でない");
   assert.equal([...app.matchAll(/window\.SA\.deck = /g)].length, 1);
-  assert.match(app, /window\.SA\.deck = \{ draw: drawDeck, drawBand, fit: deckFit, focusItem, focusBand, focusCol, drawOrb, focusOrb \};/);
+  assert.match(app, /window\.SA\.deck = \{ draw: drawDeck, drawBand, fit: deckFit, focusItem, focusBand, focusCol \};/);
+  // 右腕の丸の口（drawOrb・focusOrb）と右腕の見出しの口（SA.hand）は #514 の R3b で消した
+  assert.doesNotMatch(app, /drawOrb|focusOrb|SA\.hand\b|c-orb-root|c-hand-root/);
   assert.equal([...app.matchAll(/addEventListener\("scroll"/g)].length, 1);
   assert.match(app.slice(guard, at), /deckRoot\.addEventListener\("scroll", onScroll, \{ capture: true, passive: true \}\);/);
   // 下のバーは deck の形で、列の名前は列のモデルから（入口に列の名前を書かない）
@@ -5886,8 +5688,8 @@ test("web components: 入口の上の帯の「あなたの番 n」（#507 の P5
     assert.deepEqual(bandTurn(state), want, JSON.stringify([state, n]));
   }
   // 渡さない時（undefined）の DeckBand は turn を渡さないのと同じ
-  const on = { status() {}, find() {}, hand() {}, start() {}, more() {}, turn() {} };
-  assert.deepEqual(shapeOf(expand(html`<${deck.DeckBand} conn=${null} hand=${null} turn=${undefined} on=${on} />`)), shapeOf(expand(html`<${deck.DeckBand} conn=${null} hand=${null} on=${on} />`)));
+  const on = { status() {}, find() {}, start() {}, more() {}, turn() {} };
+  assert.deepEqual(shapeOf(expand(html`<${deck.DeckBand} conn=${null} turn=${undefined} on=${on} />`)), shapeOf(expand(html`<${deck.DeckBand} conn=${null} on=${on} />`)));
   // 列を描き直して番の数が変わったら（turnAway の間だけ）、スマホの題と同じ道で帯を描き直す
   assert.match(app, /const turnsBefore = turnCount\(\);/);
   assert.match(app, /if \(lastBand !== null && \(bandTitleKey\(\) !== titleBefore \|\| \(lastBand\.turnAway === true && turnCount\(\) !== turnsBefore\)\)\) drawBand\(lastBand\);/);

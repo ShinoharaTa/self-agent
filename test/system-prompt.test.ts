@@ -140,9 +140,9 @@ test("右腕の口調（#448）: INTRO は 1 行で、既定の人格に「し�
   assert.ok(persona.includes("但し書きは"));
 });
 
-test("右腕の口調（#448）: 前置きの形は、Web の画面が付ける文字列（shell.js）と同じ", () => {
+test("右腕の口調（#448）: Web の画面は右腕に送る文に「（いま見ている話題: …）」の前置きを付けない（#514 の決定 6。R3b で shell.js から消した。システムプロンプトの説明の文はプロンプトを変える時まで残る）", () => {
   const shell = readFileSync(new URL("../src/web/static/shell.js", import.meta.url), "utf8");
-  assert.ok(shell.includes('"（いま見ている話題: " + title + "）\\n"'));
+  assert.equal(shell.includes("いま見ている話題"), false);
   assert.ok(SYSTEM_PROMPT.includes("（いま見ている話題: 題名）"));
 });
 

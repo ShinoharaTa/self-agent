@@ -1,24 +1,9 @@
-// 殻の部品（docs/plan/web-ui-components.md §6 の K3・K4）: BottomBar・TopBar とそのモデルの関数と、右腕の丸（HandOrb。#463 の D6）。
+// 殻の部品（docs/plan/web-ui-components.md §6 の K3・K4）: BottomBar・TopBar とそのモデルの関数。
 // hook を使わない（Node から関数として呼べる）。どの形にするか（variant）は入口が決めて渡す。クラスは固定の文字列、状態は data-* と aria-*
 import { html } from "./c-lib.js";
 import { Badge, Button, Icon, IconButton, Mark, Segmented, badgeText } from "./c-atoms.js";
 
-const HAND = "右腕に頼む・訊く";
-
 const filled = (v) => typeof v === "string" && v !== "";
-
-/** 右腕のボタンの名前（印があれば語で足す） */
-export function handLabel(mark) {
-  if (mark === "turn") return HAND + "（あなたの番）";
-  if (mark === "unread") return HAND + "（未読）";
-  if (mark === "running") return HAND + "（作業中）";
-  return HAND;
-}
-
-/** 右腕の口の印（turn・unread・running。知らない値は null） */
-function handMarkOf(mark) {
-  return mark === "turn" || mark === "unread" || mark === "running" ? mark : null;
-}
 
 /** 「一覧」のボタンの名前（件数は K2 の Badge と同じく 99 まで） */
 export function listLabel(turns) {
@@ -220,24 +205,4 @@ export function TopBar({ variant, view, title, status, note, place, views, menu,
       : null}
     ${m.close ? html`<span class="c-top-act" key="close" data-act="close"><${IconButton} icon="x" label="閉じる" onPress=${() => on.close()} /></span>` : null}
   </header>`;
-}
-
-// ===== 右腕の丸（HandOrb。#463 の D6）: 広い幅の流れの列で右下に浮く 56 の円。中は bot のアイコンと印だけ（字は無い） =====
-
-/**
- * 右腕の丸。tone は "accent"（列だけの間）か、ほかは静かな顔（quiet。席が開いている間）。mark は turn・unread・running、ほかは印なし。
- * 印は accent の顔が自前の点（下のバーと同じ配色）、静かな顔が K2 の Mark。open は枠が開いているか（aria-expanded）、controls は aria-controls。
- * on: { hand(opener) }（押したボタンを渡す）
- */
-export function HandOrb({ mark, tone, open, controls, on }) {
-  const face = tone === "accent" ? "accent" : "quiet";
-  const state = handMarkOf(mark);
-  const name = handLabel(state);
-  return html`<button class="c-orb" type="button" data-act="hand" data-tone=${face} aria-label=${name} title=${name}
-      aria-controls=${filled(controls) ? controls : undefined} aria-expanded=${open ? "true" : "false"} onClick=${(event) => on.hand(event.currentTarget)}>
-    <${Icon} name="bot" />
-    ${state
-      ? html`<span class="c-orb-mark">${face === "accent" ? html`<span class="c-orb-dot" data-state=${state} aria-hidden="true"></span>` : html`<${Mark} state=${state} />`}</span>`
-      : null}
-  </button>`;
 }

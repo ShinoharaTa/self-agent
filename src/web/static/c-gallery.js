@@ -4,11 +4,10 @@ import { html, render, useRef, useState } from "./c-lib.js";
 import { Badge, Button, Empty, Field, IconButton, Loading, Mark, Segmented } from "./c-atoms.js";
 import { Confirm, Sheet, Toast } from "./c-sheet.js";
 import { TopicList, YourTurn, listModel } from "./c-list.js";
-import { BottomBar, HandOrb, TopBar } from "./c-shell.js";
+import { BottomBar, TopBar } from "./c-shell.js";
 import { TalkTimeline, parseBlocks, talkModel } from "./c-talk.js";
 import { Composer, composerModel } from "./c-composer.js";
 import { Cards } from "./c-cards.js";
-import { HandHead } from "./c-hand.js";
 import { TermCard, termView } from "./c-term.js";
 import { Deck, DeckBand, deckModel } from "./c-deck.js";
 
@@ -523,33 +522,6 @@ function Bottoms() {
   <//>`;
 }
 
-// ===== 右腕の丸（HandOrb。#463 の D6）: 列だけの間の accent の顔と、席が開いている間の静かな顔 × 印なし・番・未読・作業中 =====
-
-const ORB_ON = { hand: noop };
-const ORB_DEMOS = Object.freeze([
-  { demo: "orb-accent", tone: "accent", mark: null },
-  { demo: "orb-accent-turn", tone: "accent", mark: "turn" },
-  { demo: "orb-accent-unread", tone: "accent", mark: "unread" },
-  { demo: "orb-accent-running", tone: "accent", mark: "running" },
-  { demo: "orb-quiet", tone: "quiet", mark: null },
-  { demo: "orb-quiet-turn", tone: "quiet", mark: "turn" },
-  { demo: "orb-quiet-unread", tone: "quiet", mark: "unread" },
-  { demo: "orb-quiet-running", tone: "quiet", mark: "running" },
-]);
-
-/** 地は本番と同じ列の間の台（--bg）。押しても何も起きない */
-function Orbs() {
-  return html`<${Section} name="orb" title="右腕の丸">
-    <div class="c-gallery-deck c-gallery-orbs">
-      ${ORB_DEMOS.map(
-        (d) => html`<div key=${d.demo} data-demo=${d.demo}>
-          <${HandOrb} tone=${d.tone} mark=${d.mark} open=${false} controls="v3-hand" on=${ORB_ON} />
-        </div>`,
-      )}
-    </div>
-  <//>`;
-}
-
 // ===== 会話の行（K4）。データは作り物（手順は Read src/app.ts のような形） =====
 
 const FENCE = "```";
@@ -810,46 +782,6 @@ function CardDemos() {
   <//>`;
 }
 
-/** 右腕の見本の札（返事の本文の <#ID> の代わり。1 つは meta 無し） */
-const HAND_REFS = [
-  { id: "h1", title: "見本の話題: 週末の買い物の段取りを決める", meta: "12:40" },
-  { id: "h2", title: "見本の話題: 部屋の片付け" },
-];
-const HAND_MARK = /<#[a-z0-9]+>/g;
-/** 右腕の見本の文の関数（会話の見本と同じ。返事の本文から印を外し、印の数だけ札を返す） */
-const HAND_FMT = {
-  ...TALK_FMT,
-  reply: (text) => text.replace(HAND_MARK, "").trim(),
-  refs: (text) => HAND_REFS.slice(0, (text.match(HAND_MARK) || []).length),
-};
-const HAND_TURNS = [
-  { id: "a1", kind: "owner", text: "週末の買い物と片付けの話題はどこ？", time: "12:41" },
-  { id: "a2", kind: "agent", text: "この 2 つです。\n<#h1> <#h2>", time: "12:41" },
-];
-const HAND_ON = { older() {}, toggleSteps() {}, toggleRunSteps() {}, stop() {}, continue() {}, ref() {} };
-
-/** 右腕の見出しの［広げる］の見本（seat。menu あり・なしの 2 つ） */
-const HAND_SEATS = [
-  { demo: "hand-seat", menu: true },
-  { demo: "hand-seat-bare", menu: false },
-];
-
-/** 右腕の見本（右腕の枠と同じ幅（`--c-hand-w`）の箱）と、見出しだけの［広げる］の見本。押しても何も起きない */
-function Hands() {
-  const model = talkModel({ channelId: "g-hand", turns: HAND_TURNS, hasMore: false, running: null, stopping: false, openSteps: new Set(), runStepsOpen: false, fmt: HAND_FMT, on: HAND_ON }, parseBlocks);
-  return html`<${Section} name="hand" title="右腕">
-    <div class="c-gallery-hand">
-      <${HandHead} title="右腕" menu=${true} on=${{ menu() {}, close() {} }} />
-      <${TalkTimeline} model=${model} on=${HAND_ON} />
-    </div>
-    ${HAND_SEATS.map(
-      ({ demo, menu }) => html`<div data-demo=${demo} key=${demo}><div class="c-gallery-hand">
-        <${HandHead} title="右腕" menu=${menu} seat=${true} on=${{ seat() {}, menu() {}, close() {} }} />
-      </div></div>`,
-    )}
-  <//>`;
-}
-
 /** 札の見本の既定の生の状態（書いていない物はこれ） */
 const TERM_BASE = { title: "ログインの直し", place: "self-agent", rowState: "idle", activity: "11/20(金) 14:05", pane: true, check: null, checking: false, failed: false, phase: "idle", error: null };
 const TERM_READY = { takeable: true, state: "idle", reason: null, text: null, rcUrl: "https://claude.ai/code/demo" };
@@ -968,7 +900,7 @@ const deckTurnOnly = (state) => {
   return { ...model, columns: model.columns.filter((c) => c.id === "turn") };
 };
 const DECK_ON = { open: noop, op: noop, more: noop };
-const BAND_ON = { status: noop, find: noop, hand: noop, start: noop, more: noop, turn: noop };
+const BAND_ON = { status: noop, find: noop, start: noop, more: noop, turn: noop };
 
 /** スマホの幅の枠の操作つきの見本（タスクの列だけ。リマインドの操作の行が狭い列で 1 行に入るか） */
 const deckTasksOnly = (state) => {
@@ -983,40 +915,40 @@ const BAND_TITLES = Object.freeze([
   { demo: "band-phone-feed", title: { name: "通知", count: 0 } },
 ]);
 
-/** 帯と 3 つの列の見本（列は見本の幅で 3 等分。deck-idle は待機の節の「ほか n 件」。deck-empty は待機も無い形。band-running は右腕が作業中の帯、band-no-hand は丸を描けた広い幅の帯（［右腕］なし）。
+/** 帯と 3 つの列の見本（列は見本の幅で 3 等分。deck-idle は待機の節の「ほか n 件」。deck-empty は待機も無い形。帯に右腕は出さない（#514 の R3b）ので band・band-running・band-no-hand は同じ中身（名前の片付けは R7）。
  * band-turn は番の列が見えない間の「あなたの番 2」の帯、deck-strip は帯の中の流れの列（3 列が 300 で並び、包みの中で横に送る。#507）。band-phone・deck-paged・deck-phone-ops はスマホの幅の枠で、列は 1 列ずつ横に送る。
  * deck-hand-* は右腕の行（#514 の R1。本番にはまだ出していない）の あなたの番 の列だけ）。押しても何も起きない */
 function Decks() {
   return html`<${Section} name="deck" title="流れの列と上の帯">
     <div class="c-gallery-slide" data-demo="band">
       <div class="c-gallery-deck c-gallery-band">
-        <${DeckBand} conn=${{ tone: "ok", label: "見本の Bot: 接続中" }} hand=${{ mark: "turn", open: false }} controls="v3-hand" on=${BAND_ON} />
+        <${DeckBand} conn=${{ tone: "ok", label: "見本の Bot: 接続中" }} on=${BAND_ON} />
       </div>
     </div>
     <div class="c-gallery-slide" data-demo="band-running">
       <div class="c-gallery-deck c-gallery-band">
-        <${DeckBand} conn=${{ tone: "ok", label: "見本の Bot: 接続中" }} hand=${{ mark: "running", open: false }} controls="v3-hand" on=${BAND_ON} />
+        <${DeckBand} conn=${{ tone: "ok", label: "見本の Bot: 接続中" }} on=${BAND_ON} />
       </div>
     </div>
     <div class="c-gallery-slide" data-demo="band-no-hand">
       <div class="c-gallery-deck c-gallery-band">
-        <${DeckBand} conn=${{ tone: "ok", label: "見本の Bot: 接続中" }} hand=${null} controls="v3-hand" on=${BAND_ON} />
+        <${DeckBand} conn=${{ tone: "ok", label: "見本の Bot: 接続中" }} on=${BAND_ON} />
       </div>
     </div>
     <div class="c-gallery-slide" data-demo="band-turn">
       <div class="c-gallery-deck c-gallery-band">
-        <${DeckBand} conn=${{ tone: "ok", label: "見本の Bot: 接続中" }} hand=${null} controls="v3-hand" turn=${{ count: 2 }} on=${BAND_ON} />
+        <${DeckBand} conn=${{ tone: "ok", label: "見本の Bot: 接続中" }} turn=${{ count: 2 }} on=${BAND_ON} />
       </div>
     </div>
     <div class="c-gallery-slide" data-demo="band-phone">
       <div class="c-gallery-deck c-gallery-phone">
-        <${DeckBand} variant="phone" conn=${{ tone: "ok", label: "見本の Bot: 接続中" }} hand=${{ mark: "turn", open: false }} controls="v3-hand" on=${BAND_ON} />
+        <${DeckBand} variant="phone" conn=${{ tone: "ok", label: "見本の Bot: 接続中" }} on=${BAND_ON} />
       </div>
     </div>
     ${BAND_TITLES.map(
       (t) => html`<div class="c-gallery-slide" key=${t.demo} data-demo=${t.demo}>
         <div class="c-gallery-deck c-gallery-phone">
-          <${DeckBand} variant="phone" conn=${{ tone: "ok", label: "見本の Bot: 接続中" }} hand=${{ mark: "turn", open: false }} controls="v3-hand" title=${t.title} on=${BAND_ON} />
+          <${DeckBand} variant="phone" conn=${{ tone: "ok", label: "見本の Bot: 接続中" }} title=${t.title} on=${BAND_ON} />
         </div>
       </div>`,
     )}
@@ -1073,11 +1005,9 @@ function Gallery() {
     <${Lists} />
     <${Tops} />
     <${Bottoms} />
-    <${Orbs} />
     <${Talks} />
     <${Composers} />
     <${CardDemos} />
-    <${Hands} />
     <${Terms} />
     <${Decks} />
     <${Toast} items=${toasts} onDismiss=${dismiss} />

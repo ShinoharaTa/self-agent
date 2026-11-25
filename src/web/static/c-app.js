@@ -5,22 +5,19 @@
 // 会話の入力欄（K5）は chat.js が根と state を SA.composer.draw(root, state) で押し込み、送った後の空は SA.composer.set(root, "")（欄の要素と本文の覚えは c-composer.js の composerMouth）
 // 「あなたの番」のカード（K5）は chat.js が根と state を SA.cards.draw(root, state) で押し込み、「その他」の欄への焦点は SA.cards.focus(root, id, index)（「その他」の本文の覚えは c-cards.js の cardsMouth）
 // 知らせと確認（K6）は ui.js が SA.notice.draw(state)・SA.ask.draw(state) で押し込む（状態とタイマーは ui.js が持ち、ここは描くだけ）
-// 右腕の見出し（K6）は shell.js が SA.hand.draw(state) で押し込み、[畳む]・「…」への焦点は SA.hand.focus(what)（右腕の中の会話・入力欄・カードは上の口を使い回す）
 // 端末のセッションの札（H3）は SA.term.draw(root, raw) で描き（raw は c-term.js の termView に渡す生の状態と on）、SA.term.drop(root) で外す
 // 流れの列と上の帯（D1）は flows.js が SA.deck.draw(state)・shell.js が SA.deck.drawBand(state) で押し込む。幅の計算（SA.deck.fit）は c-deck.js の deckFit
 // スマホの流れの列の下のバー（D2）は #c-foot-root が在るときだけ SA.deck.drawBar(bar)・SA.deck.page(id)・SA.deck.focusBar(act)（指で送った列は bar.on.paged(id) で知らせる）
 // スマホの上の帯の題（今いる列の名前と数）は drawBand の state.page の列を最後に描けた列のモデルから引き、列を描き直して題が変われば帯も描き直す
 // 広い幅の上の帯の「あなたの番 n」（#507）は state.turnAway の間だけ、数を同じく最後に描けた列のモデルから引き、番の数が変われば帯も描き直す。番の列への焦点は SA.deck.focusCol(col)
-// 広い幅の右腕の丸（D6）は #c-orb-root が在るときだけ shell.js が SA.deck.drawOrb(state) で押し込み、焦点は SA.deck.focusOrb()
 // 留めた会話の列（#507）の見出しは SA.pin.drawHead(root, state)・SA.pin.clear(root)、帯の幅と端まで見えている列は SA.deck.stripFit・SA.deck.stripSeen（配線は P4）
 import { html, render } from "./c-lib.js";
 import { TopicList, listKey, listModel } from "./c-list.js";
-import { BottomBar, HandOrb, TopBar } from "./c-shell.js";
+import { BottomBar, TopBar } from "./c-shell.js";
 import { talkMouth } from "./c-talk.js";
 import { composerMouth } from "./c-composer.js";
 import { cardsMouth } from "./c-cards.js";
 import { termMouth } from "./c-term.js";
-import { HandHead } from "./c-hand.js";
 import { Confirm, Toast } from "./c-sheet.js";
 import { Deck, DeckBand, deckFit, deckModel, focusAfter, pressableKeys, stripFit, stripSeen } from "./c-deck.js";
 
@@ -408,8 +405,6 @@ const deckRoot = document.getElementById("c-deck-root");
 const bandRoot = document.getElementById("c-band-root");
 /** スマホの流れの列の下のバーの入れ物（D2）。無ければ null（下のバーの口を置かない。shell.js はスマホを今の殻のままにする） */
 const footRoot = document.getElementById("c-foot-root");
-/** 広い幅の右腕の丸の入れ物（D6）。無ければ null（丸の口は在るが描けない = false。shell.js は帯の［右腕］を出す） */
-const orbRoot = document.getElementById("c-orb-root");
 
 if (deckRoot && bandRoot) {
   /** 最後に描けた列のモデル（下のバーの列の名前と番の数に使う） */
@@ -431,9 +426,9 @@ if (deckRoot && bandRoot) {
     return main && main.matches("button") ? main : null;
   };
 
-  /** 帯のボタン（status・find・hand・start・more と「あなたの番 n」の turn。#507）にフォーカス。無ければ false */
+  /** 帯のボタン（status・find・start・more と「あなたの番 n」の turn。#507）にフォーカス。無ければ false */
   const focusBand = (act) => {
-    if (!["status", "find", "hand", "start", "more", "turn"].includes(act)) return false;
+    if (!["status", "find", "start", "more", "turn"].includes(act)) return false;
     const b = buttonOf(bandRoot.querySelector('[data-act="' + act + '"]'));
     if (!b) return false;
     b.focus({ preventScroll: true });
@@ -536,7 +531,7 @@ if (deckRoot && bandRoot) {
   };
 
   /**
-   * 上の帯を描く。state は { variant, conn, hand, controls, page, turnAway, on }（variant は phone か、ほかは今の形。page は今いる列の id か undefined）。
+   * 上の帯を描く。state は { variant, conn, page, turnAway, on }（variant は phone か、ほかは今の形。page は今いる列の id か undefined）。
    * turnAway は番の列が帯で送られて見えない間 true（#507）: その間で番の数（列の見出しと同じ数）が 1 以上の時だけ「あなたの番 n」。描けなければ false
    */
   const drawBand = (state) => {
@@ -545,7 +540,7 @@ if (deckRoot && bandRoot) {
     const act = inside && before.closest("[data-act]") ? before.closest("[data-act]").getAttribute("data-act") : null;
     try {
       render(
-        html`<${DeckBand} variant=${state.variant} conn=${state.conn} hand=${state.hand} controls=${state.controls} title=${bandTitle(state)} turn=${bandTurn(state)} on=${state.on} />`,
+        html`<${DeckBand} variant=${state.variant} conn=${state.conn} title=${bandTitle(state)} turn=${bandTurn(state)} on=${state.on} />`,
         bandRoot,
       );
       lastBand = state;
@@ -656,41 +651,8 @@ if (deckRoot && bandRoot) {
     if (lastBar && lastBar.on && typeof lastBar.on.paged === "function") lastBar.on.paged(near);
   };
 
-  /**
-   * 右腕の丸を描く（D6。広い幅の流れの列の右下）。state は { mark, tone, open, controls, on: { hand(opener) } } か null（空にする）。
-   * 描けた（null で空にできた）なら true、入れ物が無い・描くのに失敗したら（空にしてから）false（shell.js は帯の［右腕］を出す）。
-   * 描き直しで丸の焦点が消えたら（null で空にした）、帯の［探す］へ
-   */
-  const drawOrb = (state) => {
-    if (!orbRoot) return false;
-    const before = document.activeElement;
-    const inside = !!before && orbRoot.contains(before);
-    try {
-      render(state === null ? null : html`<${HandOrb} mark=${state.mark} tone=${state.tone} open=${state.open} controls=${state.controls} on=${state.on} />`, orbRoot);
-    } catch (error) {
-      console.error("[web] orb draw failed", error instanceof Error ? error.name : "");
-      // 前に描けた丸を残さない（帯の［右腕］と両方出さない）
-      try {
-        render(null, orbRoot);
-      } catch {
-        // 空にもできなければそのまま（帯の［右腕］は出る）
-      }
-      return false;
-    }
-    if (inside && !document.contains(before) && !focusOrb()) focusBand("find");
-    return true;
-  };
-
-  /** 右腕の丸にフォーカス。丸が無ければ false */
-  const focusOrb = () => {
-    const b = orbRoot ? orbRoot.querySelector('button[data-act="hand"]') : null;
-    if (!b) return false;
-    b.focus({ preventScroll: true });
-    return true;
-  };
-
   window.SA = window.SA || {};
-  window.SA.deck = { draw: drawDeck, drawBand, fit: deckFit, focusItem, focusBand, focusCol, drawOrb, focusOrb };
+  window.SA.deck = { draw: drawDeck, drawBand, fit: deckFit, focusItem, focusBand, focusCol };
   // 帯の幅と端まで見えている列（#507。配線は shell.js の P4）
   Object.assign(window.SA.deck, { stripFit, stripSeen });
   if (footRoot) {
@@ -746,46 +708,4 @@ if (askRoot) {
   };
   window.SA = window.SA || {};
   window.SA.ask = { draw: drawAsk };
-}
-
-/** 右腕の見出しの入れ物。無ければ null（口を置かない。chat.js が古い見出しを描く） */
-const handRoot = document.getElementById("c-hand-root");
-
-if (handRoot) {
-  /** 右腕の見出しのボタン（close・menu）。無ければ null */
-  const handButton = (what) => {
-    const span = handRoot.querySelector('[data-act="' + what + '"]');
-    return span ? span.querySelector("button") : null;
-  };
-
-  /** 見出しを描く。state は { title, menu, seat, on: { menu(opener), close(), seat(opener) } } か null（消す）。seat が true のときだけ［広げる］。描けなければ false（shell.js が古い見出しに戻す） */
-  const drawHand = (state) => {
-    const before = document.activeElement;
-    const inside = !!before && handRoot.contains(before);
-    try {
-      render(state === null ? null : html`<${HandHead} title=${state.title} menu=${state.menu} seat=${state.seat === true} on=${state.on} />`, handRoot);
-    } catch (error) {
-      // 名前だけ（message・stack は本文を含むことがあるので出さない）
-      console.error("[web] hand draw failed", error instanceof Error ? error.name : "");
-      return false;
-    }
-    // 焦点のあったボタンが消えた（「…」が出なくなった）: [畳む] へ（body に落とさない）
-    if (inside && !document.contains(before)) {
-      const next = handButton("close");
-      if (next) next.focus({ preventScroll: true });
-    }
-    return true;
-  };
-
-  /** 見出しのボタン（close・menu）にフォーカス。無ければ false。送らない（枠が出る動きの間、枠は画面の外へはみ出している。席の見出しと同じ） */
-  const focusHand = (what) => {
-    if (what !== "close" && what !== "menu") return false;
-    const b = handButton(what);
-    if (!b) return false;
-    b.focus({ preventScroll: true });
-    return true;
-  };
-
-  window.SA = window.SA || {};
-  window.SA.hand = { draw: drawHand, focus: focusHand };
 }
