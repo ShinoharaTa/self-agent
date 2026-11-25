@@ -5516,6 +5516,10 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
             dupRoots: string[];
             headOver: string[];
             focus: string;
+            /** 帯の右端・席（.v3-main）の左端（閉じていれば null）・#v3 の右端 */
+            edge: { band: number; seat: number | null; v3: number };
+            /** 番の列の中身（.c-col-body）の下の余白と --space-2 の値（px） */
+            tail: { got: number; want: number };
           };
           const strip = (): Promise<Strip> =>
             page.evaluate(() => {
@@ -5568,6 +5572,16 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
                   return top === null ? [`${c.getAttribute("data-pin")} の見出しが無い`] : top.scrollWidth > top.clientWidth ? [`${c.getAttribute("data-pin")} の見出しが ${top.scrollWidth}/${top.clientWidth}px`] : [];
                 }),
                 focus,
+                edge: { band: br.right, seat: seatOpen ? (document.querySelector<HTMLElement>("#v3 .v3-main")?.getBoundingClientRect().left ?? null) : null, v3: v3.getBoundingClientRect().right },
+                tail: (() => {
+                  const body = document.querySelector<HTMLElement>('#c-deck-root .c-col[data-col="turn"] .c-col-body');
+                  const probe = document.createElement("div");
+                  probe.style.paddingBottom = "var(--space-2)";
+                  document.body.append(probe);
+                  const want = parseFloat(getComputedStyle(probe).paddingBottom);
+                  probe.remove();
+                  return { got: body === null ? Number.NaN : parseFloat(getComputedStyle(body).paddingBottom), want };
+                })(),
               };
             });
           /** 帯の形の確かめ（どの状態でも成り立つ物）。where は文の頭 */
@@ -5584,6 +5598,12 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
             if (Math.abs(s.scrollWidth - total) > 1) say(`${where}: 帯の scrollWidth ${s.scrollWidth}px（${total}px のはず）`);
             if (s.dupRoots.length > 0) say(`${where}: 会話の根が 2 つ以上（${s.dupRoots.join("・")}）`);
             if (s.headOver.length > 0) say(`${where}: 列の見出しがはみ出す（${s.headOver.join("・")}）`);
+            // 帯の右に空きが無い（#514 の R4）: 右端は 席が開いていれば席の左端 − 8、閉じていれば #v3 の右端
+            const right = s.seatOpen ? (s.edge.seat === null ? null : s.edge.seat - 8) : s.edge.v3;
+            if (right === null) say(`${where}: 席が開いているのに .v3-main が無い`);
+            else if (Math.abs(s.edge.band - right) > 1) say(`${where}: 帯の右端 ${s.edge.band}px（${s.seatOpen ? "席の左端 − 8" : "#v3 の右端"} ${right}px と 1px 以内のはず）`);
+            // 番の列の中身の末尾の余白は --space-2（丸の分の余白は R4 で外した）
+            if (!(Math.abs(s.tail.got - s.tail.want) <= 0.5)) say(`${where}: 番の列の中身の下の余白 ${s.tail.got}px（--space-2 の ${s.tail.want}px のはず）`);
             // 止まった後: 見えている列（pins.js）= 端まで見えている列（測った箱）。読み直しは席・見えている列、既読は板の下と閉じた席を除く
             if (JSON.stringify(s.seen) !== JSON.stringify(s.geo)) say(`${where}: 見えている列が「${s.seen.join("・")}」（端まで見えている「${s.geo.join("・")}」のはず）`);
             const wantShown = [...new Set([...(s.seat ? [s.seat] : []), ...s.geo])];
@@ -5610,7 +5630,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
             await page.mouse.move(box.x + box.width / 2, box.y + 12);
             await page.mouse.wheel(target - before.left, 0);
             await page.waitForFunction((n: number) => ((window as unknown as Win).__pinEnds ?? 0) > n, before.ends, { timeout: 5000 });
-            await page.mouse.move(box.x + box.width + 40, box.y + 200);
+            // 帯の右に空きは無い（#514 の R4）ので、ポインタは絵を撮る前と同じ左上へ外す
+            await page.mouse.move(1, 1);
             await settled(page);
           };
           /** 知らせを × で閉じる（撮る絵に残さない） */
@@ -5867,7 +5888,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
             await page.waitForSelector('#v3[data-view="list"]', { timeout: 5000 });
             await settled(page);
 
-            // 幅 820 で席を開いた時: 列は 292 に縮み、列の見出しははみ出さない（絵は撮らない）
+            // 幅 820 で席を開いた時: 会話の列は 372 に縮み（流れの列は 300 のまま）、列の見出しははみ出さない（絵は撮らない）
             await page.setViewportSize({ width: 820, height: VIEWPORTS.pc.viewport.height });
             await settled(page);
             await page.locator(`${TURN} .c-item[data-turn="true"] button.c-item-main`).first().click();
