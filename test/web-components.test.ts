@@ -5912,3 +5912,236 @@ test("web components: 入口の上の帯の「あなたの番 n」（#507 の P5
   // 番の列への焦点: 列の押せる項目の先頭の、最初の押せる物
   assert.match(app, /const focusCol = \(col\) => \{\n\s*const keys = colKeys\(col\);\n\s*return keys\.length > 0 && focusFirstIn\(keys\[0\]\);\n\s*\};/);
 });
+
+// ===== 右腕の行（docs/plan/web-ui-hand-row.md の R1。#514。state.handRow の間だけ。本番の入口はまだ渡さない） =====
+const handDeck = deck as typeof deck & { handItem: (state: Obj) => FlowItem | null };
+const handList = list as typeof list & { HAND_NONE: string; handRowModel: (state: Obj, words: string[]) => { row: Obj | null; note: string } | null };
+const HAND_NONE_TEXT = "右腕はまだありません。Discord で /setup を実行すると、ここで頼めます。";
+const handOf = (o: Obj = {}): Obj => ({ id: "ch:20", guildId: "g", title: "右腕", turn: null, last: { kind: "agent", at: "L" }, link: "x", ...o });
+const handTopics = (hands: Obj[], o: Obj = {}): Obj => ({ turnIds: [], groups: [{ key: "p:a", name: "A" }], topics: [], rightHands: hands, ...o });
+/** 木の中の要素を全部（木の順） */
+const allOf = (tree: Tree | Tree[]): El[] => (Array.isArray(tree) ? tree : [tree]).flatMap((t) => (typeof t === "string" ? [] : [t, ...allOf(t.children)]));
+
+test("web components: handItem は 待機・未読・作業中・番・右腕なし・データなし（null）の 6 つの形。key は hand:<id>、kind は hand、題は「右腕」", () => {
+  const pick = (i: FlowItem | null): unknown[] | null => (i === null ? null : [i.key, i.kind, i.word, i.place, i.time, i.at, i.title, i.summary, i.mark, i.turn, i.target, i.href, i.current]);
+  const unreadArgs: unknown[][] = [];
+  const isUnread = (ch: string, last: unknown): boolean => {
+    unreadArgs.push([ch, last]);
+    return ch === "20";
+  };
+  const isRunning = (ch: string): boolean => ch === "20";
+  // データなし
+  assert.equal(handDeck.handItem(flowOf({ topics: null })), null);
+  assert.equal(handDeck.handItem(flowOf({ topics: undefined })), null);
+  // 右腕なし（rightHands が空・配列でない）: 押せない・§3 の文
+  const none = ["hand:none", "hand", "", "", "", null, "右腕", HAND_NONE_TEXT, "none", false, null, null, false];
+  assert.deepEqual(pick(handDeck.handItem(flowOf({ topics: handTopics([]) }))), none);
+  assert.deepEqual(pick(handDeck.handItem(flowOf({ topics: { ...handTopics([]), rightHands: null } }))), none);
+  assert.equal(handList.HAND_NONE, HAND_NONE_TEXT);
+  // 待機
+  assert.deepEqual(pick(handDeck.handItem(flowOf({ topics: handTopics([handOf()]) }))), ["hand:ch:20", "hand", "待機", "", "", null, "右腕", "", "none", false, "ch:20", null, false]);
+  // 未読（isUnread にはチャンネルと last を渡す）
+  assert.deepEqual(pick(handDeck.handItem(flowOf({ topics: handTopics([handOf()]), isUnread }))), ["hand:ch:20", "hand", "未読", "", "", null, "右腕", "", "unread", false, "ch:20", null, false]);
+  assert.deepEqual(unreadArgs.at(-1), ["20", { kind: "agent", at: "L" }]);
+  // 作業中（isRunning が在る時だけ訊く）。作業中で未読なら語は作業中・印は未読
+  assert.deepEqual(pick(handDeck.handItem(flowOf({ topics: handTopics([handOf()]), isRunning }))), ["hand:ch:20", "hand", "作業中", "", "", null, "右腕", "", "running", false, "ch:20", null, false]);
+  assert.deepEqual(pick(handDeck.handItem(flowOf({ topics: handTopics([handOf()]), isRunning, isUnread }))), ["hand:ch:20", "hand", "作業中", "", "", null, "右腕", "", "unread", false, "ch:20", null, false]);
+  assert.equal(handDeck.handItem(flowOf({ topics: handTopics([handOf()]), isRunning: true }))?.mark, "none");
+  // 番: 語・時間・要約は、同じ右腕を番の項目にした時（turnItems）と同じ
+  const turn = { kind: "question", summary: "どれにしますか", since: "S" };
+  const topics = handTopics([handOf({ turn })], { turnIds: ["ch:20"] });
+  const item = handDeck.handItem(flowOf({ topics, isUnread, isRunning }));
+  assert.deepEqual(pick(item), ["hand:ch:20", "hand", "質問", "", "ago:S", "S", "右腕", "どれにしますか", "turn", true, "ch:20", null, false]);
+  const asTurn = deck.turnItems(flowOf({ topics }))[0]!;
+  assert.deepEqual([item?.word, item?.time, item?.at, item?.summary], [asTurn.word, asTurn.time, asTurn.at, asTurn.summary]);
+  // 上限で止まった右腕の番も番の項目と同じ語
+  assert.equal(handDeck.handItem(flowOf({ topics: handTopics([handOf({ turn: { kind: "max_turns", summary: "", since: "S" } })]) }))?.word, "上限で停止");
+  // 右腕は rightHands[0] だけ
+  assert.equal(handDeck.handItem(flowOf({ topics: handTopics([handOf(), handOf({ id: "ch:21" })]) }))?.key, "hand:ch:20");
+  assert.ok([item, handDeck.handItem(flowOf({ topics: handTopics([]) }))].every((i) => i !== null && i.ops.length === 0 && i.opsRow === false));
+});
+
+test("web components: handItem は見えている間（current か seen に在る）は未読・作業中の印を出さず current。番の印は残る。seen は配列の時だけ読む", () => {
+  const isUnread = (ch: string): boolean => ch === "20";
+  const isRunning = (ch: string): boolean => ch === "20";
+  const at = (o: Obj): FlowItem => handDeck.handItem(flowOf({ topics: handTopics([handOf()]), isUnread, isRunning, ...o }))!;
+  for (const o of [{ current: "ch:20" }, { seen: ["ch:20"] }, { seen: ["ch:9", "ch:20"], current: "ch:1" }]) {
+    assert.deepEqual([at(o).mark, at(o).current], ["none", true], JSON.stringify(o));
+  }
+  for (const o of [{ current: "ch:1" }, { seen: ["ch:9"] }, { seen: "ch:20" }, { seen: null }]) {
+    assert.deepEqual([at(o).mark, at(o).current], ["unread", false], JSON.stringify(o));
+  }
+  const turn = handDeck.handItem(flowOf({ topics: handTopics([handOf({ turn: { kind: "permission", summary: "", since: "S" } })]), current: "ch:20" }))!;
+  assert.deepEqual([turn.mark, turn.turn, turn.current], ["turn", true, true]);
+  // 右腕なしは開けないので current にならない
+  assert.equal(handDeck.handItem(flowOf({ topics: handTopics([]), current: null }))?.current, false);
+});
+
+test("web components: deckModel({ handRow: true }) は あなたの番 の列だけに top。右腕が番でも節の番の項目に右腕が無く、count は右腕を含む数。handRow が無ければ今と同じ出力", () => {
+  const topics = handTopics([handOf({ turn: { kind: "question", summary: "s", since: "S" } }), handOf({ id: "ch:22", turn: { kind: "permission", summary: "", since: "S" } })], {
+    turnIds: ["ch:1", "ch:20", "ch:22"],
+    topics: [{ id: "ch:1", title: "番", group: "p:a", mark: "turn", turn: { kind: "permission", summary: "要約", since: "S1" } }],
+  });
+  const before = deck.deckModel(flowOf({ topics }));
+  const on = deck.deckModel(flowOf({ topics, handRow: true }));
+  const [turnCol, tasksCol, feedCol] = on.columns as [FlowColumn & { top?: FlowItem | null }, FlowColumn, FlowColumn];
+  assert.equal(turnCol.top?.key, "hand:ch:20");
+  assert.equal(turnCol.top?.turn, true);
+  assert.ok(!("top" in tasksCol) && !("top" in feedCol));
+  const targets = turnCol.sections.flatMap((s) => s.items.map((i) => i.target));
+  assert.ok(!targets.includes("ch:20"), targets.join(","));
+  // 2 つ目の右腕（行に出ない）は今のまま番の項目
+  assert.deepEqual(targets, ["ch:1", "ch:22"]);
+  assert.equal(turnCol.count, 3);
+  assert.equal(before.columns[0]!.count, 3);
+  assert.equal(before.columns[0]!.sections[0]!.items.length, 3);
+  // handRow が無い・true でない時は鍵 top ごと無く、出力は今と同じ
+  for (const handRow of [undefined, false, "true", 1]) {
+    const m = deck.deckModel(flowOf({ topics, ...(handRow === undefined ? {} : { handRow }) }));
+    assert.deepEqual(m, before, String(handRow));
+    assert.ok(m.columns.every((c) => !("top" in c)));
+  }
+  assert.deepEqual(deck.turnItems(flowOf({ topics })), before.columns[0]!.sections[0]!.items);
+  // 話題のデータがまだ無い間は top が null（列は読み込み中）
+  const loading = deck.deckModel(flowOf({ topics: null, handRow: true })).columns[0] as FlowColumn & { top?: unknown };
+  assert.deepEqual([loading.top, loading.phase, loading.count], [null, "loading", 0]);
+  // 右腕が番でなければ count は番の項目の数のまま
+  const quiet = deck.deckModel(flowOf({ topics: { ...topics, turnIds: ["ch:1"], rightHands: [handOf()] }, handRow: true })).columns[0] as FlowColumn & { top?: FlowItem | null };
+  assert.deepEqual([quiet.count, quiet.top?.mark, quiet.top?.word], [1, "none", "待機"]);
+  // 節「ピン留め」に右腕は入らない
+  const pinned = deck.deckModel(flowOf({ topics: { ...topics, pins: ["20"] }, handRow: true })).columns[0]!;
+  assert.ok(!pinned.sections.some((s) => s.label === "ピン留め"));
+});
+
+test("web components: Column は top が在れば .c-col-head → .c-col-top → .c-col-body の順で、.c-col-top[role=list] の中に .c-item[data-kind=hand] が 1 つ。列が空でも .c-col-body に Empty。押すと on.open(item, key)", () => {
+  const calls: unknown[][] = [];
+  const on = { open: (...a: unknown[]) => void calls.push(a) };
+  const kids = (col: El): El[] => col.children.filter((c): c is El => typeof c !== "string");
+  const topics = handTopics([handOf({ turn: { kind: "question", summary: "s", since: "S" } })], {
+    turnIds: ["ch:1", "ch:20"],
+    topics: [{ id: "ch:1", title: "番", group: "p:a", mark: "turn", turn: { kind: "permission", summary: "要約", since: "S1" } }],
+  });
+  const root = one(html`<${deck.Deck} model=${deck.deckModel(flowOf({ topics, handRow: true }))} on=${on} />`);
+  const [turnCol, ...rest] = find(root, "c-col") as [El, ...El[]];
+  assert.deepEqual(kids(turnCol).map((c) => [c.type, c.props.class]), [["header", "c-col-head"], ["div", "c-col-top"], ["div", "c-col-body"]]);
+  assert.ok(rest.every((c) => find(c, "c-col-top").length === 0));
+  const top = find(turnCol, "c-col-top")[0]!;
+  assert.equal(top.props.role, "list");
+  assert.equal(top.props["aria-label"], undefined);
+  const items = find(top, "c-item");
+  assert.deepEqual(items.map((i) => [i.props["data-kind"], i.props["data-key"], i.props["data-turn"], i.props.role]), [["hand", "hand:ch:20", "true", "listitem"]]);
+  assert.equal(textOf(find(items[0]!, "c-item-title")), "右腕");
+  assert.equal(textOf(find(items[0]!, "c-item-word")), "質問");
+  // 本体の項目は話題の番だけ、列の数は 2
+  assert.deepEqual(find(find(turnCol, "c-col-body")[0]!, "c-item").map((i) => i.props["data-key"]), ["turn:ch:1"]);
+  assert.equal(textOf(find(turnCol, "c-badge")), "2");
+  const main = find(items[0]!, "c-item-main")[0]!;
+  assert.equal(main.type, "button");
+  (main.props.onClick as () => void)();
+  assert.deepEqual(calls.map((c) => [(c[0] as FlowItem).key, c[1]]), [["hand:ch:20", "hand:ch:20"]]);
+  // 右腕なし・列が空: 行は押せない（div）で §3 の文、本体に空の文
+  const empty = find(one(html`<${deck.Deck} model=${deck.deckModel(flowOf({ handRow: true }))} on=${on} />`), "c-col")[0]!;
+  const noneTop = find(empty, "c-col-top")[0]!;
+  assert.equal(find(noneTop, "c-item")[0]?.props["data-key"], "hand:none");
+  assert.equal(find(noneTop, "c-item-main")[0]?.type, "div");
+  assert.equal(textOf(find(noneTop, "c-item-sum")), HAND_NONE_TEXT);
+  assert.equal(textOf(find(find(empty, "c-col-body")[0]!, "c-empty-text")), "今は待たせている事がありません");
+  // 読み込み中（top が null）・handRow なしは .c-col-top を出さず、描き出しは今と同じ
+  const loading = one(html`<${deck.Deck} model=${deck.deckModel(flowOf({ topics: null, handRow: true }))} on=${on} />`);
+  assert.equal(find(loading, "c-col-top").length, 0);
+  const plain = one(html`<${deck.Deck} model=${deck.deckModel(flowOf({ topics }))} on=${on} />`);
+  assert.equal(find(plain, "c-col-top").length, 0);
+  assert.deepEqual(kids(find(plain, "c-col")[0]!).map((c) => c.props.class), ["c-col-head", "c-col-body"]);
+  assert.deepEqual(shapeOf(plain), shapeOf(one(html`<${deck.Deck} model=${deck.deckModel(flowOf({ topics, handRow: false }))} on=${on} />`)));
+});
+
+test("web components: TopicList は hand が在れば最初の button[data-topic] が右腕（div.c-list-hand の中・YourTurn の前）。右腕の番は あなたの番 の項目に出さず、turns.count は今のまま", () => {
+  const { calls, on } = ON();
+  const model = list.listModel(stateOf(sampleData(), { handRow: true })) as ReturnType<typeof list.listModel> & { hand?: { row: Obj | null; note: string } | null };
+  assert.deepEqual(model.hand?.row, { id: "hand:1", title: "右腕", mark: "turn", state: { text: "質問", tone: "warning" }, time: null, tag: null, done: false, current: false });
+  assert.deepEqual(model.turns?.items.map((t) => t.id), ["ch:1"]);
+  assert.equal(model.turns?.count, 2);
+  const tree = one(html`<${list.TopicList} model=${model} compact=${false} on=${on} />`);
+  const buttons = allOf(tree).filter((e) => e.type === "button" && typeof e.props["data-topic"] === "string");
+  assert.equal(buttons[0]?.props["data-topic"], "hand:1");
+  assert.equal(buttons[0]?.props.class, "c-row");
+  assert.equal(buttons[0]?.props["data-mark"], "turn");
+  assert.equal(buttons.filter((b) => b.props["data-topic"] === "hand:1").length, 1);
+  const hand = find(tree, "c-list-hand");
+  assert.equal(hand.length, 1);
+  const top = tree.children.filter((c): c is El => typeof c !== "string").map((c) => c.props.class);
+  assert.deepEqual(top.slice(0, 3), ["c-list-note", "c-list-hand", "c-turns"]);
+  (buttons[0]?.props.onClick as () => void)();
+  assert.deepEqual(calls, [["open", "hand:1", false]]);
+  // 右腕がまだ無い: 押せない行（button でない）と §3 の文
+  const none = one(html`<${list.TopicList} model=${list.listModel(stateOf({ ...sampleData(), rightHands: [] }, { handRow: true }))} compact=${false} on=${on} />`);
+  const noneHand = find(none, "c-list-hand")[0]!;
+  assert.equal(noneHand.props["data-none"], "true");
+  assert.equal(allOf(noneHand).filter((e) => e.type === "button").length, 0);
+  assert.deepEqual([textOf(find(noneHand, "c-row-title")), textOf(find(noneHand, "c-list-hand-note"))], ["右腕", HAND_NONE_TEXT]);
+  // handRow なし: 鍵 hand ごと無く、子の key と描き出しは今のまま
+  const plain = list.listModel(stateOf(sampleData()));
+  assert.ok(!("hand" in plain));
+  for (const handRow of [false, "true"]) assert.deepEqual(list.listModel(stateOf(sampleData(), { handRow })), plain, String(handRow));
+  assert.deepEqual(plain.turns?.items.map((t) => t.id), ["ch:1", "hand:1"]);
+  assert.equal(find(one(html`<${list.TopicList} model=${plain} compact=${false} on=${on} />`), "c-list-hand").length, 0);
+  const keys = keysOf(((list.TopicList({ model, compact: false, on }) as VNode).props.children as unknown[]).flat(Infinity)).filter((k) => k !== undefined);
+  assert.deepEqual(keys, ["hand", "turns", "label", "p:a", "others", "general", "other"]);
+  // turnItem は handRow の間だけ右腕の行の右腕を引かない
+  assert.equal(list.turnItem("hand:1", stateOf(sampleData(), { handRow: true })), null);
+  assert.equal(list.turnItem("hand:1", stateOf(sampleData()))?.title, "右腕");
+});
+
+test("web components: 一覧の右腕の行は、絞り込み中は題「右腕」に当たる時だけ（当たれば hitCount に数える）。印は話題の行と同じ rowModel で、見えている間は未読・作業中を出さない", () => {
+  const data = { ...sampleData(), rightHands: [handOf()] };
+  const at = (o: Obj) => list.listModel(stateOf(data, { handRow: true, ...o })) as ReturnType<typeof list.listModel> & { hand?: { row: Obj | null; note: string } | null };
+  assert.equal(at({ filter: "家計" }).hand, null);
+  assert.equal(at({ filter: "右腕" }).hand?.row?.id, "ch:20");
+  assert.equal(at({ filter: " 右 " }).hand?.row?.id, "ch:20");
+  assert.equal(at({ filter: "右腕 家計" }).hand, null);
+  // 当たる話題が右腕だけでも「当たる話題がありません」を出さない
+  const only = at({ filter: "右腕" });
+  assert.deepEqual([only.hitCount, only.note], [1, ""]);
+  assert.deepEqual([at({ filter: "当たらない" }).hitCount, at({ filter: "当たらない" }).note], [0, "当たる話題がありません"]);
+  // 絞り込んでいない間は数え方を変えない
+  assert.equal(at({}).hitCount, list.listModel(stateOf(data)).hitCount);
+  assert.equal(list.listModel(stateOf({ ...data, rightHands: [] }, { handRow: true, filter: "右腕" })).hitCount, 1);
+  // 印
+  const isUnread = (ch: string): boolean => ch === "20";
+  const isRunning = (ch: string): boolean => ch === "20";
+  const row = (o: Obj): Obj => at(o).hand?.row as Obj;
+  assert.deepEqual([row({}).mark, row({}).state, row({}).time], ["none", null, null]);
+  assert.deepEqual([row({ isUnread }).mark, row({ isUnread }).state], ["unread", null]);
+  assert.deepEqual([row({ isRunning }).mark, row({ isRunning }).state], ["running", { text: "作業中", tone: "accent" }]);
+  assert.equal(row({ isRunning: true }).mark, "none");
+  for (const o of [{ current: "ch:20" }, { seen: ["ch:20"] }]) {
+    const r = row({ isUnread, isRunning, ...o });
+    assert.deepEqual([r.mark, r.state], ["none", null], JSON.stringify(o));
+  }
+  assert.equal(row({ current: "ch:20" }).current, true);
+  assert.equal(row({ seen: ["ch:20"] }).current, false);
+  assert.equal(row({ isUnread, seen: "ch:20" }).mark, "unread");
+  // 番の印は見えていても残る
+  const turned = list.listModel(stateOf({ ...data, rightHands: [handOf({ turn: turnOf("permission") })] }, { handRow: true, current: "ch:20" })) as ReturnType<typeof list.listModel> & { hand?: { row: Obj | null } | null };
+  assert.deepEqual([turned.hand?.row?.mark, (turned.hand?.row?.state as Obj).text], ["turn", "許可"]);
+  // データが無い間は鍵 hand を足さない
+  assert.ok(!("hand" in list.listModel(stateOf(null, { handRow: true }))));
+});
+
+test("web components: .c-col-top と .c-list-hand は余白だけ（position・border・新しい色・影を書かない）。本番の入口（flows.js・topics.js・shell.js・c-app.js）は handRow を渡さず、見本に右腕の行の形が在る", () => {
+  const props = (file: string, head: RegExp): string[] =>
+    parseCss(read(file))
+      .filter((r) => r.selectors.some((s) => head.test(s)))
+      .flatMap((r) => r.body.split(";").map((d) => d.trim()).filter((d) => d !== "").map((d) => `${r.selectors.join(",")}: ${d}`));
+  const top = props("c-deck.css", /^\.c-col-top(?![a-z-])/);
+  assert.deepEqual(top, [".c-col-top: padding-bottom: var(--space-1)"]);
+  const hand = props("c-list.css", /^\.c-list-hand(?![a-z])/);
+  assert.ok(hand.length > 0);
+  for (const d of hand) {
+    assert.doesNotMatch(d, /: (?:position|border|box-shadow|color: (?!var\(--text-muted\))|background: (?!transparent))/, d);
+    assert.doesNotMatch(d, /#[0-9a-f]{3,8}\b|rgba?\(|hsl/i, d);
+  }
+  for (const file of ["flows.js", "topics.js", "shell.js", "c-app.js"]) assert.doesNotMatch(read(file), /handRow/, file);
+  const gallery = read("c-gallery.js");
+  for (const demo of ["deck-hand-turn", "deck-hand-unread", "deck-hand-running", "deck-hand-idle", "deck-hand-none", "list-hand", "list-hand-unread", "list-hand-none"]) assert.ok(gallery.includes(`"${demo}"`), demo);
+});
