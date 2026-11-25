@@ -670,7 +670,7 @@ function bandHandName(mark) {
 
 /**
  * 上の帯。conn は { tone: "ok"|"bad", label } か null（状態をまだ読めていない）、hand は { mark, open } か null、controls は右腕のボタンの aria-controls。
- * variant が phone（スマホ。D2）なら［右腕］を出さず（下のバーの物）、［始める］は字のないボタン。ほかは今の形。hand が無ければ［右腕］を出さない（広い幅の口は右下の丸。D6）。
+ * variant が phone（スマホ。D2）なら［右腕］を出さず（右腕は あなたの番 の列の一番上の行。#514）、［始める］は字のないボタン。ほかは今の形。hand が無ければ［右腕］を出さない（広い幅の口は右下の丸。D6）。
  * title は { name, count: number|null, tone: "warning"|undefined } か null（今いる列）。phone で name が空でないときだけ「self-agent」の代わりに列の名前と数を出す（列の見出しは出さない）。
  * turn は { count } か null（番の列が見えていない間の あなたの番 の数。#507）。phone でなく count が 1 以上の数のときだけ「self-agent」の代わりにボタン「あなたの番」と数。
  * on: { status(), find(opener), hand(opener), start(opener), more(opener), turn(opener) }
