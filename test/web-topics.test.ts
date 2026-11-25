@@ -27,7 +27,7 @@ import { PlaceSettingStore } from "../src/store/place-settings.ts";
 import { TopicMoveStore } from "../src/store/topic-moves.ts";
 import { TOPIC_PIN_MAX, TopicPinStore } from "../src/store/topic-pins.ts";
 import { CLOSE_CONFIRM_NOTICE, webChannelLookup } from "../src/web/routes/channels.ts";
-import { TOPIC_START_DUPLICATE_MS, topicRoutes } from "../src/web/routes/topics.ts";
+import { handPinsOfResult, TOPIC_START_DUPLICATE_MS, topicRoutes } from "../src/web/routes/topics.ts";
 import { createTopicCollector, type TopicRouteDeps } from "../src/web/routes/topics.ts";
 import { WEB_DUPLICATE_WINDOW_MS } from "../src/web/routes/turns.ts";
 import { createWebServer, type WebServer } from "../src/web/server.ts";
@@ -1397,7 +1397,7 @@ test("createTopicCollector: 同じ依存で集めて buildTopics した物が GE
   t.after(() => server.close());
   const fromRoute = await topics(server);
   const fromCollector = JSON.parse(
-    JSON.stringify({ ...buildTopics(createTopicCollector(deps)(NOW.getTime(), null)), reads: {}, pins: [], pinMax: 0 }),
+    JSON.stringify({ ...buildTopics(createTopicCollector(deps)(NOW.getTime(), null)), reads: {}, pins: [], pinMax: 0, handPins: [] }),
   ) as TopicsResult;
   assert.deepEqual(fromCollector, fromRoute);
   assert.ok(fromRoute.topics.length >= 4);
@@ -1790,6 +1790,13 @@ async function pinsOf(server: WebServer, path = "/api/topics"): Promise<{ pins: 
   return { pins: json.pins, pinMax: json.pinMax };
 }
 
+/** GET の応答の handPins（#514 の R5） */
+async function handPinsOf(server: WebServer, path = "/api/topics"): Promise<unknown> {
+  const { status, json } = await getJson(server, path);
+  assert.equal(status, 200);
+  return json.handPins;
+}
+
 const pin = (s: Awaited<ReturnType<typeof setup>>, channelId: string, body: unknown) =>
   postJson(s.server, `/api/topics/ch:${channelId}/pin`, body);
 
@@ -1797,6 +1804,7 @@ test("web topics: pins を渡さないと GET の pins は [] で pinMax は 0�
   const s = await setup(t);
   s.topicPins.add("200");
   assert.deepEqual(await pinsOf(s.server), { pins: [], pinMax: 0 });
+  assert.deepEqual(await handPinsOf(s.server), []);
   assert.deepEqual(await pin(s, "201", { on: true }), { status: 404, json: { error: "not_found" } });
   assert.deepEqual(s.topicPins.all(), ["200"]);
 });
@@ -1827,10 +1835,10 @@ test("GET /api/topics: 上限を越えて生きている物が在っても切ら
 
 test("POST /api/topics/ch:<id>/pin: on: true で留め、返事は書いた後の pins（留めた順）と pinMax。on: false で外す", async (t) => {
   const s = await setup(t, { pins: true });
-  assert.deepEqual(await pin(s, "205", { on: true }), { status: 200, json: { pins: ["205"], pinMax: 4 } });
-  assert.deepEqual(await pin(s, "200", { on: true }), { status: 200, json: { pins: ["205", "200"], pinMax: 4 } });
-  assert.deepEqual(await pin(s, "205", { on: false }), { status: 200, json: { pins: ["200"], pinMax: 4 } });
-  assert.deepEqual(await pin(s, "205", { on: true }), { status: 200, json: { pins: ["200", "205"], pinMax: 4 } });
+  assert.deepEqual(await pin(s, "205", { on: true }), { status: 200, json: { pins: ["205"], pinMax: 4, handPins: [] } });
+  assert.deepEqual(await pin(s, "200", { on: true }), { status: 200, json: { pins: ["205", "200"], pinMax: 4, handPins: [] } });
+  assert.deepEqual(await pin(s, "205", { on: false }), { status: 200, json: { pins: ["200"], pinMax: 4, handPins: [] } });
+  assert.deepEqual(await pin(s, "205", { on: true }), { status: 200, json: { pins: ["200", "205"], pinMax: 4, handPins: [] } });
   assert.deepEqual(await pinsOf(s.server), { pins: ["200", "205"], pinMax: 4 });
 });
 
@@ -1855,10 +1863,53 @@ test("POST /api/topics/ch:<id>/pin: 引けない（知らない ID・/setup 前�
   assert.deepEqual(s.topicPins.all(), []);
 });
 
-test("POST /api/topics/ch:<id>/pin: 右腕（#inbox）は 400 で、留めない", async (t) => {
+test("POST /api/topics/ch:<id>/pin: 右腕（#inbox）は 200 で留め、handPins に出て pins には出ない。on: false で外す。GET にも handPins（#514 の R5）", async (t) => {
   const s = await setup(t, { pins: true });
-  assert.deepEqual(await pin(s, "100", { on: true }), { status: 400, json: { error: "bad_request" } });
+  assert.deepEqual(await handPinsOf(s.server), []);
+  assert.deepEqual(await pin(s, "100", { on: true }), { status: 200, json: { pins: [], pinMax: 4, handPins: ["100"] } });
+  assert.deepEqual(s.topicPins.all(), ["100"]);
+  assert.deepEqual(await pinsOf(s.server), { pins: [], pinMax: 4 });
+  assert.deepEqual(await handPinsOf(s.server), ["100"]);
+  // 2 回留めても表の行は 1 つ
+  assert.deepEqual(await pin(s, "100", { on: true }), { status: 200, json: { pins: [], pinMax: 4, handPins: ["100"] } });
+  assert.deepEqual(s.topicPins.all(), ["100"]);
+  assert.deepEqual(await pin(s, "100", { on: false }), { status: 200, json: { pins: [], pinMax: 4, handPins: [] } });
   assert.deepEqual(s.topicPins.all(), []);
+  assert.deepEqual(await handPinsOf(s.server), []);
+});
+
+test("POST /api/topics/ch:<id>/pin: 右腕は上限の外。話題を 4 つ留めた後でも 200、右腕を留めた後でも話題を 4 つ留められ 5 つ目は 409（#514 の R5）", async (t) => {
+  const s = await setup(t, { pins: true });
+  for (const channelId of ["200", "201", "203", "205"]) {
+    assert.equal((await pin(s, channelId, { on: true })).status, 200, channelId);
+  }
+  assert.deepEqual(await pin(s, "100", { on: true }), {
+    status: 200,
+    json: { pins: ["200", "201", "203", "205"], pinMax: 4, handPins: ["100"] },
+  });
+  assert.deepEqual(await pin(s, "204", { on: true }), { status: 409, json: { error: "pin_limit", max: 4 } });
+
+  const u = await setup(t, { pins: true });
+  assert.equal((await pin(u, "100", { on: true })).status, 200);
+  for (const channelId of ["200", "201", "203", "205"]) {
+    assert.equal((await pin(u, channelId, { on: true })).status, 200, channelId);
+  }
+  assert.deepEqual(await pin(u, "204", { on: true }), { status: 409, json: { error: "pin_limit", max: 4 } });
+  assert.deepEqual(await pinsOf(u.server), { pins: ["200", "201", "203", "205"], pinMax: 4 });
+  assert.deepEqual(await handPinsOf(u.server), ["100"]);
+  assert.deepEqual(u.topicPins.all(), ["100", "200", "201", "203", "205"]);
+});
+
+test("handPinsOfResult: 表の順の、応答の右腕に在る channelId だけ。話題・右腕でも話題でもない ID は出ない（#514 の R5）", async (t) => {
+  const s = await setup(t, { pins: true });
+  const result = await topics(s.server);
+  assert.ok(result.rightHands.some((hand) => hand.id === "ch:100"));
+  assert.deepEqual(handPinsOfResult(result, ["999", "200", "100", "400"]), ["100"]);
+  assert.deepEqual(handPinsOfResult(result, ["999", "200", "400"]), []);
+  // GET でも同じ（表に右腕でも話題でもない行が残っていても出ない）
+  for (const channelId of ["999", "200", "100", "400"]) s.topicPins.add(channelId);
+  assert.deepEqual(await handPinsOf(s.server), ["100"]);
+  assert.deepEqual(await pinsOf(s.server), { pins: ["200"], pinMax: 4 });
 });
 
 test("POST /api/topics/ch:<id>/pin: 生きている留めた話題が 4 つなら 5 つ目は 409 pin_limit。完了した留めた話題は数に入らない", async (t) => {
@@ -1871,20 +1922,20 @@ test("POST /api/topics/ch:<id>/pin: 生きている留めた話題が 4 つな�
   assert.deepEqual(await pin(s, "204", { on: true }), { status: 409, json: { error: "pin_limit", max: 4 } });
   assert.deepEqual(s.topicPins.all(), ["202", "200", "201", "203", "205"]);
   // もう留めてある物は上限でも 200 で、何も変えない
-  assert.deepEqual(await pin(s, "201", { on: true }), { status: 200, json: { pins: ["200", "201", "203", "205"], pinMax: 4 } });
+  assert.deepEqual(await pin(s, "201", { on: true }), { status: 200, json: { pins: ["200", "201", "203", "205"], pinMax: 4, handPins: [] } });
   // 1 つ外せば留められる
   assert.equal((await pin(s, "200", { on: false })).status, 200);
-  assert.deepEqual(await pin(s, "204", { on: true }), { status: 200, json: { pins: ["201", "203", "205", "204"], pinMax: 4 } });
+  assert.deepEqual(await pin(s, "204", { on: true }), { status: 200, json: { pins: ["201", "203", "205", "204"], pinMax: 4, handPins: [] } });
 });
 
 test("POST /api/topics/ch:<id>/pin: 冪等。同じ on: true を 2 回でも 1 つで順も変わらず、留めていない物・引けない物への on: false は 200", async (t) => {
   const s = await setup(t, { pins: true });
   await pin(s, "200", { on: true });
   await pin(s, "201", { on: true });
-  assert.deepEqual(await pin(s, "200", { on: true }), { status: 200, json: { pins: ["200", "201"], pinMax: 4 } });
+  assert.deepEqual(await pin(s, "200", { on: true }), { status: 200, json: { pins: ["200", "201"], pinMax: 4, handPins: [] } });
   assert.deepEqual(s.topicPins.all(), ["200", "201"]);
-  assert.deepEqual(await pin(s, "203", { on: false }), { status: 200, json: { pins: ["200", "201"], pinMax: 4 } });
-  assert.deepEqual(await pin(s, "999", { on: false }), { status: 200, json: { pins: ["200", "201"], pinMax: 4 } });
+  assert.deepEqual(await pin(s, "203", { on: false }), { status: 200, json: { pins: ["200", "201"], pinMax: 4, handPins: [] } });
+  assert.deepEqual(await pin(s, "999", { on: false }), { status: 200, json: { pins: ["200", "201"], pinMax: 4, handPins: [] } });
   assert.deepEqual(s.topicPins.all(), ["200", "201"]);
 });
 
@@ -1942,9 +1993,9 @@ test("POST /api/topics/ch:<id>/pin: 留め済みで完了した話題への on: 
 
 test("POST /api/topics/ch:<id>/pin: #tasks・足した人格の入口・生きている Claude Code のチャンネルは留められる", async (t) => {
   const s = await setup(t, { pins: true, cc: true });
-  assert.deepEqual(await pin(s, "101", { on: true }), { status: 200, json: { pins: ["101"], pinMax: 4 } });
-  assert.deepEqual(await pin(s, "102", { on: true }), { status: 200, json: { pins: ["101", "102"], pinMax: 4 } });
-  assert.deepEqual(await pin(s, "300", { on: true }), { status: 200, json: { pins: ["101", "102", "300"], pinMax: 4 } });
+  assert.deepEqual(await pin(s, "101", { on: true }), { status: 200, json: { pins: ["101"], pinMax: 4, handPins: [] } });
+  assert.deepEqual(await pin(s, "102", { on: true }), { status: 200, json: { pins: ["101", "102"], pinMax: 4, handPins: [] } });
+  assert.deepEqual(await pin(s, "300", { on: true }), { status: 200, json: { pins: ["101", "102", "300"], pinMax: 4, handPins: [] } });
   assert.deepEqual(await pinsOf(s.server), { pins: ["101", "102", "300"], pinMax: 4 });
 });
 
