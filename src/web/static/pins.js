@@ -13,7 +13,7 @@
   // ===== 状態 =====
   /** 列（channelId → { id, section, head, ed, stick, on, frame }）。DOM の順は pinColumns の順（#v3-pins の子の順） */
   const cols = new Map();
-  /** 最後に数えた、端まで見えている留めた列の channelId（DOM の順） */
+  /** 最後に数えた、端まで見えている会話の列の channelId（DOM の順 = pinColumns の順） */
   let seenIds = [];
   /** 帯を送っている途中か（shell.js の moved で立て、settle で下ろす）。立っている間は見えている列を減らすだけ（docs/plan/web-ui-pins.md §4.6 の「迷う時は見えていないに倒す」） */
   let moving = false;
@@ -205,7 +205,7 @@
     return true;
   }
 
-  /** 今 DOM に在る列の channelId（留めた順） */
+  /** 今 DOM に在る列の channelId（pinColumns の順） */
   function ids() {
     const box = $("v3-pins");
     return box ? [...box.children].map((n) => n.getAttribute("data-pin")).filter((id) => typeof id === "string" && cols.has(id)) : [];
@@ -270,7 +270,7 @@
     measure();
   }
 
-  /** 最後に数えた、見えている留めた列の channelId */
+  /** 最後に数えた、見えている会話の列の channelId（pinColumns の順） */
   function seen() {
     return seenIds.slice();
   }
