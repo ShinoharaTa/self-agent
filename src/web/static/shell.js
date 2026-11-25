@@ -772,9 +772,11 @@
 
   /** 最後の syncHand が見た右腕のタブ（右腕のチャンネルが替わった・無くなったかを比べる。#514） */
   let lastHandTab = null;
+  /** 留めた右腕の列に最後に描いた見出しの状態（handStatus の JSON。列が無い間は null。#514 の R6） */
+  let handColTop = null;
 
   /**
-   * 話題の一覧を読むたびに: 右腕が替わっていたら席の前の右腕をやめ、席の右腕は一覧より先に開いた（hash）・札の中身が変わったら席の側を描き直し、印を描く（#514）
+   * 話題の一覧を読むたびに: 右腕が替わっていたら席の前の右腕をやめ、席の右腕は一覧より先に開いた（hash）・札の中身が変わったら席の側を描き直し、留めた右腕の列は札の中身か見出しの状態が変わったら描き直し、印を描く（#514）
    */
   function syncHand() {
     const tab = handTab();
@@ -782,11 +784,15 @@
     if (lastHandTab !== null && lastHandTab !== tab && S.active === lastHandTab) leaveHandSeat();
     lastHandTab = tab;
     if (handSeated() && (!edHand || handCardSig !== cardSig())) refresh(tab);
-    else if (handColumn() && handCardSig !== cardSig()) {
-      // 留めた右腕の列（#514 の R6）も札の中身が変わったら描き直す（refresh が列を描き直す）
-      refresh(tab);
-      handCardSig = cardSig();
-    }
+    else if (handColumn()) {
+      // 留めた右腕の列（#514 の R6）も、札の中身か見出しの状態（あなたの番・作業中）が変わったら描き直す（refresh が列を描き直す）
+      const top = JSON.stringify(handStatus());
+      if (handCardSig !== cardSig() || handColTop !== top) {
+        refresh(tab);
+        handCardSig = cardSig();
+        handColTop = top;
+      }
+    } else handColTop = null;
     renderHandEntries();
   }
 

@@ -246,7 +246,8 @@ R5 で入れた（`src/web/routes/topics.ts` の `handPinsOfResult` と POST `/p
 
 R6 で入れた（`topics.js` の `hand`・`handPinnable`・`handPinned`・`pinColumns`、`shell.js` の `pinRow`・`seatPin`・`handSeatTop`・`openHandMenu`・`PINS_ON` の `frame`・`top`、`pins.js` の `sync`）。設計と違う・足した所:
 `handPinnable()` は `handPins` が配列で `pinMax() >= 1` の時だけ（pins の配線が無いサーバーは `handPins: []`・`pinMax: 0`）。`top(channelId)` は列を描くたびに訊く（状態の あなたの番・作業中が変わるため。`frame` は列を作る時だけ）。
-札の中身が変わったら列の右腕も描き直す（`syncHand`。§2.2）。席の右腕を列へ移した時（`leavePinnedSeat`）は右腕の印も描き直す。`open` の列へ送る枝は足していない（留めた話題の分かれ道にそのまま乗る）。
+札の中身か見出しの状態（あなたの番・作業中）が変わったら列の右腕も描き直す（`syncHand` が一覧を読むたびに見直す。§2.2）。
+「探す」の板の右腕の行の `seen` は席だけを見る（列が見えていても板の行には未読・作業中の印が出る。板の間は列が幕の下で、既読も付けないため）。席の右腕を列へ移した時（`leavePinnedSeat`）は右腕の印も描き直す。`open` の列へ送る枝は足していない（留めた話題の分かれ道にそのまま乗る）。
 
 ### 6.3 `HAND_FRAME` のどれが列に当てはまるか
 
@@ -530,8 +531,8 @@ R5 は R2 の後ならいつ入れてもよい（R3・R4 と並べて進めら�
 
 ### R6 右腕を留める画面
 
-- 触る: `topics.js`（`handPinned`・`handPinnable`・`pinColumns`・`setPins`）、`shell.js`（`pinRow`・`seatPin`・`pinFit`・`pinnedSeat`・`PINS_ON` に `frame`・`top`・`open` の列へ送る枝）、`pins.js`（`sync` が `pinColumns()` を使う・`frame`・`top` を訊く）、
-  `flows.js`（`seen` はそのまま右腕の id も入る）、テスト 2 つ、`ui-shots.ts`。
+- 触る: `topics.js`（`hand`・`handPinned`・`handPinnable`・`pinColumns`・`setPins`）、`shell.js`（`pinRow`・`seatPin`・`pinFit`・`pinnedSeat`・`handSeatTop`・`openHandMenu`・`syncHand`・`PINS_ON` に `frame`・`top`）、`pins.js`（`sync` が `pinColumns()` を使う・`frame`・`top` を訊く）、
+  `test/web-static.test.ts`、`ui-shots.ts`。`open` と `flows.js` は変えていない（留めた話題の分かれ道と `seen` にそのまま乗る）。`test/web-components.test.ts` も変えていない（部品に触れていない）。
 - 受け入れ:
   - `handPins` が応答に無いとき、右腕の席の見出しに `data-act="pin"` が無く、「…」にピンの行が無い。
   - 在るとき: 席の右腕のピンのボタンを押すと席が閉じ、`#v3-pins` の最初の子が右腕の列（`[data-pin="<右腕>"]`）。見出しの題が「右腕」、入力欄の placeholder が「右腕に頼む・訊く」。

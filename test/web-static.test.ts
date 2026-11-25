@@ -13376,6 +13376,12 @@ test("web static: 右腕のピン留め（R6）: 留めた右腕を開く（行�
   assert.ok(pinCol(h, "900")!.contains(h.document.activeElement));
   assert.ok(h.pins!.seen().includes("900"));
   assert.ok(json((h.app as PinApp).readingChannelIds()).includes("900"));
+  // 流れの列（本物の flows.js）の state の seen に ch: 付きで入る（帯の間）
+  const fsa: Record<string, unknown> = { store: { want() {}, load: {}, isUnread: () => false }, ui: { shortTime: () => "" }, views: {}, topics: { data: () => null }, pins: h.pins };
+  vm.runInNewContext(read("flows.js"), { window: { SA: fsa } });
+  const realFlows = fsa.flows as { setView: (v: unknown) => void; state: () => Record<string, unknown> };
+  realFlows.setView({ cols: 3, current: null, paged: false, strip: true });
+  assert.ok((json(realFlows.state().seen) as string[]).includes("ch:900"));
   // 「探す」の板から: 板を閉じて列へ
   lastBand(h).on.find!(h.nodes.bandButtons.find);
   h.app.open("ch:900");
@@ -13478,4 +13484,74 @@ test("web static: 右腕のピン留め（R6）: 留めた右腕の列も、返�
   await h.topics.load();
   assert.equal(h.handRenders.filter((r) => r.id === "900").length, renders + 1);
   assert.match(text(), /「領収書の整理 2」/);
+});
+
+test("web static: 右腕のピン留め（R6 のレビュー）: 留めた右腕の列の見出しの状態は一覧を読むたびに見直す（番が入れば「あなたの番」・外れれば消える）。変わらない読み直しでは列を描き直さない", async () => {
+  const turn = { kind: "permission", since: "2026-11-14T00:00:00Z", summary: null };
+  const { h, state } = await loadHandPins({}, ["1"], ["900"]);
+  const topics = [1, 2, 3, 4, 5].map((n) => v3Topic("ch:" + n, { title: "題" + n }));
+  h.api.reply = () => Promise.resolve(v3Result(topics, { ...state }));
+  await h.topics.load();
+  assert.equal(pinHead(h, "900").status, null);
+  const draws = () => h.handRenders.filter((r) => r.id === "900").length;
+  // 変わらない読み直しでは描き直さない
+  let n = draws();
+  await h.topics.load();
+  assert.equal(draws(), n);
+  // 番が入る
+  state.rightHands = [v3Hand({ turn })];
+  await h.topics.load();
+  assert.deepEqual(json(pinHead(h, "900").status), { text: "あなたの番", tone: "warning" });
+  assert.equal(draws(), n + 1);
+  n = draws();
+  await h.topics.load();
+  assert.equal(draws(), n);
+  // 外れる
+  state.rightHands = [v3Hand()];
+  await h.topics.load();
+  assert.equal(pinHead(h, "900").status, null);
+  assert.equal(draws(), n + 1);
+});
+
+test("web static: 右腕のピン留め（R6 のレビュー）: 右腕のチャンネルが替わる・消える・順が入れ替わると、古い右腕の列は消え、新しい右腕は留めてあれば先頭の列（右腕の会話の指定と題）。席だけの幅で席に開いた留めた右腕が替われば席は空で一覧に戻る", async () => {
+  const topics = [1, 2, 3, 4, 5].map((n) => v3Topic("ch:" + n, { title: "題" + n }));
+  const reply = (h: PinShell, o: Record<string, unknown>) => {
+    h.api.reply = () => Promise.resolve(v3Result(topics, { pins: ["1"], pinMax: 4, ...o }));
+    return h.topics.load();
+  };
+  const handFrame = (h: PinShell, id: string) => h.handRenders.filter((r) => r.id === id).at(-1)!.frame;
+  // 右腕が 901（留めていない）に替わる: 列は話題だけ、900 の入力欄の根は 0
+  const a = (await loadHandPins({}, ["1"], ["900"])).h;
+  assert.deepEqual(pinCols(a), ["900", "1"]);
+  await reply(a, { rightHands: [v3Hand({ id: "ch:901", guildId: "g2" })], handPins: ["900"] });
+  assert.deepEqual(pinCols(a), ["1"]);
+  assert.equal(a.document.body.querySelectorAll('[data-composer="900"]').length, 0);
+  // 901 が handPins に在る: 列の先頭が 901、枠と題も右腕
+  await reply(a, { rightHands: [v3Hand({ id: "ch:901", guildId: "g2" })], handPins: ["900", "901"] });
+  assert.deepEqual(pinCols(a), ["901", "1"]);
+  assert.equal(handFrame(a, "901").title, "右腕");
+  assert.equal(handFrame(a, "901").placeholder, "右腕に頼む・訊く");
+  assert.equal(pinHead(a, "901").title, "右腕");
+  // rightHands が空（handPins に古い 900 が残っても）: 右腕の列は消え、話題の列が無ければ帯ごと無くなる
+  const b = (await loadHandPins({}, [], ["900"])).h;
+  assert.deepEqual(pinCols(b), ["900"]);
+  b.api.reply = () => Promise.resolve(v3Result(topics, { rightHands: [], pins: [], pinMax: 4, handPins: ["900"] }));
+  await b.topics.load();
+  assert.deepEqual(pinCols(b), []);
+  assert.equal(b.nodes.v3.getAttribute("data-pins"), null);
+  // rightHands の順が入れ替わる（新しい先頭は留めていない）: 古い右腕の列は消える
+  const c = (await loadHandPins({}, ["1"], ["900"])).h;
+  await reply(c, { rightHands: [v3Hand({ id: "ch:901", guildId: "g2" }), v3Hand()], handPins: ["900"] });
+  assert.deepEqual(pinCols(c), ["1"]);
+  // 席だけの幅で席に開いた留めた右腕が替わる: 席は空・一覧に戻り、列は新しい右腕（留めてあれば）だけ
+  const d = (await loadHandPins({ phone: true, width: 390 }, ["1"], ["900"])).h;
+  d.app.open("ch:900");
+  d.setPhone(false, 700);
+  assert.equal(d.nodes.v3.getAttribute("data-view"), "body");
+  assert.equal(d.nodes.v3.getAttribute("data-pins"), null);
+  await reply(d, { rightHands: [v3Hand({ id: "ch:901", guildId: "g2" })], handPins: ["900", "901"] });
+  assert.equal(d.nodes.v3.getAttribute("data-view"), "list");
+  assert.equal(d.nodes.ed.querySelectorAll("[data-composer]").length, 0);
+  assert.deepEqual(pinCols(d), ["901", "1"]);
+  assert.equal(d.document.body.querySelectorAll('[data-composer="900"]').length, 0);
 });
