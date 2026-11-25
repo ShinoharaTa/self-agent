@@ -5843,7 +5843,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
             stripLines(s, "2 本留めた所", 2);
 
             // 左端: 読み込み直すと帯は左端（位置は覚えない）
-          await load(page, "/");
+            await load(page, "/");
             await page.waitForSelector(`#v3-pins > section.v3-pin[data-pin="${b.id}"] .c-top`, { timeout: 5000 });
             await settled(page);
             s = await strip();

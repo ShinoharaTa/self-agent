@@ -3409,9 +3409,10 @@ function loadShell(
     loading: () => ui.el("p", { class: "loading", text: "読み込み中…" }),
   };
   const loads = { channels: 0, turns: [] as string[] };
-  // 既読（M7）: topics.js の syncReads の引数と、shell.js の markSeenShown の回数・呼ばれた時点の readingChannelIds の写し（SA.app がまだ無ければ null）
+  // 既読（M7）: topics.js の syncReads の引数と、shell.js の markSeenShown の回数・呼ばれた時点の readingChannelIds の写し（SA.app がまだ無ければ null）。
+  // rendered は描いた時に readingChannelIds に入っていた（chat.js の render なら store.markSeen を呼ぶ）チャンネル
   const syncs: Array<{ reads: unknown; ids: string[] }> = [];
-  const marks = { seenShown: 0, reading: [] as Array<string[] | null> };
+  const marks = { seenShown: 0, reading: [] as Array<string[] | null>, rendered: [] as string[] };
   SA.store = {
     status: opts.status === undefined ? {} : opts.status,
     notices: null,
@@ -3463,6 +3464,8 @@ function loadShell(
     STATE_LABEL: { active: "進行中", waiting: "待ち", done: "完了" },
     render: (container: DomNode, id: string, frame: HandFrame) => {
       handRenders.push({ id, frame });
+      const app = SA.app as { readingChannelIds?: () => string[] } | undefined;
+      if (app && typeof app.readingChannelIds === "function" && app.readingChannelIds().includes(id)) marks.rendered.push(id);
       const kept = (container.children as DomNode[]).find((c) => c.classes.has("composer-wrap"));
       const scroll = ui.el("div", { class: "ed-scroll", "data-stick": "bottom" });
       scroll.scrollHeight = heights.hand ?? 1000;
@@ -3826,6 +3829,8 @@ function loadShell(
     press,
     app: SA.app as ShellApp,
     topics: SA.topics as Topics,
+    // 留めた話題の列の口（opts.pins のときだけ）
+    pins: SA.pins as { seen: () => string[]; measure: () => void } | undefined,
     nodes: { v3, ed, listRoot, headOps, searchBox, sheet: ids.get("v3-sheet")!, list, main, topRoot, topButtons, hand, handEd, handShow, backdrop, bottomRoot, bottomHand, bottomMore, band, bandButtons, orb, orbButton, deckBox, itemButton, findBackdrop, foot, footButtons, pinsBox },
     pinHeads,
     v3Style,
@@ -13392,7 +13397,7 @@ const pinButton = (h: ReturnType<typeof loadShell>, id: string) => pinCol(h, id)
 const json = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 /** 帯（送りの位置を読み書きできる） */
 const bandOf = (h: ReturnType<typeof loadShell>) => h.nodes.deckBox as DomNode & { scrollLeft: number };
-type PinApp = ShellApp & { shownChannelIds: () => string[]; readingChannelIds: () => string[] };
+type PinApp = ShellApp & { shownChannelIds: () => string[]; readingChannelIds: () => string[]; setDraft: (channelId: string, value: string) => void };
 
 test("web static: 留めた話題の列（P4）: 留めた数 0・スマホ・席だけの幅では #v3 に data-pins も変数も書かず、#v3-pins は空、流れの列に strip を渡さない", async () => {
   const check = (h: ReturnType<typeof loadShell>, label: string) => {
@@ -13507,6 +13512,157 @@ test("web static: 留めた話題の列（P4）: 見えている列は送りが�
   assert.deepEqual(json(pins.shownChannelIds()), ["1"]);
 });
 
+test("web static: 留めた話題の列（P4）: 送っている途中は見えている列を減らすだけ（scroll のたび）。外へ出た列は描き直しても既読を付けない。新しく見えた列は止まって（150ms か scrollend）から足して既読", async () => {
+  const h = await loadPins();
+  const pins = h.app as PinApp;
+  // 412 で止まる: 列 1・2 が見えている
+  bandOf(h).scrollLeft = 412;
+  h.nodes.deckBox.dispatch("scroll");
+  h.advance(150);
+  assert.deepEqual(json(h.pins!.seen()), ["1", "2"]);
+  // 0 へ送り始めた直後（止まる前）: 列 2 は外へ出たので、見えている物・reading から外す（足さない・読まない・既読を付け直さない）
+  const before = { seen: h.marks.seenShown, turns: h.loads.turns.length, renders: h.flows.renders };
+  bandOf(h).scrollLeft = 0;
+  h.nodes.deckBox.dispatch("scroll");
+  assert.deepEqual(json(h.pins!.seen()), ["1"]);
+  assert.deepEqual(json(pins.shownChannelIds()), ["1"]);
+  assert.deepEqual(json(pins.readingChannelIds()), ["1"]);
+  assert.equal(h.marks.seenShown, before.seen);
+  assert.equal(h.loads.turns.length, before.turns);
+  // 節「ピン留め」の行の線（流れの列）は描き直す
+  assert.equal(h.flows.renders, before.renders + 1);
+  // その間に /turns が届いて描き直しても、列 2 には既読を付けない
+  const rendered = h.marks.rendered.length;
+  h.app.refresh("ch:2");
+  assert.equal(h.handRenders.at(-1)!.id, "2");
+  assert.deepEqual(h.marks.rendered.slice(rendered), []);
+  // 送りの途中（412 へ戻した）: 新しく端まで見えた列 2 は止まるまで足さない（measure を直に呼んでも）
+  bandOf(h).scrollLeft = 412;
+  h.nodes.deckBox.dispatch("scroll");
+  assert.deepEqual(json(h.pins!.seen()), ["1"]);
+  h.pins!.measure();
+  assert.deepEqual(json(h.pins!.seen()), ["1"]);
+  h.advance(149);
+  assert.deepEqual(json(h.pins!.seen()), ["1"]);
+  assert.deepEqual(json(pins.readingChannelIds()), ["1"]);
+  // 止まった（最後の scroll から 150ms）: 足して、読み直して描き、既読を付け直す
+  h.advance(1);
+  assert.deepEqual(json(h.pins!.seen()), ["1", "2"]);
+  assert.deepEqual(json(pins.readingChannelIds()), ["1", "2"]);
+  assert.ok(h.marks.seenShown > before.seen);
+  assert.deepEqual(h.marks.reading.at(-1), ["1", "2"]);
+  assert.ok(h.marks.rendered.slice(rendered).includes("2"));
+  // scrollend が来れば、タイマーを進めなくても止まったとみなす（後の 150ms では何も変えない）
+  bandOf(h).scrollLeft = 0;
+  h.nodes.deckBox.dispatch("scroll");
+  assert.deepEqual(json(h.pins!.seen()), ["1"]);
+  bandOf(h).scrollLeft = 412;
+  h.nodes.deckBox.dispatch("scroll");
+  assert.deepEqual(json(h.pins!.seen()), ["1"]);
+  h.nodes.deckBox.dispatch("scrollend");
+  assert.deepEqual(json(h.pins!.seen()), ["1", "2"]);
+  const settled = { seen: h.marks.seenShown, renders: h.flows.renders };
+  h.advance(150);
+  assert.deepEqual([h.marks.seenShown, h.flows.renders], [settled.seen, settled.renders]);
+  // 止まった後は measure で足せる（送りの途中の旗は下りている）
+  bandOf(h).scrollLeft = 0;
+  h.pins!.measure();
+  assert.deepEqual(json(h.pins!.seen()), ["1"]);
+});
+
+test("web static: 留めた話題の列（P4）: 送っている途中に列が 0 本になった・帯をやめた時は、送りの途中の旗を下ろす（次に留めた列は止まりを待たずに数える）", async () => {
+  const h = await loadPins({}, ["1"]);
+  h.nodes.deckBox.dispatch("scroll");
+  h.topics.setPins({ pins: [], pinMax: 4 });
+  assert.equal(h.nodes.pinsBox.children.length, 0);
+  h.topics.setPins({ pins: ["1"], pinMax: 4 });
+  assert.deepEqual(json(h.pins!.seen()), ["1"]);
+});
+
+test("web static: 留めた話題の列（P4）: 留める・外すの応答を待つ間に焦点がほかの列の入力欄へ移っていれば、応答の後も焦点を動かさない（帯は今までどおり送る）。始めた所に焦点が在れば今の決まりで移す", async () => {
+  const later = () => {
+    let done: (v: unknown) => void = () => undefined;
+    const p = new Promise((r) => (done = r));
+    return { p, done };
+  };
+  const topics = () => [v3Topic("ch:1"), v3Topic("ch:2"), v3Topic("ch:3")];
+  // 席から留める: 待つ間に列 1 の入力欄へ
+  const h = await loadPins({}, ["1"]);
+  h.app.open("ch:3");
+  const st = h.lastTop() as PinTopState;
+  h.api.reply = () => Promise.resolve(v3Result(topics(), { rightHands: [v3Hand()], pins: ["1", "3"], pinMax: 4 }));
+  let w = later();
+  h.api.postReply = () => w.p;
+  h.nodes.topButtons.menu.focus();
+  st.on.pin!();
+  const other = pinCol(h, "1")!.querySelector('[data-composer="1"]')!;
+  other.focus();
+  w.done({ pins: ["1", "3"], pinMax: 4 });
+  await h.flush();
+  assert.deepEqual(pinCols(h), ["1", "3"]);
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "list");
+  assert.equal(bandOf(h).scrollLeft, 412);
+  assert.equal(h.document.activeElement, other);
+  // 席から留める: 焦点が席の中（見出しの「…」）に在ったまま → 留めた列のピンのボタン
+  const s = await loadPins({}, ["1"]);
+  s.app.open("ch:3");
+  s.api.reply = () => Promise.resolve(v3Result(topics(), { rightHands: [v3Hand()], pins: ["1", "3"], pinMax: 4 }));
+  w = later();
+  s.api.postReply = () => w.p;
+  s.nodes.topButtons.menu.focus();
+  (s.lastTop() as PinTopState).on.pin!();
+  w.done({ pins: ["1", "3"], pinMax: 4 });
+  await s.flush();
+  assert.equal(s.document.activeElement, pinButton(s, "3"));
+  // 列から外す: 待つ間に列 3 の入力欄へ → 動かさない
+  const u = await loadPins({}, ["1", "2", "3"]);
+  u.api.reply = () => Promise.resolve(v3Result(topics(), { rightHands: [v3Hand()], pins: ["2", "3"], pinMax: 4 }));
+  w = later();
+  u.api.postReply = () => w.p;
+  pinButton(u, "1").focus();
+  pinHead(u, "1").on.pin(pinButton(u, "1"));
+  const typing = pinCol(u, "3")!.querySelector('[data-composer="3"]')!;
+  typing.focus();
+  w.done({ pins: ["2", "3"], pinMax: 4 });
+  await u.flush();
+  assert.deepEqual(pinCols(u), ["2", "3"]);
+  assert.equal(u.document.activeElement, typing);
+  // 列から外す: 焦点がその列のピンのボタンに在ったまま → 右隣の列のピンのボタン
+  const v = await loadPins({}, ["1", "2", "3"]);
+  v.api.reply = () => Promise.resolve(v3Result(topics(), { rightHands: [v3Hand()], pins: ["2", "3"], pinMax: 4 }));
+  w = later();
+  v.api.postReply = () => w.p;
+  pinButton(v, "1").focus();
+  pinHead(v, "1").on.pin(pinButton(v, "1"));
+  w.done({ pins: ["2", "3"], pinMax: 4 });
+  await v.flush();
+  assert.equal(v.document.activeElement, pinButton(v, "2"));
+});
+
+test("web static: 留めた話題の列（P4）: 席で見ている話題がほかの端末で留められて列になった時、焦点が席の中なら列の入力欄へ移す（席の外なら動かさない）。書きかけは残る", async () => {
+  const topics = () => [v3Topic("ch:1", { title: "一" }), v3Topic("ch:2", { title: "二" }), v3Topic("ch:3", { title: "三" })];
+  const h = await loadPins({}, ["1"]);
+  h.app.open("ch:3");
+  (h.app as PinApp).setDraft("3", "書きかけ");
+  h.nodes.ed.querySelector('[data-composer="3"]')!.focus();
+  h.api.reply = () => Promise.resolve(v3Result(topics(), { rightHands: [v3Hand()], pins: ["1", "3"], pinMax: 4 }));
+  await h.topics.load();
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "list");
+  assert.deepEqual(pinCols(h), ["1", "3"]);
+  const composer = pinCol(h, "3")!.querySelector('[data-composer="3"]')!;
+  assert.equal(h.document.activeElement, composer);
+  assert.equal(bandOf(h).scrollLeft, 412);
+  assert.equal(h.app.draft("3"), "書きかけ");
+  // 焦点が席の外（列 1 のピンのボタン）なら動かさない
+  const s = await loadPins({}, ["1"]);
+  s.app.open("ch:3");
+  pinButton(s, "1").focus();
+  s.api.reply = () => Promise.resolve(v3Result(topics(), { rightHands: [v3Hand()], pins: ["1", "3"], pinMax: 4 }));
+  await s.topics.load();
+  assert.deepEqual(pinCols(s), ["1", "3"]);
+  assert.equal(s.document.activeElement, pinButton(s, "1"));
+});
+
 test("web static: 留めた話題の列（P4）: 帯の間は留めた話題を席に開かず、その列へ帯をすぐ送り（末尾は右端・端まで見えていれば送らない）入力欄に焦点。住所は書かない。「探す」の板は閉じる", async () => {
   const h = await loadPins();
   h.app.open("ch:2");
@@ -13576,7 +13732,9 @@ test("web static: 留めた話題の列（P4）: 席の見出しのピンのボ�
   assert.equal(h.document.activeElement, pinButton(h, "3"));
   // 最後の 1 本: 列の「…」の板は「ピン留めを外す」とチャンネルの操作だけ。外すと留めた数 0 の形で、焦点は［探す］
   h.chatHeads["3"] = { title: "三", status: null, note: null, menu: [{ icon: "rotate-ccw", label: "会話を新しくする", run: () => undefined }], mode: "default" };
-  pinHead(h, "3").on.menu(pinCol(h, "3")!.querySelector('[data-act="menu"]')!.querySelector("button"));
+  const menu3 = pinCol(h, "3")!.querySelector('[data-act="menu"]')!.querySelector("button")!;
+  menu3.focus();
+  pinHead(h, "3").on.menu(menu3);
   assert.equal(h.nodes.sheet.getAttribute("aria-label"), "三 の操作");
   assert.deepEqual(
     h.nodes.sheet.querySelectorAll("button.more-row").map((r) => textOf(r.querySelector("span.sb-label")!)),
@@ -13585,6 +13743,8 @@ test("web static: 留めた話題の列（P4）: 席の見出しのピンのボ�
   h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:1"), v3Topic("ch:2"), v3Topic("ch:3")], { rightHands: [v3Hand()], pins: [], pinMax: 4 }));
   h.api.postReply = () => Promise.resolve({ pins: [], pinMax: 4 });
   h.nodes.sheet.querySelectorAll("button.more-row")[0]!.dispatch("click");
+  // ブラウザは showModal で開いた <dialog> を閉じると、焦点を開く前の所（列の「…」）へ戻す。偽の板は戻さないので代わりに戻す
+  menu3.focus();
   await h.flush();
   assert.equal(h.nodes.v3.getAttribute("data-pins"), null);
   assert.equal(h.v3Style.props.size, 0);
@@ -13610,7 +13770,7 @@ test("web static: 留めた話題の列（P4）: 席の見出しのピンのボ�
 
 test("web static: 留めた話題の列（P4）: pins.js の口と、横の送りに wheel を取らない・scrollLeft を書くのは jump だけ", () => {
   const js = read("pins.js");
-  assert.match(js, /\n {2}SA\.pins = \{ sync, has, refresh, measure, seen, turnSeen, jump, ids \};\n/);
+  assert.match(js, /\n {2}SA\.pins = \{ sync, has, refresh, measure, moved, settle, seen, turnSeen, jump, ids \};\n/);
   for (const name of ["pins.js", "shell.js"]) assert.doesNotMatch(read(name), /["']wheel["']/, name);
   assert.equal((js.match(/scrollLeft =/g) ?? []).length, 1);
   assert.match(fnSource(js, "jump"), /scrollLeft = /);
