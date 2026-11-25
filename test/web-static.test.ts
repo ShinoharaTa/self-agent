@@ -2997,7 +2997,7 @@ const { deckFit, DECK, stripFit, stripSeen } = (await import(deckUrl)) as {
   stripFit: (width: number, seatOpen: boolean) => { show: boolean; seat: number; room: number; colW: number; convW: number };
   stripSeen: (view: unknown, cols: unknown, slack?: number) => string[];
 };
-type BandState = { variant?: string; page?: string; conn: { tone: string; label: string } | null; hand: { mark: string | null; open: boolean } | null; controls: string; on: Record<string, (opener?: unknown) => unknown> };
+type BandState = { variant?: string; page?: string; turnAway?: boolean; conn: { tone: string; label: string } | null; hand: { mark: string | null; open: boolean } | null; controls: string; on: Record<string, (opener?: unknown) => unknown> };
 /** 広い幅の右腕の丸（SA.deck.drawOrb の state。D6） */
 type OrbState = { mark: string | null; tone: string; open: boolean; controls: string; on: { hand: (opener: unknown) => unknown } };
 /** スマホの流れの列の下のバー（SA.deck.drawBar の bar。D2） */
@@ -3634,6 +3634,9 @@ function loadShell(
     bars: [] as Array<DeckBarState | null>,
     pages: [] as string[],
     focusBars: [] as string[],
+    // focusCol（#507 の P5）: 呼ばれた列を覚え、cols に在る列なら代わりの項目のボタンに焦点
+    focusCols: [] as string[],
+    cols: new Set<string>(),
   };
   // views は cols・current だけ（D1 の検査の形）、passed は渡された物そのまま（paged も。D2）
   const flowSeen = {
@@ -3666,6 +3669,12 @@ function loadShell(
         const b = bandButtons[act];
         if (!b) return false;
         b.focus();
+        return true;
+      },
+      focusCol(col: string) {
+        deckSeen.focusCols.push(col);
+        if (!deckSeen.cols.has(col)) return false;
+        itemButton.focus();
         return true;
       },
     };
@@ -13352,9 +13361,15 @@ test("web static: 入口（c-app.js）に留めた会話の列の見出しの口
   assert.match(app, /Object\.assign\(window\.SA\.deck, \{ stripFit, stripSeen \}\);/);
 });
 
-test("web static: 次の段（P5）のための口: drawBand は state.turn を DeckBand に通し、focusBand は turn・focusTop は pin に焦点を置ける（shell.js は渡さないので今と同じ。#507）", () => {
+test("web static: 上の帯の「あなたの番 n」の口（P5）: drawBand は state.turnAway の間だけ、最後に描けた列の番の数（1 以上）を DeckBand の turn に渡し、ほかは渡さない。focusBand は turn・focusTop は pin に焦点を置ける（#507）", () => {
   const app = read("c-app.js");
-  assert.match(app, /<\$\{DeckBand\} variant=\$\{state\.variant\} conn=\$\{state\.conn\} hand=\$\{state\.hand\} controls=\$\{state\.controls\} title=\$\{bandTitle\(state\)\} turn=\$\{state\.turn\} on=\$\{state\.on\} \/>/);
+  assert.match(app, /<\$\{DeckBand\} variant=\$\{state\.variant\} conn=\$\{state\.conn\} hand=\$\{state\.hand\} controls=\$\{state\.controls\} title=\$\{bandTitle\(state\)\} turn=\$\{bandTurn\(state\)\} on=\$\{state\.on\} \/>/);
+  // 数の源は列の見出しと同じ 1 か所（turnCount）。state.turn は読まない
+  assert.doesNotMatch(app, /state\.turn(?!Away)\b/);
+  assert.match(
+    fnSource(app, "bandTurn"),
+    /const count = state\.turnAway === true \? turnCount\(\) : null;\n\s*return count !== null && count >= 1 \? \{ count \} : undefined;/,
+  );
   assert.match(app, /if \(!\["status", "find", "hand", "start", "more", "turn"\]\.includes\(act\)\) return false;/);
   assert.match(app, /if \(!topRoot \|\| !\["back", "place", "mode", "menu", "hand", "pin", "close"\]\.includes\(act\)\) return false;/);
 });
@@ -13774,7 +13789,10 @@ test("web static: 留めた話題の列（P4）: pins.js の口と、横の送�
   for (const name of ["pins.js", "shell.js"]) assert.doesNotMatch(read(name), /["']wheel["']/, name);
   assert.equal((js.match(/scrollLeft =/g) ?? []).length, 1);
   assert.match(fnSource(js, "jump"), /scrollLeft = /);
-  assert.doesNotMatch(read("shell.js"), /scrollLeft\s*=/);
+  // shell.js が書くのは上の帯の「あなたの番 n」（BAND_ON.turn）の左端 0 だけ（#507 の P5）
+  const shell = read("shell.js");
+  assert.equal((shell.match(/scrollLeft\s*=/g) ?? []).length, 1);
+  assert.match(shell, /\n {4}turn: \(\) => \{\n {6}const band = \$\("v3-deck"\);\n {6}if \(band\) band\.scrollLeft = 0;\n/);
 });
 
 test("web static: 留めた話題の列（P4）: flows.js の state は帯の間（setView の strip）だけ strip と seen（見えている留めた列。ch: を付ける）を足し、ほかは鍵を足さない", () => {
@@ -13797,4 +13815,203 @@ test("web static: 留めた話題の列（P4）: flows.js の state は帯の間
   flows.setView({ cols: 3, current: null, paged: false });
   assert.equal("strip" in flows.state(), false);
   assert.equal("seen" in flows.state(), false);
+});
+
+// ===== 上の帯の「あなたの番 n」・上限で押せないピンのボタン・列が出る動き（#507 の P5） =====
+type PinShell = ReturnType<typeof loadShell>;
+/** 帯を送って止める（scroll の後に 150ms） */
+const sendBand = (h: PinShell, left: number) => {
+  bandOf(h).scrollLeft = left;
+  h.nodes.deckBox.dispatch("scroll");
+  h.advance(150);
+};
+
+test("web static: 上の帯の「あなたの番 n」（P5）: 番の列が端まで見えない位置へ送ると帯の state の turnAway が true、左端へ戻すと false。値が変わらない scroll・止まった時は帯を描き直さない", async () => {
+  const h = await loadPins();
+  assert.equal(lastBand(h).turnAway, false);
+  const n = h.deck.bands.length;
+  // 送りの途中（scroll のたび）でも、値が変わったら描き直す（1440・席は閉: 番の列は 0〜300、412 で外れる）
+  bandOf(h).scrollLeft = 412;
+  h.nodes.deckBox.dispatch("scroll");
+  assert.equal(lastBand(h).turnAway, true);
+  assert.equal(h.deck.bands.length, n + 1);
+  // 変わらない scroll（途中の 200 も番の列は切れる）・止まった時は描き直さない
+  bandOf(h).scrollLeft = 200;
+  h.nodes.deckBox.dispatch("scroll");
+  h.advance(150);
+  h.nodes.deckBox.dispatch("scrollend");
+  assert.equal(h.deck.bands.length, n + 1);
+  assert.equal(lastBand(h).turnAway, true);
+  // 左端へ戻す
+  bandOf(h).scrollLeft = 0;
+  h.nodes.deckBox.dispatch("scroll");
+  assert.equal(lastBand(h).turnAway, false);
+  assert.equal(h.deck.bands.length, n + 2);
+  h.advance(150);
+  assert.equal(h.deck.bands.length, n + 2);
+  // 送った後に最後の 1 本を外す（帯をやめる）: fitDeck の終わりで false に描き直す
+  sendBand(h, 412);
+  assert.equal(lastBand(h).turnAway, true);
+  h.topics.setPins({ pins: [], pinMax: 4 });
+  assert.equal(h.nodes.v3.getAttribute("data-pins"), null);
+  assert.equal(lastBand(h).turnAway, false);
+});
+
+test("web static: 上の帯の「あなたの番 n」（P5）: 帯が出ていない（留めた数 0）・スマホ・席だけの幅では turnAway はいつも false", async () => {
+  const zero = await loadPins({}, []);
+  zero.nodes.deckBox.dispatch("scroll");
+  zero.advance(150);
+  assert.ok(zero.deck.bands.length > 0);
+  assert.ok(zero.deck.bands.every((b) => b.turnAway === false));
+  const phone = await loadPins({ phone: true, width: 390 });
+  phone.nodes.deckBox.dispatch("scroll");
+  phone.advance(150);
+  assert.ok(phone.deck.bands.length > 0);
+  assert.ok(phone.deck.bands.every((b) => b.turnAway === false));
+  // 幅 700: 送って番の列を隠した後に席を開くと席だけの幅（帯は隠れる）で false。席を閉じて帯が出直すと、送りの位置のまま true
+  const s = await loadPins({ width: 700 });
+  sendBand(s, 412);
+  assert.equal(lastBand(s).turnAway, true);
+  s.app.open("ch:3");
+  assert.equal(s.nodes.v3.getAttribute("data-deck"), "0");
+  assert.equal(lastBand(s).turnAway, false);
+  (s.lastTop().on as TopOn).close!();
+  assert.equal(s.nodes.v3.getAttribute("data-pins"), "true");
+  assert.equal(lastBand(s).turnAway, bandOf(s).scrollLeft > 0);
+});
+
+test("web static: 上の帯の「あなたの番 n」（P5）: 押すと帯の scrollLeft を 0 にし、settle で数え直して帯を描き直し、番の列（focusCol の turn）に焦点。置けなければ帯の［探す］", async () => {
+  const h = await loadPins();
+  sendBand(h, 412);
+  assert.equal(lastBand(h).turnAway, true);
+  const pins = h.pins as unknown as { settle: () => void };
+  const orig = pins.settle;
+  let settles = 0;
+  pins.settle = () => {
+    settles++;
+    orig();
+  };
+  h.deck.cols.add("turn");
+  lastBand(h).on.turn!(h.nodes.bandButtons.find);
+  assert.equal(bandOf(h).scrollLeft, 0);
+  assert.equal(settles, 1);
+  assert.deepEqual(json(h.pins!.seen()), ["1"]);
+  assert.equal(lastBand(h).turnAway, false);
+  assert.deepEqual(h.deck.focusCols, ["turn"]);
+  assert.equal(h.document.activeElement, h.nodes.itemButton);
+  // 番の列に押せる項目が無い: 帯の［探す］
+  h.deck.cols.clear();
+  sendBand(h, 412);
+  h.deck.focusBands.length = 0;
+  lastBand(h).on.turn!(h.nodes.bandButtons.find);
+  assert.equal(bandOf(h).scrollLeft, 0);
+  assert.deepEqual(h.deck.focusCols, ["turn", "turn"]);
+  assert.deepEqual(h.deck.focusBands, ["find"]);
+  assert.equal(h.document.activeElement, h.nodes.bandButtons.find);
+});
+
+test("web static: 席の見出しのピンのボタン（P5）: 上限の時は { on: false, disabled: true, why }（理由は「…」の行と同じ関数の文）で、その state を描いた TopBar のボタンを押しても留めない。上限でなければ今のまま { on: false }", async () => {
+  const pinOf = (h: PinShell) => (h.lastTop() as PinTopState).pin;
+  const ok = await loadPins({}, ["1"], 4);
+  ok.app.open("ch:3");
+  assert.deepEqual(json(pinOf(ok)), { on: false });
+  const full = await loadPins({}, ["1", "2"], 2);
+  full.app.open("ch:3");
+  assert.deepEqual(json(pinOf(full)), { on: false, disabled: true, why: "ピン留めは 2 つまで" });
+  // 本物の TopBar（c-shell.js）にその state を渡して、ピンのボタンを押す: IconButton が押せない形で on.pin を呼ばず、POST しない
+  const { TopBar } = (await import(shellUrl)) as { TopBar: (p: unknown) => unknown };
+  type V = { type: unknown; props: Record<string, unknown> };
+  const flat = (v: unknown): V[] => {
+    if (Array.isArray(v)) return v.flatMap(flat);
+    if (!v || typeof v !== "object" || !("type" in v)) return [];
+    const node = v as V;
+    if (typeof node.type === "function") return flat((node.type as (p: unknown) => unknown)(node.props));
+    return [node, ...flat(node.props.children)];
+  };
+  const holder = flat(TopBar({ ...full.lastTop(), variant: "wide" })).find((n) => n.props["data-act"] === "pin");
+  assert.ok(holder, "ピンのボタンが無い");
+  const btn = flat(holder.props.children).find((n) => n.type === "button")!;
+  assert.deepEqual([btn.props["aria-disabled"], btn.props.title], ["true", "ピン留めは 2 つまで"]);
+  const posts = full.api.posts.length;
+  let prevented = 0;
+  (btn.props.onClick as (e: unknown) => void)({ preventDefault: () => void prevented++, currentTarget: full.nodes.topButtons.menu });
+  await full.flush();
+  assert.equal(prevented, 1);
+  assert.equal(full.api.posts.length, posts);
+  assert.equal(full.nodes.v3.getAttribute("data-view"), "body");
+  // 文は 1 か所（pinLimitText）から: 「…」の行・席のピンのボタン・409 の知らせ
+  const shell = read("shell.js");
+  assert.equal((shell.match(/"ピン留めは "/g) ?? []).length, 1);
+  assert.match(fnSource(shell, "pinLimitText"), /return "ピン留めは " \+ max \+ " つまで";/);
+  assert.match(fnSource(shell, "pinRow"), /why: full \? pinLimitText\(max\) : ""/);
+  assert.match(fnSource(shell, "seatPin"), /if \(SA\.topics\.pins\(\)\.length >= max\) return \{ on: false, disabled: true, why: pinLimitText\(max\) \};/);
+});
+
+test("web static: 列が出る動き（P5）: 新しく留めた列にだけ data-new（読み込みの最初の列・幅が変わって・席を閉じて帯が出直した列には付けない）。opacity の transitionend か 400ms で外し、列を片付けると timer も消す", async () => {
+  const has400 = (h: PinShell) => [...h.timers.values()].some((t) => t.ms === 400);
+  const h = await loadPins();
+  assert.deepEqual(["1", "2"].map((id) => pinCol(h, id)!.getAttribute("data-new")), [null, null]);
+  assert.equal(has400(h), false);
+  // 後から留めた列にだけ
+  h.topics.setPins({ pins: ["1", "2", "3"], pinMax: 4 });
+  const col3 = pinCol(h, "3")!;
+  assert.deepEqual(["1", "2", "3"].map((id) => pinCol(h, id)!.getAttribute("data-new")), [null, null, "true"]);
+  assert.equal(has400(h), true);
+  // 中の要素・transform の transitionend では外さない。列の opacity で外し、timer も消す
+  col3.dispatch("transitionend", { target: col3.children[0], propertyName: "opacity" });
+  col3.dispatch("transitionend", { target: col3, propertyName: "transform" });
+  assert.equal(col3.getAttribute("data-new"), "true");
+  col3.dispatch("transitionend", { target: col3, propertyName: "opacity" });
+  assert.equal(col3.getAttribute("data-new"), null);
+  assert.equal(has400(h), false);
+  // transitionend が来なければ 400ms で外す
+  h.topics.setPins({ pins: ["1", "2"], pinMax: 4 });
+  h.topics.setPins({ pins: ["1", "2", "3"], pinMax: 4 });
+  assert.equal(pinCol(h, "3")!.getAttribute("data-new"), "true");
+  h.advance(399);
+  assert.equal(pinCol(h, "3")!.getAttribute("data-new"), "true");
+  h.advance(1);
+  assert.equal(pinCol(h, "3")!.getAttribute("data-new"), null);
+  // 付けてすぐ外した列: timer も消す
+  h.topics.setPins({ pins: ["1", "2"], pinMax: 4 });
+  h.topics.setPins({ pins: ["1", "2", "3"], pinMax: 4 });
+  assert.equal(has400(h), true);
+  h.topics.setPins({ pins: ["1", "2"], pinMax: 4 });
+  assert.equal(has400(h), false);
+  // 幅が変わって（スマホを挟んで）帯が出直した列には付けない
+  h.setPhone(true, 390);
+  assert.equal(h.nodes.pinsBox.children.length, 0);
+  h.setPhone(false, 1440);
+  assert.deepEqual(pinCols(h), ["1", "2"]);
+  assert.deepEqual(["1", "2"].map((id) => pinCol(h, id)!.getAttribute("data-new")), [null, null]);
+  // 席を閉じて帯が出直した列には付けない（幅 700 で席を開くと帯は隠れる）
+  const s = await loadPins({ width: 700 });
+  s.app.open("ch:3");
+  assert.equal(s.nodes.pinsBox.children.length, 0);
+  (s.lastTop().on as TopOn).close!();
+  assert.deepEqual(pinCols(s), ["1", "2"]);
+  assert.deepEqual(["1", "2"].map((id) => pinCol(s, id)!.getAttribute("data-new")), [null, null]);
+  // 留めた数 0 から（帯が出ていない間も留めた話題を覚える）: 席に開いた話題を留めた 1 本目には付く
+  const z = await loadPins({}, []);
+  z.app.open("ch:3");
+  z.topics.setPins({ pins: ["3"], pinMax: 4 });
+  assert.deepEqual(pinCols(z), ["3"]);
+  assert.equal(pinCol(z, "3")!.getAttribute("data-new"), "true");
+});
+
+test("web static: 上の帯の「あなたの番 n」（P5）: fitDeck の終わりで合わせる（scroll を待たずに）: 列を描き直さない時も、スマホから広い幅へ移って席の留めた話題の列へ帯を送った後も", async () => {
+  // 列を描き直さない fitDeck（同じ幅の resize）: 送りの位置が scroll を出さずに変わっていても合わせる
+  const h = await loadPins();
+  assert.equal(lastBand(h).turnAway, false);
+  bandOf(h).scrollLeft = 412;
+  h.fire("resize");
+  assert.equal(lastBand(h).turnAway, true);
+  // スマホの席（全面）に開いた留めた話題: 広い幅へ移ると席を閉じて列にし、焦点が席の中なのでその列へ帯を送る（帯を描いた後に送る）
+  const p = await loadPins({ phone: true, width: 390 }, ["1", "3"]);
+  p.app.open("ch:3");
+  p.nodes.ed.querySelector('[data-composer="3"]')!.focus();
+  p.setPhone(false, 1440);
+  assert.equal(p.nodes.v3.getAttribute("data-view"), "list");
+  assert.equal(bandOf(p).scrollLeft, 412);
+  assert.equal(lastBand(p).turnAway, true);
 });
