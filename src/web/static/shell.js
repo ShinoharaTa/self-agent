@@ -75,6 +75,8 @@
     seatFrom: null,
     // スマホの流れの列で見ている列（"turn" | "tasks" | "feed"。メモリだけ。履歴・hash・保存に書かない）
     deckPage: "turn",
+    // 留めた話題の会話の列を帯に並べているか（#507。fitDeck が #v3 の data-pins と一緒に書く）
+    deckPins: false,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -417,8 +419,16 @@
     writeHash();
   }
 
-  /** 一覧を読み直した後: 帯を描き、[端末] を出せなくなって出す物が変わったら描き直す */
+  /** 最後に fitDeck に渡した留めた話題（#507。","で繋いだ channelId。0 個は ""） */
+  let pinSig = "";
+
+  /** 一覧を読み直した後: 留めた話題が変わったら帯の列を合わせ（#507）、帯を描き、[端末] を出せなくなって出す物が変わったら描き直す */
   function refreshTabs() {
+    const sig = SA.topics.pins().join(",");
+    if (sig !== pinSig) {
+      pinSig = sig;
+      fitDeck();
+    }
     renderBar();
     const shown = shownTabId();
     const ed = $("ed");
@@ -587,6 +597,8 @@
       renderHand();
       return;
     }
+    // 帯の中の留めた話題の列（#507）は、見えていなくても描き直す（留めた話題は席に開かないので席の側とは取り合わない）
+    if (tabId !== null && tabId.startsWith("ch:") && SA.pins && SA.pins.has(tabId.slice(3))) SA.pins.refresh(tabId.slice(3));
     if (shownTabId() !== tabId) return;
     // チャンネルの状態が変わったときに見出しも合わせる
     renderBar();
@@ -1720,7 +1732,7 @@
 
   /**
    * 留める・外す（#507）。id（ch:<channelId>）は encode しない。成功したら pins を取り込み（setPins の refreshTabs が見出しの「…」の行の語も描き直す）、知らせて一覧を読み直す。
-   * 上限（409）・引けない（404）は知らせの後に読み直す（画面の pins が古い）。つながらない時は読み直さない
+   * 上限（409）・引けない（404）は知らせの後に読み直す（画面の pins が古い）。つながらない時は読み直さない。成功したら true
    */
   async function setPin(id, on) {
     let res;
@@ -1737,11 +1749,14 @@
         SA.ui.toast("この話題はピン留めできません", null, { level: "error" });
         SA.topics.load();
       } else SA.ui.toast(err && typeof err.toast === "string" ? err.toast : "サーバーにつながりません", null, { level: "error", retry: () => setPin(id, on) });
-      return;
+      return false;
     }
     SA.topics.setPins(res);
     SA.ui.toast(on ? "ピン留めした" : "ピン留めを外した");
     SA.topics.load();
+    // 帯の列を合わせる（setPins の refreshTabs が pins の変わった時に済ませている。同じ値なら何も変わらない）
+    fitDeck();
+    return true;
   }
 
   // ===== 下のバー（描くのは入口 c-app.js）と「ほか」の板 =====
@@ -1945,6 +1960,7 @@
     if (!v3) return;
     if (!deckOn()) {
       if (S.deckCols === null) return;
+      fitPins(true);
       closeFind(false);
       for (const name of ["data-deck", "data-seat", "data-find"]) v3.removeAttribute(name);
       applyInert();
@@ -1956,22 +1972,27 @@
     }
     // 幅の判定は phone() だけ（スマホは deckFit を使わず 1 列）
     const full = phone();
+    // 留めた話題が席に開いたまま帯が出るなら、列を描く前に席を閉じる（#507。同じチャンネルを 2 か所に描かない）
+    if (!full && pinnedSeat()) leavePinnedSeat();
     const fit = full ? { cols: 1, side: false } : SA.deck.fit(v3.clientWidth, S.view === "body");
     const seat = full ? "full" : fit.side ? "side" : "fold";
     const current = S.view === "body" ? S.active : null;
     const first = S.deckCols === null;
     const wasFull = v3.getAttribute("data-seat") === "full";
-    const changed = first || S.deckCols !== fit.cols || S.deckCurrent !== current || v3.getAttribute("data-seat") !== seat;
+    let changed = first || S.deckCols !== fit.cols || S.deckCurrent !== current || v3.getAttribute("data-seat") !== seat;
     v3.setAttribute("data-deck", String(fit.cols));
     v3.setAttribute("data-seat", seat);
     if (first) v3.setAttribute("data-find", "closed");
     // 初めて流れの列になったときに、列のタスク・リマインドを polling に足して読む（スマホでも。中は 1 回だけ）
     if (first && SA.flows) SA.flows.init();
+    // 留めた話題の会話の列（#507）。帯を出す・やめるが替わったら流れの列も描き直す
+    if (fitPins(full)) changed = true;
     if (!changed) return;
     S.deckCols = fit.cols;
     S.deckCurrent = current;
     if (SA.flows) {
-      SA.flows.setView({ cols: fit.cols, current, paged: full });
+      // 帯の間だけ strip を渡す（帯でなければ鍵を足さない）
+      SA.flows.setView(Object.assign({ cols: fit.cols, current, paged: full }, S.deckPins ? { strip: true } : {}));
       SA.flows.render();
     }
     renderBand();
@@ -1985,6 +2006,84 @@
   /** 列を今の値で描き直す（流れの列の間だけ） */
   function renderFlows() {
     if (SA.flows && deckOn()) SA.flows.render();
+  }
+
+  // ===== 留めた話題の会話の列（#507。docs/plan/web-ui-pins.md §4.1〜§4.3。状態と描き出しは pins.js） =====
+  /** pins.js に渡す押した先（1 回だけ作り、毎回同じ物を渡す） */
+  const PINS_ON = {};
+
+  /** 帯が出ているか（#v3 の data-pins） */
+  function pinsShown() {
+    return !!refs.v3 && refs.v3.getAttribute("data-pins") === "true";
+  }
+
+  /** 留めた数が 1 以上で帯が出る幅なら c-deck.js の stripFit の結果（show が true）、ほかは { show: false }。seatOpen は席が開いているか */
+  function pinFit(seatOpen) {
+    if (!SA.pins || !SA.deck || typeof SA.deck.stripFit !== "function" || SA.topics.pins().length === 0) return { show: false };
+    return SA.deck.stripFit(refs.v3.clientWidth, seatOpen);
+  }
+
+  /** 席の住人が留めた話題（ch:）で、今の席の開閉のまま帯が出るか */
+  function pinnedSeat() {
+    if (!S.active || !S.active.startsWith("ch:") || !SA.pins || !SA.topics.pins().includes(S.active.slice(3))) return false;
+    return pinFit(S.view === "body").show === true;
+  }
+
+  /**
+   * 留めた話題を席から帯の列へ移す前に席を閉じる（#507 の守り）: 席の中の部品の根を外して空にし、席の住人を空にする。会話の状態（開いた手順など）は閉じない（列で続ける）。
+   * 席が開いていれば一覧にし、今の entry を一覧の物に置き換える（syncHand と同じ）
+   */
+  function leavePinnedSeat() {
+    const ed = $("ed");
+    if (ed) {
+      for (const [attr, part] of [
+        ["data-talk", SA.talk],
+        ["data-composer", SA.composer],
+        ["data-cards", SA.cards],
+      ]) {
+        if (part && typeof part.drop === "function") for (const n of ed.querySelectorAll("[" + attr + "]")) part.drop(n);
+      }
+      ed.replaceChildren();
+    }
+    edTab = null;
+    S.active = null;
+    S.view2 = "talk";
+    S.term = "card";
+    SA.topics.setCurrent(null);
+    if (S.view === "body") {
+      setView("list");
+      try {
+        if (history.state && history.state.v3Body) history.replaceState({}, "", location.pathname + location.search);
+      } catch {
+        // 書けなくても一覧は出ている
+      }
+    }
+    renderMain();
+    SA.topics.render();
+  }
+
+  /**
+   * 帯（#507）を合わせる: 留めた数が 1 以上で帯が出る幅（スマホ・席だけの幅でない）なら #v3 に data-pins と列の幅の変数を書いて pins.js に列を合わせさせ、
+   * そうでなければ書いた物を消して列を片付ける（書いていなければ何も書かない。留めた数 0 の今の形のまま）。帯を出す・やめるが替わったら true
+   */
+  function fitPins(full) {
+    const v3 = refs.v3;
+    const fit = full ? { show: false } : pinFit(S.view === "body");
+    const show = fit.show === true;
+    if (show) {
+      v3.setAttribute("data-pins", "true");
+      v3.style.setProperty("--c-deck-col-w", fit.colW + "px");
+      v3.style.setProperty("--c-deck-conv-w", fit.convW + "px");
+      SA.pins.sync({ show: true, fit, on: PINS_ON });
+    } else if (v3.getAttribute("data-pins") !== null) {
+      v3.removeAttribute("data-pins");
+      v3.style.removeProperty("--c-deck-col-w");
+      v3.style.removeProperty("--c-deck-conv-w");
+      if (SA.pins) SA.pins.sync({ show: false, fit: null, on: PINS_ON });
+    }
+    const was = S.deckPins;
+    S.deckPins = show;
+    return was !== show;
   }
 
   /** 上の帯の押した先（1 回だけ作り、毎回同じ物を渡す） */

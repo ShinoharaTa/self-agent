@@ -967,16 +967,16 @@
   }
 
   function composer(ch, channelId, frame) {
-    const title = frame ? frame.title : ch ? channelTitle(ch) : "会話";
+    const title = frame && frame.title ? frame.title : ch ? channelTitle(ch) : "会話";
     const ta = el("textarea", {
       class: "textarea composer-input",
       rows: "2",
       maxlength: "4000",
-      "aria-label": frame ? frame.placeholder : title + " に送る",
+      "aria-label": frame && frame.placeholder ? frame.placeholder : title + " に送る",
       enterkeyhint: enterHint(),
       "data-title": title,
-      "data-placeholder": frame ? frame.placeholder : undefined,
-      placeholder: frame ? frame.placeholder : placeholderOf(title),
+      "data-placeholder": frame && frame.placeholder ? frame.placeholder : undefined,
+      placeholder: frame && frame.placeholder ? frame.placeholder : placeholderOf(title),
       title: composerNote(ch),
     });
     ta.value = SA.app.draft(channelId);
@@ -1244,7 +1244,7 @@
   /** 部品に渡す state。本文の持ち主は SA.app.draft。on は channelId だけを閉じ込める。Claude Code のチャンネルは送った本文の帯（sent）と on.cancel も */
   function composerState(channelId, ch) {
     const text = SA.app.draft(channelId);
-    // 枠（右腕）は placeholder・label が枠の文で、字数は送る直前の差し替え（outgoing）を通した物（空なら 0）
+    // 枠（右腕）は placeholder・label が枠の文で、字数は送る直前の差し替え（outgoing）を通した物（空なら 0）。文の無い枠（留めた話題の列。#507）は枠の無い時と同じ文
     const frame = frameOf(channelId);
     const raw = text.trim();
     const state = {
@@ -1253,8 +1253,8 @@
       max: MESSAGE_MAX,
       sending: sendingNow.has(channelId),
       touch: touchPrimary(),
-      label: frame ? frame.placeholder : (ch ? channelTitle(ch) : "会話") + " に送る",
-      placeholder: frame ? frame.placeholder : composerPlaceholder(ch),
+      label: frame && frame.placeholder ? frame.placeholder : (ch ? channelTitle(ch) : "会話") + " に送る",
+      placeholder: frame && frame.placeholder ? frame.placeholder : composerPlaceholder(ch),
       note: composerNote(ch),
       on: {
         input: (value) => composerInput(channelId, value),

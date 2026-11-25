@@ -39,6 +39,7 @@ test("web static: 決めたファイルがそろっていて、base.css・icons.
     "c-term.js",
     "c-term.css",
     "flows.js",
+    "pins.js",
     "c-deck.js",
     "c-deck.css",
     "icons-app.svg",
@@ -2609,7 +2610,7 @@ function appKeys(js: string): string[] {
   return [...js.slice(start, end).matchAll(/^ {4}([A-Za-z]+)\b/gm)].map((m) => m[1]!).sort();
 }
 
-test("web static: 新しい殻（index.html）の読み込みの順（base → tokens → app → shell → c-atoms → c-sheet → c-list → c-shell → c-talk → c-composer → c-cards → c-hand → c-term → c-deck、ui → api → sound → chat → views → topics → takeover → flows → c-app（module）→ shell）と、sidebar.js・workbench.js を読まないこと", () => {
+test("web static: 新しい殻（index.html）の読み込みの順（base → tokens → app → shell → c-atoms → c-sheet → c-list → c-shell → c-talk → c-composer → c-cards → c-hand → c-term → c-deck、ui → api → sound → chat → views → topics → takeover → flows → pins → c-app（module）→ shell）と、sidebar.js・workbench.js を読まないこと", () => {
   const html = read(SHELL_HTML);
   assert.match(html, /<html lang="ja" data-theme="dark">/);
   const links = [...html.matchAll(/<link rel="stylesheet" href="([^"]+)">/g)].map((m) => m[1]);
@@ -2617,7 +2618,7 @@ test("web static: 新しい殻（index.html）の読み込みの順（base → t
   // module は元から後回し（defer を書かない）。文書の順で topics.js の後・shell.js の前に動く
   const scripts = [...html.matchAll(/<script (?:type="module" )?src="([^"]+)"( defer)?><\/script>/g)].map((m) => [m[1], m[0].includes('type="module"') ? "module" : m[2] ? "defer" : "none"]);
   assert.deepEqual(scripts, [
-    ...["ui", "api", "sound", "chat", "views", "topics", "takeover", "flows"].map((n) => [`/static/${n}.js`, "defer"]),
+    ...["ui", "api", "sound", "chat", "views", "topics", "takeover", "flows", "pins"].map((n) => [`/static/${n}.js`, "defer"]),
     ["/static/c-app.js", "module"],
     ["/static/shell.js", "defer"],
   ]);
@@ -8232,8 +8233,8 @@ test("web static: 新しい殻（index.html）に右腕の枠と 2 つの口と�
     html,
     /<div class="v3" id="v3"[^>]*>\s*<div class="v3-band" id="v3-band"><div class="v3-slot" id="c-band-root"><\/div><\/div>\s*<div class="v3-orb" id="v3-orb"><div class="v3-slot" id="c-orb-root"><\/div><\/div>\s*<nav class="v3-list"/,
   );
-  // スマホの流れの列の下のバー（D2）は列の次・列 2 の前（Tab の順は 帯 → 列 → 下のバー）
-  assert.match(html, /<\/nav>\s*<div class="v3-deck" id="v3-deck"><div class="v3-slot" id="c-deck-root"><\/div><\/div>\s*<div class="v3-foot" id="v3-foot"><div class="v3-slot" id="c-foot-root"><\/div><\/div>\s*<main class="v3-main"/);
+  // スマホの流れの列の下のバー（D2）は列の次・列 2 の前（Tab の順は 帯 → 列 → 下のバー）。留めた話題の会話の列の入れ物（#507 の P4）は帯の中、流れの列の根の後ろ（中は pins.js が作る）
+  assert.match(html, /<\/nav>\s*<div class="v3-deck" id="v3-deck"><div class="v3-slot" id="c-deck-root"><\/div><div class="v3-pins" id="v3-pins"><\/div><\/div>\s*<div class="v3-foot" id="v3-foot"><div class="v3-slot" id="c-foot-root"><\/div><\/div>\s*<main class="v3-main"/);
   assert.doesNotMatch(html, /v3-hand-ask|v3-hand-entry|v3-list-foot/);
   // 見出しの [右腕] は部品（入口 c-app.js の TopBar）。aria-controls の先の右腕の枠（id="v3-hand"）はここ
   assert.match(html, /<main class="v3-main" id="v3-main">\s*<div class="v3-slot" id="c-top-root"><\/div>\s*<div class="ed" id="ed"><\/div>\s*<\/main>/);
