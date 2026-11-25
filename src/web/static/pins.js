@@ -33,7 +33,7 @@
     return scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 48;
   }
 
-  /** 描く前の位置を覚え、下に付いていたら（か bottom なら）下へ、でなければ前の位置（shell.js の右腕の keepScroll と同じ形） */
+  /** 描く前の位置を覚え、下に付いていたら（か bottom なら）下へ、でなければ前の位置（shell.js の席の renderEd と同じ考え方） */
   function keepScroll(ed, draw, bottom) {
     const old = ed.querySelector(".ed-scroll");
     const wasBottom = bottom || !old || atBottom(old);
@@ -121,7 +121,7 @@
     c.section.removeAttribute("data-new");
   }
 
-  /** 列を片付ける（右腕の clearHandEd と同じ順: 部品の根を外す → DOM を消す）。見出しの根も外す */
+  /** 列を片付ける（shell.js の席の leavePinnedSeat と同じ順: 部品の根を外す → DOM を消す）。見出しの根も外す */
   function clear(c) {
     unmarkNew(c);
     for (const [attr, part] of [

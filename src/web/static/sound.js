@@ -782,7 +782,7 @@
       const ch = SA.chat && typeof SA.chat.current === "function" ? SA.chat.current() : null;
       if (ch && ch.kind === "cc" && ch.cc && typeof ch.cc.sessionId === "string") frontSessionId = ch.cc.sessionId;
     }
-    // 見えている会話（M3b の右腕を含む）。殻が答えなければ前に出ている会話だけ
+    // 見えている会話（新しい殻の帯の留めた列を含む）。殻が答えなければ前に出ている会話だけ
     const shownChannelIds =
       SA.app && typeof SA.app.shownChannelIds === "function" ? SA.app.shownChannelIds() : frontChannelId ? [frontChannelId] : [];
     return { frontChannelId, shownChannelIds, frontSessionId, hidden: document.visibilityState !== "visible" };
