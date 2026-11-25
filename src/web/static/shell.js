@@ -2082,6 +2082,8 @@
       fitTop();
       // 列 2 が見えるようになったときの既読（setView は切り替わった後の phone() で測るので、ここで付け直す。隠れた会話は readingChannelIds が外す）
       SA.chat.markSeenShown();
+      // 右腕が見えているか（handSeen）も同じ理由で setView が拾えないので、一覧の右腕の行・下のバーの点・見出しをここで描き直す（#514）
+      renderHandEntries();
     });
     window.addEventListener("popstate", (e) => {
       const st = e.state || {};

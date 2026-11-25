@@ -7825,6 +7825,25 @@ test("web static: 落ち先の広い幅（SA.deck 無し）で列 2 に開いた
   assert.equal(h.app.activeTabId(), "ch:1");
 });
 
+test("web static: 落ち先（SA.deck 無し）のスマホ幅で右腕を開いて一覧へ戻し、右腕が未読のまま 640px 以上に広げると、一覧の右腕の行の seen が右腕になって未読の印が消える（幅の change で右腕の印を描き直す。#514 の R3b）", async () => {
+  const h = await loadHand({ phone: true, width: 390 });
+  const listHand = () => (h.model() as ReturnType<typeof h.model> & { hand?: { row: { mark: string } | null } | null }).hand!.row!;
+  h.app.open("ch:900");
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
+  h.history.back();
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "list");
+  assert.equal(h.app.activeTabId(), "ch:900");
+  h.store.isUnread = (x) => x.id === "900";
+  h.topics.render();
+  assert.deepEqual(JSON.parse(JSON.stringify(h.listState().seen)), []);
+  assert.equal(listHand().mark, "unread");
+  // 広げる: 落ち先の広い幅は列 2 に右腕が見えるので、一覧の行は未読を出さない
+  h.setPhone(false, 1400);
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
+  assert.deepEqual(JSON.parse(JSON.stringify(h.listState().seen)), ["ch:900"]);
+  assert.equal(listHand().mark, "none");
+});
+
 test("web static: 新しい殻の shownChannelIds は列 2 の会話で、右腕も列 2 に開いた時だけ入る（右腕だけの入れ物は無い。#514 の R3b）", async () => {
   const h = await loadHand();
   h.app.open("ch:1");
