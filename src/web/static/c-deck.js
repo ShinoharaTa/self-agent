@@ -33,7 +33,7 @@ export function deckFit(width, seatOpen) {
 /**
  * 帯（流れの列と留めた会話の列を 1 本に並べて横に送る所。#507）の幅。留めた数が 1 以上の時だけ使う。width・seatOpen は deckFit と同じ。
  * 返す: { show: 帯を出すか, seat: 席の幅, room: 帯の見える幅（width − 席 − 席との間）, colW: 流れの列の幅, convW: 会話の列の幅 }。
- * 数でない・0 以下の幅、席だけの幅（deckFit の cols が 0）、見える幅が 0 の時は show: false
+ * 数でない・0 以下の幅、席だけの幅（deckFit の cols が 0）、見える幅が 0 の時（今の式では起きない。守り）は show: false
  */
 export function stripFit(width, seatOpen) {
   if (typeof width !== "number" || !Number.isFinite(width) || width <= 0) return { show: false, seat: 0, room: 0, colW: 0, convW: 0 };
