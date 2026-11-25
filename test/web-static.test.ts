@@ -8279,7 +8279,7 @@ test("web static: 新しい殻（index.html）に右腕の枠と 2 つの口と�
   // スマホの流れの列の下のバー（D2）は列の次・列 2 の前（Tab の順は 帯 → 列 → 下のバー）。留めた話題の会話の列の入れ物（#507 の P4）は帯の中、流れの列の根の後ろ（中は pins.js が作る）
   assert.match(html, /<\/nav>\s*<div class="v3-deck" id="v3-deck"><div class="v3-slot" id="c-deck-root"><\/div><div class="v3-pins" id="v3-pins"><\/div><\/div>\s*<div class="v3-foot" id="v3-foot"><div class="v3-slot" id="c-foot-root"><\/div><\/div>\s*<main class="v3-main"/);
   assert.doesNotMatch(html, /v3-hand-ask|v3-hand-entry|v3-list-foot/);
-  // 見出しの [右腕] は部品（入口 c-app.js の TopBar）。aria-controls の先の右腕の枠（id="v3-hand"）はここ
+  // 見出しは部品（入口 c-app.js の TopBar）。右腕の枠（id="v3-hand"。丸・帯の［右腕］の aria-controls の先）はここ
   assert.match(html, /<main class="v3-main" id="v3-main">\s*<div class="v3-slot" id="c-top-root"><\/div>\s*<div class="ed" id="ed"><\/div>\s*<\/main>/);
   assert.match(html, /<aside class="v3-hand" id="v3-hand"/);
   const dialogs = [...html.matchAll(/<dialog id="([^"]+)"/g)].map((m) => m[1]);
@@ -10242,6 +10242,22 @@ test("web static: 一覧 → 会話（open と popstate の両方）と、重ね
   assert.match(fnSource(sh, "applyHand"), /SA\.chat\.markSeenShown\(\);\n\s*\/\/[^\n]*\n\s*fitTop\(\);\n {2}\}$/);
 });
 
+test("web static: 流れの列で席の上に丸で重ねた右腕は、ブラウザの戻るで枠を畳んで席も閉じ（一覧の entry へ）、戻る間に下の会話を読んでいる扱いにせず、焦点は丸（popstate の右腕の枝。#514 の R3a）", async () => {
+  const h = (await loadDeck({ width: 1440, hand: {} })) as HandShell;
+  h.app.open("ch:1");
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
+  lastOrb(h).on.hand(h.nodes.orbButton);
+  assert.equal(handOf(h), "open");
+  const readsA = (from: number) => h.marks.reading.slice(from).filter((ids) => ids !== null && ids.includes("1"));
+  const n = h.marks.reading.length;
+  h.history.back();
+  assert.equal(handOf(h), "closed");
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "list");
+  assert.ok(h.marks.reading.length > n, "markSeenShown を呼ぶ");
+  assert.deepEqual(readsA(n), [], "戻る間に 1 を読んでいる扱いにしない");
+  assert.equal(h.document.activeElement, h.nodes.orbButton);
+});
+
 test("web static: スマホで会話を開いて一覧に戻した後に幅が広くなると、markSeenShown を呼び、その時点でその会話を読んでいる", async () => {
   const h = await loadHand({ phone: true });
   h.app.open("ch:1");
@@ -11853,7 +11869,7 @@ test("web static: 流れの列: 右腕の丸に渡す物は 列だけ = accent�
   const h = await loadDeck({ width: 1400 });
   assert.deepEqual(shape(h.deck.orbs.at(-1)), { mark: null, tone: "accent", open: false, controls: "v3-hand" });
   assert.equal(lastBand(h).hand, null);
-  // 押した先は開いて入力欄（帯・下のバーと同じ openHand(opener, true)）
+  // 押した先は開いて入力欄（帯の［右腕］と同じ openHand(opener, true)）
   assert.equal(typeof lastOrb(h).on.hand, "function");
   // 席が開いている（1440）: quiet。閉じると accent に戻る
   const w = await loadDeck({ width: 1440 });
@@ -11883,7 +11899,7 @@ test("web static: 流れの列: 右腕の丸に渡す物は 列だけ = accent�
   assert.equal(n.nodes.v3.getAttribute("data-view"), "list");
   assert.equal(shape(n.deck.orbs.at(-1))?.tone, "accent");
   assert.equal(lastBand(n).hand, null);
-  // スマホ: 丸は空（帯の形は phone で［右腕］を出さない。口は下のバー）
+  // スマホ: 丸は空（帯の形は phone で［右腕］を出さない。右腕は あなたの番 の列の一番上の行。#514）
   const p = await loadDeck({ phone: true, width: 390 });
   assert.ok(p.deck.orbs.length > 0);
   assert.ok(p.deck.orbs.every((o) => o === null));
