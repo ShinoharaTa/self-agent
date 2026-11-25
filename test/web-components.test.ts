@@ -5880,7 +5880,7 @@ test("web components: TopicList は hand が在れば最初の button[data-topic
   assert.equal(list.turnItem("hand:1", stateOf(sampleData()))?.title, "右腕");
 });
 
-test("web components: 一覧の右腕の行は、絞り込み中は題「右腕」に当たる時だけ（当たれば hitCount に数える）。印は話題の行と同じ rowModel で、見えている間は未読・作業中を出さない", () => {
+test("web components: 一覧の右腕の行は、絞り込み中は題「右腕」に当たる時だけ（当たれば hitCount に数える）。印は話題の行と同じ rowModel で、見えている間（seen）は未読・作業中を出さない（current だけなら出す）", () => {
   const data = { ...sampleData(), rightHands: [handOf()] };
   const at = (o: Obj) => list.listModel(stateOf(data, { handRow: true, ...o })) as ReturnType<typeof list.listModel> & { hand?: { row: Obj | null; note: string } | null };
   assert.equal(at({ filter: "家計" }).hand, null);
@@ -5902,10 +5902,14 @@ test("web components: 一覧の右腕の行は、絞り込み中は題「右腕�
   assert.deepEqual([row({ isUnread }).mark, row({ isUnread }).state], ["unread", null]);
   assert.deepEqual([row({ isRunning }).mark, row({ isRunning }).state], ["running", { text: "作業中", tone: "accent" }]);
   assert.equal(row({ isRunning: true }).mark, "none");
-  for (const o of [{ current: "ch:20" }, { seen: ["ch:20"] }]) {
+  // 見えている間（seen に在る。shell.js が席に右腕が見えている間だけ渡す）は未読・作業中を出さない
+  for (const o of [{ seen: ["ch:20"] }, { current: "ch:20", seen: ["ch:20"] }]) {
     const r = row({ isUnread, isRunning, ...o });
     assert.deepEqual([r.mark, r.state], ["none", null], JSON.stringify(o));
   }
+  // current だけ（席が隠れても一覧の current は住人のまま）なら未読・作業中を出す（#514 の R3b）
+  assert.equal(row({ isUnread, current: "ch:20" }).mark, "unread");
+  assert.deepEqual([row({ isRunning, current: "ch:20" }).mark, row({ isRunning, current: "ch:20" }).state], ["running", { text: "作業中", tone: "accent" }]);
   assert.equal(row({ current: "ch:20" }).current, true);
   assert.equal(row({ seen: ["ch:20"] }).current, false);
   assert.equal(row({ isUnread, seen: "ch:20" }).mark, "unread");

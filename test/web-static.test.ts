@@ -4234,7 +4234,7 @@ test("web static: v3 の一覧の入口: render は SA.list.draw に決まった
   await h.flush();
   await h.topics.load();
   const first = h.listState();
-  assert.deepEqual(Object.keys(first).sort(), ["ago", "current", "data", "dataDone", "doneGroup", "failed", "filter", "handRow", "isRunning", "isUnread", "on", "othersOpen", "time", "turnFrom"]);
+  assert.deepEqual(Object.keys(first).sort(), ["ago", "current", "data", "dataDone", "doneGroup", "failed", "filter", "handRow", "isRunning", "isUnread", "on", "othersOpen", "seen", "time", "turnFrom"]);
   assert.equal(first.handRow, true);
   h.topics.render();
   const second = h.listState();
@@ -11682,7 +11682,7 @@ test("web static: スマホの流れの列: 下のバーの state に hand・con
   assert.ok(!("hand" in u.lastTop()) && !("controls" in u.lastTop()));
 });
 
-test("web static: 流れの列: 席の右腕を閉じても住人は右腕のまま（話題と同じ）。席が隠れている間に右腕が未読なら、列に渡す current は null（行に未読の印）・スマホの下のバーに未読の点。席を開き直すと消える（#514 の R3b）", async () => {
+test("web static: 流れの列: 席の右腕を閉じても住人は右腕のまま（話題と同じ）。席が隠れている間に右腕が未読なら、列に渡す current は null（行に未読の印）・「探す」の板の右腕の行（一覧の state の seen が空）とスマホの下のバーに未読の印。席を開き直すと消える（#514 の R3b）", async () => {
   const last = { id: 5, at: "2026-11-14T00:00:00.000Z", kind: "agent" };
   for (const phone of [false, true]) {
     const h = (await loadDeck(phone ? { phone: true, width: 390 } : { width: 1440 })) as HandShell;
@@ -11690,8 +11690,12 @@ test("web static: 流れの列: 席の右腕を閉じても住人は右腕のま
     h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:1")], { rightHands: [v3Hand({ last })] }));
     await h.topics.load();
     const how = phone ? "スマホ" : "広い幅";
+    // 「探す」の板（一覧）の右腕の行の印
+    const listHand = () => (h.model() as ReturnType<typeof h.model> & { hand?: { row: { mark: string; current: boolean } | null } | null }).hand!.row!;
     h.app.open("ch:900");
     assert.equal(h.flows.views.at(-1)!.current, "ch:900", how);
+    assert.deepEqual(JSON.parse(JSON.stringify(h.listState().seen)), ["ch:900"], how);
+    assert.deepEqual([listHand().mark, listHand().current], ["none", true], how);
     if (phone) assert.equal(lastDeckBar(h).unread, false, how);
     // 閉じる（広い幅は［閉じる］、スマホは「戻る」）: 住人は右腕のまま、列に渡す current は null、席は隠れて読んでいない
     if (phone) h.lastTop().on.back();
@@ -11701,6 +11705,9 @@ test("web static: 流れの列: 席の右腕を閉じても住人は右腕のま
     assert.equal(h.flows.views.at(-1)!.current, null, how);
     assert.deepEqual(readingIds(h), [], how);
     if (phone) assert.equal(lastDeckBar(h).unread, true, how);
+    // 一覧の右腕の行も未読の印（いま開いている印 current は住人のまま）
+    assert.deepEqual(JSON.parse(JSON.stringify(h.listState().seen)), [], how);
+    assert.deepEqual([listHand().mark, listHand().current], ["unread", true], how);
     // 見出しの state は席の右腕のまま（次に開いたとき）
     assert.equal(h.lastTop().title, "右腕", how);
     // 開き直すと消える
@@ -11709,13 +11716,16 @@ test("web static: 流れの列: 席の右腕を閉じても住人は右腕のま
     assert.equal(h.flows.views.at(-1)!.current, "ch:900", how);
     assert.deepEqual(readingIds(h), ["900"], how);
     if (phone) assert.equal(lastDeckBar(h).unread, false, how);
+    assert.equal(listHand().mark, "none", how);
     // 戻る・進むでも同じ
     h.history.back();
     assert.equal(h.app.activeTabId(), "ch:900", how);
     if (phone) assert.equal(lastDeckBar(h).unread, true, how);
+    assert.equal(listHand().mark, "unread", how);
     h.history.forward();
     assert.equal(h.nodes.v3.getAttribute("data-view"), "body", how);
     if (phone) assert.equal(lastDeckBar(h).unread, false, how);
+    assert.equal(listHand().mark, "none", how);
     assert.deepEqual(h.errors, [], how);
   }
   // shell.js: 見えているかは「席の住人が右腕で、席が隠れていない」。席を閉じて住人を空にする呼び出しは無い（右腕が替わった時の 1 か所だけ）

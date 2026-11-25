@@ -740,8 +740,9 @@
     return null;
   }
 
-  /** 右腕の印が変わり得るとき: 下のバーの［あなたの番］の未読の点（毎回。件数は印と別に変わる）と、見出しの状態（席の右腕の あなたの番・作業中） */
+  /** 右腕の印が変わり得るとき: 一覧（「探す」の板）の右腕の行に渡す見えている右腕（変われば一覧を描き直す）・下のバーの［あなたの番］の未読の点（毎回。件数は印と別に変わる）と、見出しの状態（席の右腕の あなたの番・作業中） */
   function renderHandEntries() {
+    if (SA.topics.setSeen(handSeen() ? [handTab()] : [])) SA.topics.render();
     renderBottom(handMark());
     renderBar();
   }
