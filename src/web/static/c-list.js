@@ -1,5 +1,6 @@
 // 話題の一覧（docs/plan/web-ui-components.md §6 の K3）: TopicList・YourTurn・ListLabel・Group・TopicRow・Fold・Others と、そのモデルの関数。
 // hook を使わない（Node から関数として呼べる）。状態は持たず、入口が listModel(state) の結果を押し込む。クラスは固定の文字列、状態は data-* と aria-*
+// state.handRow の間だけ、一覧の一番上に右腕の行（HandRow）を出し、右腕の番は あなたの番 の項目にしない（docs/plan/web-ui-hand-row.md の R1。#514）
 import { html } from "./c-lib.js";
 import { Badge, Button, Empty, Icon, IconButton, Loading, Mark } from "./c-atoms.js";
 
@@ -9,6 +10,8 @@ export const STOPPED_LABEL = Object.freeze({ max_turns: { text: "上限で停止
 export const TURN_LABEL = Object.freeze({ permission: "許可", question: "質問", waiting: "判断待ち", confirm: "確認", max_turns: STOPPED_LABEL.max_turns.text, failed: STOPPED_LABEL.failed.text });
 /** ?done= で出す完了の数（src/app/topics.ts の TOPICS_DONE_MAX） */
 export const DONE_MAX = 50;
+/** 右腕がまだ無いときの文（右腕の行の下に出す。docs/plan/web-ui-hand-row.md §3。shell.js の右腕の枠の文と同じ） */
+export const HAND_NONE = "右腕はまだありません。Discord で /setup を実行すると、ここで頼めます。";
 const STOPPED_OTHER = Object.freeze({ text: "停止", tone: "muted" });
 const QUEUED_STATE = Object.freeze({ text: "順番待ち", tone: "muted" });
 
@@ -86,7 +89,7 @@ export function groupNote(group, memberCount, folded) {
   return null;
 }
 
-/** 「あなたの番」の項目（話題か右腕。どちらでも引けなければ null）。meta は種類と待ち始めからの時間、sub は場所と要約 */
+/** 「あなたの番」の項目（話題か右腕。どちらでも引けなければ null）。meta は種類と待ち始めからの時間、sub は場所と要約。handRow の間は右腕の行の右腕（rightHands[0]）も null（#514） */
 export function turnItem(id, state) {
   const data = state.data;
   const topic = data.topics.find((t) => t.id === id && t.turn);
@@ -95,7 +98,27 @@ export function turnItem(id, state) {
     return item(id, topic.title, topic.turn, group ? group.name : "", state);
   }
   const hand = data.rightHands.find((h) => h.id === id && h.turn);
+  if (hand && state.handRow === true && hand === data.rightHands[0]) return null;
   return hand ? item(id, "右腕", hand.turn, "", state) : null;
+}
+
+/**
+ * 一覧の一番上の右腕の行のモデル（#514）。絞り込みの語が在れば、題「右腕」に当たる時だけ（当たらなければ null）。
+ * 右腕（rightHands[0]）が在れば { row: 話題の行と同じ rowModel の値, note: "" }、無ければ { row: null, note: HAND_NONE }。
+ * 見えている間（current か seen に在る）は未読・作業中の印を出さない。作業中は state.isRunning(チャンネル) が在る時だけ訊く
+ */
+export function handRowModel(state, words) {
+  if (words.length > 0 && !topicHits({ title: "右腕" }, "", words)) return null;
+  const hands = Array.isArray(state.data.rightHands) ? state.data.rightHands : [];
+  const hand = hands.length > 0 ? hands[0] : null;
+  if (!hand || typeof hand.id !== "string" || hand.id === "") return { row: null, note: HAND_NONE };
+  const id = hand.id;
+  const seen = state.current === id || (Array.isArray(state.seen) && state.seen.includes(id));
+  const channelId = id.startsWith("ch:") ? id.slice(3) : null;
+  const running = !seen && channelId !== null && typeof state.isRunning === "function" && state.isRunning(channelId) === true;
+  const topic = { id, title: "右腕", mark: hand.turn ? "turn" : running ? "running" : null, turn: hand.turn, last: hand.last, activityAt: null };
+  const ctx = { isUnread: seen ? () => false : state.isUnread, time: state.time, current: state.current };
+  return { row: rowModel(topic, ctx), note: "" };
 }
 
 function item(id, title, turn, place, state) {
@@ -176,7 +199,8 @@ function groupModel(g, state, words, folded) {
 
 /**
  * 一覧のモデル（今の topics.js の draw・updateGroup・updateDone・updateOthers の判断）。
- * state.turnFrom は一覧から最後に開いた話題（右腕のように current にならない話題の先へ進むため）
+ * state.turnFrom は一覧から最後に開いた話題（右腕のように current にならない話題の先へ進むため）。
+ * handRow が true のときだけ鍵 hand（handRowModel）を足す。絞り込みで当たった右腕の行は hitCount に数える（#514）
  */
 export function listModel(state) {
   const data = state.data;
@@ -224,10 +248,15 @@ export function listModel(state) {
   const labelAt = blocks.findIndex((b) => b.type === "others" || b.kind === "project");
   if (labelAt >= 0) blocks.splice(labelAt, 0, { type: "label", text: "プロジェクト" });
 
+  const hand = state.handRow === true ? handRowModel(state, words) : null;
+  if (filtering && hand !== null) hitCount += 1;
+
   const ccUnreadable = !!(data.cc && data.cc.enabled && data.cc.unreadable);
   return {
     phase: "ready",
     note: listNote({ failed: !!state.failed, hasData: true, ccUnreadable, filtering, hitCount }),
+    // 右腕の行（#514）。渡さない今の呼び出しの結果は前と同じ
+    ...(state.handRow === true ? { hand } : {}),
     turns,
     blocks,
     hitCount,
@@ -244,6 +273,7 @@ export function TopicList({ model, compact, on }) {
     body = html`<${Empty} key="failed" text="読み込めませんでした" action=${html`<${Button} kind="secondary" size="sm" label="もう一度読む" onPress=${() => on.retry()} />`} />`;
   else
     body = [
+      ...(model.hand ? [html`<${HandRow} key="hand" hand=${model.hand} onOpen=${on.open} />`] : []),
       model.turns ? html`<${YourTurn} key="turns" turns=${model.turns} compact=${compact} onOpen=${on.open} />` : null,
       ...model.blocks.map((b) =>
         b.type === "label"
@@ -256,6 +286,21 @@ export function TopicList({ model, compact, on }) {
   return html`<div class="c-list" tabindex="-1" data-phase=${model.phase}>
     <p class="c-list-note" role="status">${model.note}</p>
     ${body}
+  </div>`;
+}
+
+/**
+ * 一覧の一番上の右腕の行（#514）。row が在れば話題の行と同じ TopicRow（button[data-topic] なので ↑↓ に入る）、
+ * 無ければ（右腕がまだ無い）押せない行と HAND_NONE の文
+ */
+export function HandRow({ hand, onOpen }) {
+  if (hand.row) return html`<div class="c-list-hand"><${TopicRow} row=${hand.row} onOpen=${onOpen} /></div>`;
+  return html`<div class="c-list-hand" data-none="true">
+    <div class="c-row" data-mark="none">
+      <${Mark} state="none" />
+      <span class="c-row-title">右腕</span>
+    </div>
+    <p class="c-list-hand-note">${hand.note}</p>
   </div>`;
 }
 
