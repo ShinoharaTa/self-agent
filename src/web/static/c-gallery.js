@@ -375,8 +375,8 @@ const TOP_WIDE_LONG = {
 };
 /** box: 入れ物（pane は一覧と同じ、full は広い幅の見出しが全部を出せる下限の幅ちょうど、list は一覧の列の幅ちょうど） */
 const TOP_DEMOS = [
-  { demo: "top-phone-talk", variant: "phone", view: "talk", title: "日程の取得が遅い", status: { text: "あなたの番", tone: "warning" }, place: { text: "General", movable: true }, menu: true, hand: "turn" },
-  { demo: "top-phone-running", variant: "phone", view: "talk", title: "日程の取得が遅い", status: { text: "あなたの番", tone: "warning" }, place: { text: "General", movable: true }, menu: true, hand: "running" },
+  { demo: "top-phone-talk", variant: "phone", view: "talk", title: "日程の取得が遅い", status: { text: "あなたの番", tone: "warning" }, place: { text: "General", movable: true }, menu: true },
+  { demo: "top-phone-running", variant: "phone", view: "talk", title: "日程の取得が遅い", status: { text: "あなたの番", tone: "warning" }, place: { text: "General", movable: true }, menu: true },
   {
     demo: "top-phone-long",
     variant: "phone",
@@ -386,9 +386,8 @@ const TOP_DEMOS = [
     place: { text: "kakeibo-app", movable: true },
     note: "調べ物（人格）",
     menu: true,
-    hand: "unread",
   },
-  { demo: "top-phone-other", variant: "phone", view: "other", title: "設定", hand: null },
+  { demo: "top-phone-other", variant: "phone", view: "other", title: "設定" },
   { demo: "top-wide-talk", box: "full", variant: "wide", view: "talk", title: "日程の取得が遅い", status: { text: "待ち", tone: "muted" }, place: { text: "escape-mcp", movable: true }, menu: true },
   { demo: "top-wide-cc", box: "full", ...TOP_WIDE_CC },
   { demo: "top-wide-long", box: "full", ...TOP_WIDE_LONG },
@@ -483,7 +482,6 @@ function Tops() {
     mode: () => setResult("許可のモードを押した"),
     view: (value) => setResult(`切り替えた: ${value}`),
     menu: () => setResult("ほかの操作を押した"),
-    hand: () => setResult("右腕を押した"),
     pin: () => setResult("ピン留めを押した"),
     close: () => setResult("閉じるを押した"),
   };
@@ -497,9 +495,10 @@ function Tops() {
   <//>`;
 }
 
-const BOTTOM_ON = { list: noop, hand: noop, tab: noop, more: noop, page: noop };
-/** スマホの流れの列の下のバーの列（名前は列のモデルの物。数は あなたの番 だけ） */
-const deckPages = (turns) => deckModel({ cols: 1 }).columns.map((c) => ({ id: c.id, label: c.name, count: c.id === "turn" ? turns : null }));
+const BOTTOM_ON = { list: noop, tab: noop, more: noop, page: noop };
+/** スマホの流れの列の下のバーの列（名前は列のモデルの物。数と未読の点（右腕の未読。#514）は あなたの番 だけ） */
+const deckPages = (turns, unread = false) =>
+  deckModel({ cols: 1 }).columns.map((c) => ({ id: c.id, label: c.name, count: c.id === "turn" ? turns : null, unread: c.id === "turn" && unread }));
 const WIDE_TABS = [
   { id: "tasks", title: "タスク" },
   { id: "reminders", title: "リマインド" },
@@ -512,14 +511,15 @@ function PhonePane({ demo, children }) {
 
 function Bottoms() {
   return html`<${Section} name="bottom" title="下のバー">
-    <${Pane} demo="bottom-phone"><${BottomBar} variant="phone" turns=${2} hand="turn" on=${BOTTOM_ON} /><//>
-    <${Pane} demo="bottom-phone-quiet"><${BottomBar} variant="phone" turns=${0} hand=${null} on=${BOTTOM_ON} /><//>
-    <${Pane} demo="bottom-phone-unread"><${BottomBar} variant="phone" turns=${120} hand="unread" on=${BOTTOM_ON} /><//>
-    <${Pane} demo="bottom-phone-running"><${BottomBar} variant="phone" turns=${2} hand="running" on=${BOTTOM_ON} /><//>
+    <${Pane} demo="bottom-phone"><${BottomBar} variant="phone" turns=${2} on=${BOTTOM_ON} /><//>
+    <${Pane} demo="bottom-phone-quiet"><${BottomBar} variant="phone" turns=${0} on=${BOTTOM_ON} /><//>
+    <${Pane} demo="bottom-phone-unread"><${BottomBar} variant="phone" turns=${120} on=${BOTTOM_ON} /><//>
+    <${Pane} demo="bottom-phone-running"><${BottomBar} variant="phone" turns=${2} on=${BOTTOM_ON} /><//>
     <${Pane} demo="bottom-wide"><${BottomBar} variant="wide" tabs=${WIDE_TABS} on=${BOTTOM_ON} /><//>
-    <${PhonePane} demo="bottom-deck"><${BottomBar} variant="deck" pages=${deckPages(12)} page="turn" hand="turn" on=${BOTTOM_ON} /><//>
-    <${PhonePane} demo="bottom-deck-running"><${BottomBar} variant="deck" pages=${deckPages(12)} page="turn" hand="running" on=${BOTTOM_ON} /><//>
-    <${PhonePane} demo="bottom-deck-quiet"><${BottomBar} variant="deck" pages=${deckPages(0)} page="feed" hand=${null} on=${BOTTOM_ON} /><//>
+    <${PhonePane} demo="bottom-deck"><${BottomBar} variant="deck" pages=${deckPages(12)} page="turn" on=${BOTTOM_ON} /><//>
+    <${PhonePane} demo="bottom-deck-unread"><${BottomBar} variant="deck" pages=${deckPages(12, true)} page="turn" on=${BOTTOM_ON} /><//>
+    <${PhonePane} demo="bottom-deck-running"><${BottomBar} variant="deck" pages=${deckPages(12)} page="turn" on=${BOTTOM_ON} /><//>
+    <${PhonePane} demo="bottom-deck-quiet"><${BottomBar} variant="deck" pages=${deckPages(0)} page="feed" on=${BOTTOM_ON} /><//>
   <//>`;
 }
 
