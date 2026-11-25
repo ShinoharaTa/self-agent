@@ -284,7 +284,6 @@
     mode: (opener) => openMode(opener),
     view: (value) => setView2(value),
     menu: (opener) => openTopMenu(opener),
-    hand: (opener) => openHand(opener, false),
     // 流れの列の席を閉じる（スマホの一覧へと同じ履歴）
     close: () => showList(),
     // 席の話題を留める（#507。帯の末尾の列にしてそこへ送る）
@@ -301,7 +300,7 @@
   /** 見出しに渡す state（入口 c-app.js の TopBar の props）。何も開いていなければ view: none */
   function topState() {
     const info = S.active ? SA.views.info(S.active) : null;
-    if (!info) return { view: "none", title: "", status: null, note: null, place: null, views: null, hand: null, compact: S.topCompact, menu: false, mode: null, close: false, controls: "v3-hand", on: TOP_ON };
+    if (!info) return { view: "none", title: "", status: null, note: null, place: null, views: null, compact: S.topCompact, menu: false, mode: null, close: false, on: TOP_ON };
     if (handSeated()) return handSeatTop();
     const t = SA.topics.find(S.active) || null;
     const head = topHead();
@@ -325,7 +324,6 @@
           }
         : null,
       views: paneSession() !== null ? { value: S.view2 } : null,
-      hand: handMark(),
       compact: S.topCompact,
       menu: t !== null && (topNarrow() || takeSession() !== null || (head !== null && head.menu.length > 0) || pinRow(t) !== null),
       mode: head && head.mode ? { value: head.mode, disabled: modeBusy(t), reason: modeBusy(t) ? MODE_BUSY : null } : null,
@@ -334,7 +332,6 @@
       ...(pin ? { pin } : {}),
       // スマホの流れの列の［‹］は列へ戻る（落ち先は「一覧へ」のまま）
       backLabel: deckFull() ? "戻る" : undefined,
-      controls: "v3-hand",
       on: TOP_ON,
     };
   }
@@ -346,7 +343,7 @@
     if (!SA.top) return;
     const st = topState();
     if (SA.top.draw(st)) return;
-    SA.top.draw({ view: st.view, title: st.title, status: null, note: null, place: null, views: null, hand: null, compact: S.topCompact, menu: false, mode: null, close: st.close, backLabel: st.backLabel, controls: "v3-hand", on: TOP_ON });
+    SA.top.draw({ view: st.view, title: st.title, status: null, note: null, place: null, views: null, compact: S.topCompact, menu: false, mode: null, close: st.close, backLabel: st.backLabel, on: TOP_ON });
   }
 
   /** 見出しの帯に場所・[会話][端末] が出ていないか（スマホか、広い幅の compact）。出ていなければ「…」の板に入れる */
@@ -1028,13 +1025,11 @@
       note: null,
       place: null,
       views: null,
-      hand: handMark(),
       compact: S.topCompact,
       menu: handMenu().length > 0,
       mode: null,
       close: deckOn() && !phone(),
       backLabel: deckFull() ? "戻る" : undefined,
-      controls: "v3-hand",
       on: TOP_ON,
     };
   }
@@ -1088,7 +1083,7 @@
     restoreHandFocus();
   }
 
-  /** 閉じた後の焦点: 開いたボタンが見えていればそこ、無ければ見えている口（スマホの一覧では下のバーの右腕のボタン） */
+  /** 閉じた後の焦点: 開いたボタンが見えていればそこ、無ければ見えている口（流れの列は右腕の丸か上の帯の［右腕］、落ち先の広い幅は畳んだ帯） */
   function restoreHandFocus() {
     const opener = handOpener;
     handOpener = null;
@@ -1097,21 +1092,7 @@
       target.focus();
       return;
     }
-    // スマホの流れの列で列が見えている: 下のバーの右腕のボタン
-    if (deckFull() && S.view !== "body") {
-      SA.deck.focusBar("hand");
-      return;
-    }
-    // スマホの一覧: 下のバーの右腕のボタン（無ければ何もしない）
-    if (phone() && S.view !== "body") {
-      if (SA.list) SA.list.focusHand();
-      return;
-    }
-    // スマホは見出しの [右腕]、流れの列は右腕の丸（無ければ上の帯の［右腕］）、広い幅は畳んだ帯
-    if (phone()) {
-      if (SA.top) SA.top.focus("hand");
-      return;
-    }
+    // 流れの列は右腕の丸（無ければ上の帯の［右腕］）、広い幅は畳んだ帯。スマホ（下のバー・見出しの［右腕］は無い）は丸も帯の［右腕］も無いので当たらない（#514）
     if (deckOn()) {
       if (!(typeof SA.deck.focusOrb === "function" && SA.deck.focusOrb())) SA.deck.focusBand("hand");
       return;
@@ -1143,7 +1124,7 @@
     return el("span", { class: "dot " + (mark === "turn" ? "dot-warn" : "dot-unread"), "aria-hidden": "true" });
   }
 
-  /** 畳んだ帯の口の中身（印が前と同じなら触らない）と、下のバー・見出しの右腕の印。畳んだ帯の口は作業中を印なしとして扱う */
+  /** 畳んだ帯の口の中身（印が前と同じなら触らない）と、下のバーの［あなたの番］の未読の点。畳んだ帯の口は作業中を印なしとして扱う */
   function renderHandEntries() {
     const mark = handMark();
     const showMark = mark === "running" ? null : mark;
@@ -1162,7 +1143,7 @@
     });
     // 下のバーは毎回（件数は印と別に変わる）
     renderBottom(mark);
-    // 見出しの [右腕] の印（スマホ）と、右腕の丸か上の帯の［右腕］の印と開閉（流れの列）
+    // 見出しの状態（席の右腕の あなたの番・作業中）と、右腕の丸か上の帯の［右腕］の印と開閉（流れの列）
     renderBar();
     renderBand();
   }
@@ -1831,8 +1812,6 @@
   const BAR_ON = {
     // スマホの「一覧」: 一覧の先頭へ
     list: () => SA.list.setScrollTop(0),
-    // 開いて入力欄に焦点
-    hand: (opener) => openHand(opener, true),
     tab: (id) => open(id),
     more: (opener) => openMore(opener),
   };
@@ -1853,8 +1832,6 @@
       renderBottom(handMark());
       if (deckFull()) renderBand();
     },
-    // 開いて入力欄に焦点（一覧の下のバーの右腕と同じ）
-    hand: (opener) => openHand(opener, true),
   };
 
   /** 広い幅のバーに並べる画面（引けるものだけ） */
@@ -1867,7 +1844,7 @@
     return tabs;
   }
 
-  /** 下のバー（描くのは入口 c-app.js。形は入口が幅で決める）。mark は handMark() の値。描けなければ件数・印・タブの無い形で 1 回だけ描き直す */
+  /** 下のバー（描くのは入口 c-app.js。形は入口が幅で決める）。mark は handMark() の値（スマホの流れの列の［あなたの番］の未読の点。#514）。描けなければ件数・印・タブの無い形で 1 回だけ描き直す */
   function renderBottom(mark) {
     if (deckOn()) {
       // 流れの列の間は一覧の下のバーを描かない。広い幅は行き先が上の帯なのでスマホの列の下のバーも空にする
@@ -1876,15 +1853,14 @@
         if (typeof SA.deck.drawBar === "function") SA.deck.drawBar(null);
         return;
       }
-      // スマホは列の下のバー（列 3 つと右腕）。描けなければ印の無い形で 1 回だけ描き直す
-      const bar = { page: S.deckPage, hand: mark, controls: "v3-hand", on: DECKBAR_ON };
-      if (!SA.deck.drawBar(bar)) SA.deck.drawBar(Object.assign({}, bar, { hand: null }));
+      // スマホは列の下のバー（列 3 つ。右腕が未読なら［あなたの番］に点）。描けなければ点の無い形で 1 回だけ描き直す
+      const bar = { page: S.deckPage, unread: mark === "unread", on: DECKBAR_ON };
+      if (!SA.deck.drawBar(bar)) SA.deck.drawBar(Object.assign({}, bar, { unread: false }));
       return;
     }
     if (!SA.list) return;
-    // controls は右腕のボタンの aria-controls（見出しの [右腕] と同じ先）
-    const ok = SA.list.drawBar({ turns: SA.topics.counts().turns, hand: mark, tabs: barTabs(), controls: "v3-hand", on: BAR_ON });
-    if (!ok) SA.list.drawBar({ turns: 0, hand: null, tabs: [], controls: "v3-hand", on: BAR_ON });
+    const ok = SA.list.drawBar({ turns: SA.topics.counts().turns, tabs: barTabs(), on: BAR_ON });
+    if (!ok) SA.list.drawBar({ turns: 0, tabs: [], on: BAR_ON });
   }
 
   // ===== 接続の点と鈴（古い殻の renderTitleStatus と同じ中身。幅によらず画面を開く） =====
@@ -2262,7 +2238,7 @@
   const BAND_ON = {
     status: () => open("status"),
     find: (opener) => openFind(opener),
-    // 開いて入力欄に焦点（下のバーの右腕と同じ）
+    // 開いて入力欄に焦点（右腕の丸と同じ）
     hand: (opener) => openHand(opener, true),
     start: (opener) => openStart("general", opener),
     more: (opener) => openDeckMore(opener),
@@ -2571,7 +2547,7 @@
       if (SA.deck) setView(S.view);
       else setView(S.active ? "body" : "list");
       fitViewport();
-      // 見出しを先に（右腕が閉じて焦点を戻す先の [右腕] が見出しの中にある）
+      // 見出しを先に（スマホの境で形が替わる。右腕の形・compact はその後に測る）
       renderBar();
       fitHand();
       fitTop();
@@ -2624,7 +2600,7 @@
     document.addEventListener("keydown", onKey);
     // 押した物の受け口より先に（capture）、1 回だけ
     for (const type of ["pointerdown", "keydown"]) document.addEventListener(type, movesOn, { capture: true, once: true });
-    // 畳んだ帯の口と backdrop（下のバーの右腕のボタンは BAR_ON.hand、見出しの [右腕] は TOP_ON.hand）
+    // 畳んだ帯の口と backdrop（流れの列の丸は ORB_ON.hand、上の帯の［右腕］は BAND_ON.hand）
     const show = $("v3-hand-show");
     if (show) show.addEventListener("click", () => openHand(show, false));
     const backdrop = $("v3-hand-backdrop");

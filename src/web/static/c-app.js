@@ -105,7 +105,7 @@ if (listRoot) {
     if (root) root.scrollTop = n;
   }
 
-  /** 下のバーを描く。bar は { turns, hand, tabs, controls, on } か null（流れの列の間は描かない）。形（スマホか広い幅か）はここで決める。フォーカスと一覧の位置には触らない */
+  /** 下のバーを描く。bar は { turns, tabs, on } か null（流れの列の間は描かない）。形（スマホか広い幅か）はここで決める。フォーカスと一覧の位置には触らない */
   function drawBar(bar) {
     lastBar = bar;
     // 描く所が無いのは失敗ではない
@@ -116,7 +116,7 @@ if (listRoot) {
         return true;
       }
       render(
-        html`<${BottomBar} variant=${env.phone.matches ? "phone" : "wide"} turns=${bar.turns} hand=${bar.hand} tabs=${bar.tabs} controls=${bar.controls} on=${bar.on} />`,
+        html`<${BottomBar} variant=${env.phone.matches ? "phone" : "wide"} turns=${bar.turns} tabs=${bar.tabs} on=${bar.on} />`,
         barRoot,
       );
     } catch (error) {
@@ -124,14 +124,6 @@ if (listRoot) {
       console.error("[web] bar draw failed", error instanceof Error ? error.name : "");
       return false;
     }
-    return true;
-  }
-
-  /** スマホのバーの右腕のボタンにフォーカス。無ければ false（広い幅では必ず false） */
-  function focusHand() {
-    const b = barRoot ? barRoot.querySelector('button[data-act="hand"]') : null;
-    if (!b) return false;
-    b.focus();
     return true;
   }
 
@@ -174,20 +166,18 @@ if (listRoot) {
       note=${state.note}
       place=${state.place}
       views=${state.views}
-      hand=${state.hand}
       menu=${state.menu}
       compact=${state.compact === true}
       mode=${state.mode}
       close=${state.close === true}
       pin=${state.pin}
       backLabel=${state.backLabel}
-      controls=${state.controls}
       level=${level}
       on=${state.on}
     />`;
   }
 
-  /** 見出しを描く。state は { view, title, status, note, place, views, hand, compact, menu, mode, close, pin, backLabel, controls, on }。形（スマホか広い幅か）はここで、compact は state のまま */
+  /** 見出しを描く。state は { view, title, status, note, place, views, compact, menu, mode, close, pin, backLabel, on }。形（スマホか広い幅か）はここで、compact は state のまま */
   function drawTop(state) {
     lastTop = state;
     if (!topRoot) return true;
@@ -229,9 +219,9 @@ if (listRoot) {
     if (root) render(null, root);
   }
 
-  /** 見出しのボタン（back・place・mode・menu・hand・pin・close）にフォーカス。無い・押せなければ false */
+  /** 見出しのボタン（back・place・mode・menu・pin・close）にフォーカス。無い・押せなければ false */
   function focusTop(act) {
-    if (!topRoot || !["back", "place", "mode", "menu", "hand", "pin", "close"].includes(act)) return false;
+    if (!topRoot || !["back", "place", "mode", "menu", "pin", "close"].includes(act)) return false;
     const b = buttonIn(topRoot.querySelector('[data-act="' + act + '"]'));
     if (!b || b.disabled) return false;
     b.focus({ preventScroll: true });
@@ -404,7 +394,7 @@ if (listRoot) {
   });
 
   window.SA = window.SA || {};
-  window.SA.list = { draw, focusRow, focusList, scrollTop, setScrollTop, drawBar, focusHand };
+  window.SA.list = { draw, focusRow, focusList, scrollTop, setScrollTop, drawBar };
   if (topRoot) window.SA.top = { draw: drawTop, focus: focusTop, compact: topCompact };
   window.SA.talk = { draw: drawTalk, tick: tickTalk, drop: dropTalk };
   window.SA.composer = { draw: drawComposer, set: setComposer, focus: focusComposer, drop: dropComposer };
@@ -592,8 +582,14 @@ if (deckRoot && bandRoot) {
     return col ? col.count : null;
   }
 
-  /** 下のバーに渡す列（最後に描けたモデルの列。まだ無ければ空の state の列）。数は あなたの番 だけ */
-  const barPages = () => (lastModel || deckModel({ cols: 1 })).columns.map((c) => ({ id: c.id, label: c.name, count: c.id === "turn" ? c.count : null }));
+  /** 下のバーに渡す列（最後に描けたモデルの列。まだ無ければ空の state の列）。数は あなたの番 だけ、未読の点（unread が true のとき。右腕の未読。#514）も あなたの番 だけ */
+  const barPages = (unread) =>
+    (lastModel || deckModel({ cols: 1 })).columns.map((c) => ({
+      id: c.id,
+      label: c.name,
+      count: c.id === "turn" ? c.count : null,
+      ...(c.id === "turn" && unread === true ? { unread: true } : {}),
+    }));
 
   /** 列の入れ物（.c-deck）と、id の列（セレクタに id を埋めない）。無ければ null */
   const deckBox = () => deckRoot.firstElementChild;
@@ -602,7 +598,7 @@ if (deckRoot && bandRoot) {
   const colLeft = (box, col) => box.scrollLeft + col.getBoundingClientRect().left - box.getBoundingClientRect().left;
 
   /**
-   * 下のバーを描く（D2。スマホの流れの列の下）。bar は { page, hand, controls, on: { page(id), paged(id), hand(opener) } } か null（空にする）。
+   * 下のバーを描く（D2。スマホの流れの列の下）。bar は { page, unread, on: { page(id), paged(id) } } か null（空にする）。unread が true なら［あなたの番］に未読の点（#514）。
    * paged(id) は自分で page() した分のほかに送られて一番近い列が替わったとき（半分を越えた時点。何度来ても同じ結果にし、中から page() を呼ばない）。
    * 描けなければ false。フォーカスには触らない
    */
@@ -613,7 +609,7 @@ if (deckRoot && bandRoot) {
         render(null, footRoot);
         return true;
       }
-      render(html`<${BottomBar} variant="deck" pages=${barPages()} page=${bar.page} hand=${bar.hand} controls=${bar.controls} on=${bar.on} />`, footRoot);
+      render(html`<${BottomBar} variant="deck" pages=${barPages(bar.unread === true)} page=${bar.page} on=${bar.on} />`, footRoot);
     } catch (error) {
       console.error("[web] deck bar draw failed", error instanceof Error ? error.name : "");
       return false;
@@ -631,12 +627,9 @@ if (deckRoot && bandRoot) {
     return true;
   };
 
-  /** 下のバーのボタン（"hand" か列の id）にフォーカス。無ければ false */
+  /** 下のバーの列のボタン（列の id）にフォーカス。無ければ false */
   const focusBar = (act) => {
-    const b =
-      act === "hand"
-        ? footRoot.querySelector('button[data-act="hand"]')
-        : Array.from(footRoot.querySelectorAll('button[data-act="page"]')).find((n) => n.dataset.page === act) || null;
+    const b = Array.from(footRoot.querySelectorAll('button[data-act="page"]')).find((n) => n.dataset.page === act) || null;
     if (!b) return false;
     b.focus({ preventScroll: true });
     return true;

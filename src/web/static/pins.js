@@ -53,7 +53,7 @@
   }
 
   /**
-   * 列の見出しの state（入口 c-app.js の TopBar の props）。題・状態は chat.js の head から。注記・場所・許可のモード・［会話］［端末］・右腕・［閉じる］は出さない。
+   * 列の見出しの state（入口 c-app.js の TopBar の props）。題・状態は chat.js の head から。注記・場所・許可のモード・［会話］［端末］・［閉じる］は出さない。
    * 幅 420（狭いときは 212〜299）は --c-top-full-min（520）より狭いので compact（場所・注記を渡さないので帯の中身は compact でない形と同じ）
    */
   function headState(c) {
@@ -65,7 +65,6 @@
       note: null,
       place: null,
       views: null,
-      hand: null,
       compact: true,
       menu: true,
       mode: null,
