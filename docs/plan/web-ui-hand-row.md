@@ -201,7 +201,7 @@ R2 の後、R3 までは行と丸の両方が在る。同じ会話を 2 か所�
 - 右腕が見えているか（`handSeen`）は「席の住人が右腕で、席が隠れていない」（`handSeated() && !mainHidden()`）。席が隠れている間は行と下のバーに未読・作業中を出す（席が隠れた・出た時に `setView` が印を描き直す）。既読（`readingChannelIds`）・polling と音（`shownChannelIds`）も右腕を列 2 の会話として、ほかの話題と同じ決まりで入れる。
 - 席の右腕の枠の指定 `HAND_TALK` は 1 つの定数（題・placeholder・`replyText`・`noticeText`・`replyExtras`・`replyRefs`・`noticeRefs`・`onRef`・`head: false`。`outgoing` と `ops` は無い）。送る文は入力のまま（決定 6）。
 - 古い履歴の `v3Hand` は読まない・書かない（`{ v3Hand: true }` の entry に戻る・進むで入っても、`v3Body` だけを見て列か席の今の形のまま）。落ち先（`SA.deck` が無い）の広い幅は 一覧 + 列 2 の 2 列で、右腕は一覧の一番上の行から列 2 に開く。
-- 違いが残る所: 「探す」の板（一覧）の右腕の行は、席を閉じても住人が右腕なら current の扱い（`handRowModel` は current の間 未読・作業中を出さない）。話題の行は current でも未読の点を出すので、席を閉じた後の右腕の未読は板の行に出ない（あなたの番 の列の行と下のバーには出る）。R1 の部品の決まりのままにした。
+- 「探す」の板（一覧）の右腕の行も、席が隠れている間は未読・作業中を出す（`handRowModel` は `seen` だけを見る。shell.js が席に右腕が見えている間だけ `SA.topics.setSeen([右腕のタブ])` で渡し、変われば一覧を描き直す。いま開いている印は `current` のまま）。
 
 ## 6. 留める（上限の外）
 
