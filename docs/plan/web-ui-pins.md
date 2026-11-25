@@ -1,6 +1,6 @@
 # 話題をピン留めして、会話ごとの列として並べる（#507）
 
-- 今の状態: 段 P0〜P5。今は P3 まで（サーバー: DB の `topic_pins`（v48）・`GET /api/topics` の `pins`・`pinMax`・`POST /api/topics/ch:<id>/pin`。画面: 「…」の板の「ピン留めする／ピン留めを外す」とあなたの番の列の節「ピン留め」。スマホの形はここまで。部品と幅の算数（`DECK` の 4 つの値・`stripFit`・`stripSeen`・`Deck` の `strip`・`deckModel` の `seen`・`DeckBand` の `turn`・見出しのピンのボタン・`IconButton` の `pressed`・口 `SA.pin`・`SA.deck.stripFit`・`stripSeen`）は入ったが、画面にはまだつないでいない。会話の列・帯はまだ）。
+- 今の状態: 段 P0〜P5。今は P4 まで（サーバー: DB の `topic_pins`（v48）・`GET /api/topics` の `pins`・`pinMax`・`POST /api/topics/ch:<id>/pin`。画面: 「…」の板の「ピン留めする／ピン留めを外す」とあなたの番の列の節「ピン留め」。スマホの形はここまで。部品と幅の算数（`DECK` の 4 つの値・`stripFit`・`stripSeen`・`Deck` の `strip`・`deckModel` の `seen`・`DeckBand` の `turn`・見出しのピンのボタン・`IconButton` の `pressed`・口 `SA.pin`・`SA.deck.stripFit`・`stripSeen`）。P4: 640px 以上で留めた数が 1 以上なら、帯（`#v3-deck`。`#v3` の `data-pins` と `--c-deck-col-w`・`--c-deck-conv-w`）に流れの 3 列と留めた順の会話の列（`pins.js`・`#v3-pins`）が並んで横に送られ、列の左端で止まる（末尾は右端）。見えている列（`SA.pins.measure`）だけ読み直し・既読。留めた話題は席に開かずその列へ送って入力欄に焦点。席の見出しのピンのボタンで留めると列になり、列のピンのボタン・「…」で外す。まだ無いのは P5（上の帯の「あなたの番 n」・上限で押せなくする・列が出る動き・実機で確かめる事の文））。
 - 書いた日: 2026-11-26。main `d6809c5` を読んだ
 - 何のために: 動いている話題をいくつか同時に見ながら進めたい。今は会話を出せる所が席 1 つ（と右腕）だけで、話題を替えるたびに前の会話が見えなくなる。留めた話題を「会話ごとの列」として並べ、読む・送る・許可に答えるを列の中で済ませられるようにする。
 - 事実 = main d6809c5 のコードで確かめた事（`file:line`）。推測・見込みと書いた所は確かめていない
