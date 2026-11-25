@@ -295,6 +295,9 @@ const QUIET_DATA = {
   cc: { enabled: true, stale: false, unreadable: false },
 };
 
+/** 右腕の行の見本（#514 の R1。本番にはまだ出していない）の data: 番でない右腕の居る静かな一覧 */
+const LIST_HAND_DATA = { ...QUIET_DATA, rightHands: [{ id: "ch:20", guildId: "g1", title: "右腕", turn: null, last: null, link: "" }] };
+
 const listState = (data, o = {}) => ({
   data,
   failed: false,
@@ -340,6 +343,9 @@ function Lists() {
     <${ListDemo} demo="list-stale" model=${listModel(listState(QUIET_DATA, { failed: true }))} />
     <${ListDemo} demo="list-nohit" model=${listModel(listState(QUIET_DATA, { filter: "当たらない語" }))} />
     <${ListDemo} demo="list-done-loading" model=${listModel(listState(QUIET_DATA, { doneGroup: "p:a" }))} />
+    <${ListDemo} demo="list-hand" model=${listModel(listState(FULL_DATA, { handRow: true, current: "ch:6", isUnread: (channel) => channel === "3" }))} />
+    <${ListDemo} demo="list-hand-unread" model=${listModel(listState(LIST_HAND_DATA, { handRow: true, isUnread: (channel) => channel === "20" }))} />
+    <${ListDemo} demo="list-hand-none" model=${listModel(listState(QUIET_DATA, { handRow: true }))} />
   <//>`;
 }
 
@@ -942,6 +948,25 @@ const DECK_IDLE_DATA = {
   rightHands: [],
   cc: { enabled: true, stale: false, unreadable: false },
 };
+/** 右腕の行の見本（#514 の R1。本番にはまだ出していない）の data: 番の話題が 1 つと待機が 2 つ。右腕は番でない */
+const DECK_HAND_DATA = {
+  ...DECK_IDLE_DATA,
+  turnIds: ["ch:1"],
+  topics: [FULL_DATA.topics[0], ...DECK_IDLE_DATA.topics.slice(0, 2)],
+  rightHands: [{ id: "ch:20", guildId: "g1", title: "右腕", turn: null, last: null, link: "" }],
+};
+/** 右腕の行の見本: あなたの番の列だけを 1 列で。番（列の数は右腕の番も数え、右腕を番の項目に重ねない）・未読・作業中・待機・右腕なし（列が空でも行の下に空の文） */
+const DECK_HANDS = Object.freeze([
+  { demo: "deck-hand-turn", state: { topics: { ...DECK_HAND_DATA, turnIds: ["ch:1", "ch:20"], rightHands: [{ ...DECK_HAND_DATA.rightHands[0], turn: gTurn("question", "見本の質問") }] } } },
+  { demo: "deck-hand-unread", state: { topics: DECK_HAND_DATA, isUnread: (channel) => channel === "20" } },
+  { demo: "deck-hand-running", state: { topics: DECK_HAND_DATA, isRunning: (channel) => channel === "20" } },
+  { demo: "deck-hand-idle", state: { topics: DECK_HAND_DATA } },
+  { demo: "deck-hand-none", state: { topics: { ...QUIET_DATA, topics: [] } } },
+]);
+const deckTurnOnly = (state) => {
+  const model = deckModel(state);
+  return { ...model, columns: model.columns.filter((c) => c.id === "turn") };
+};
 const DECK_ON = { open: noop, op: noop, more: noop };
 const BAND_ON = { status: noop, find: noop, hand: noop, start: noop, more: noop, turn: noop };
 
@@ -959,7 +984,8 @@ const BAND_TITLES = Object.freeze([
 ]);
 
 /** 帯と 3 つの列の見本（列は見本の幅で 3 等分。deck-idle は待機の節の「ほか n 件」。deck-empty は待機も無い形。band-running は右腕が作業中の帯、band-no-hand は丸を描けた広い幅の帯（［右腕］なし）。
- * band-turn は番の列が見えない間の「あなたの番 2」の帯、deck-strip は帯の中の流れの列（3 列が 300 で並び、包みの中で横に送る。#507）。band-phone・deck-paged・deck-phone-ops はスマホの幅の枠で、列は 1 列ずつ横に送る）。押しても何も起きない */
+ * band-turn は番の列が見えない間の「あなたの番 2」の帯、deck-strip は帯の中の流れの列（3 列が 300 で並び、包みの中で横に送る。#507）。band-phone・deck-paged・deck-phone-ops はスマホの幅の枠で、列は 1 列ずつ横に送る。
+ * deck-hand-* は右腕の行（#514 の R1。本番にはまだ出していない）の あなたの番 の列だけ）。押しても何も起きない */
 function Decks() {
   return html`<${Section} name="deck" title="流れの列と上の帯">
     <div class="c-gallery-slide" data-demo="band">
@@ -1016,6 +1042,9 @@ function Decks() {
     <div class="c-gallery-slide" data-demo="deck-phone-ops">
       <div class="c-gallery-deck c-gallery-phone"><${Deck} model=${deckTasksOnly(deckState({ cols: 1, paged: true, ops: true }))} on=${DECK_ON} /></div>
     </div>
+    ${DECK_HANDS.map(
+      (d) => html`<div class="c-gallery-deck" key=${d.demo} data-demo=${d.demo}><${Deck} model=${deckTurnOnly(deckState({ cols: 1, current: null, handRow: true, ...d.state }))} on=${DECK_ON} /></div>`,
+    )}
   <//>`;
 }
 
