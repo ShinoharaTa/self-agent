@@ -7,7 +7,7 @@
 // POST /api/topics/moves/<id>/accept・/keep（M6g）は、その確認に Web から答える（Discord の [変える][このまま] と同じ accept・keep。proposals の配線があるときだけ）
 // POST /api/topics/ch:<id>/mode（H4b）はプロジェクトのセッションの許可のモードを変える（app/session-mode.ts の setSessionMode。mode の配線があるときだけ）
 // 既読（M7。docs/plan/web-ui-v3.md §3.3）: GET の応答に reads（{ [channelId]: lastReadId }）を足し、POST /api/topics/ch:<id>/read で進める（reads の配線があるときだけ。log は出さない）
-// ピン留め（#507）: GET の応答に pins（生きている留めた話題の channelId）と pinMax を足し、POST /api/topics/ch:<id>/pin で留める・外す（pins の配線があるときだけ。log は出さない）
+// ピン留め（#507）: GET の応答に pins（生きている留めた話題の channelId）と pinMax を足し、POST /api/topics/ch:<id>/pin で留める・外す（pins の配線があるときだけ。log は出さない）。留めた話題は件数の上限の外でも話題に入れる
 import { CC_CONFIRM_TTL_MS } from "../../app/commands/cc-confirm.ts";
 import { SESSION_LIST_LIMITS } from "../../app/commands/sessions.ts";
 import type { Handler } from "../../app/handler.ts";
@@ -54,7 +54,7 @@ import { type HistoryStore, type LatestHistory, recordHistory } from "../../stor
 import type { SdkSessionStore } from "../../store/sdk-sessions.ts";
 import { TOPIC_PIN_MAX, type TopicPinStore } from "../../store/topic-pins.ts";
 import type { TopicReadStore } from "../../store/topic-reads.ts";
-import type { TopicSessionStore } from "../../store/topic-sessions.ts";
+import type { TopicSession, TopicSessionStore } from "../../store/topic-sessions.ts";
 import type { Route, RouteResult } from "../server.ts";
 import { CC_PERMISSION_RECENT_MS, type HoldSeconds, questionJson } from "./cc.ts";
 import { channelLink, CLOSE_CONFIRM_NOTICE, type webChannelLookup } from "./channels.ts";
@@ -329,53 +329,69 @@ export function createTopicCollector(deps: TopicRouteDeps): (at: number, done: s
       };
 
       // (1) セッション
+      // 1 件の話題の種を足す（#507。留めた話題は件数の上限の外でも、ここから話題に入れる）
+      const pushSession = (item: TopicSession): void => {
+        if (item.state === "deleted") return;
+        const channelId = item.channelId;
+        const found = topicSessions.projectDirOf?.(channelId);
+        const last = lastOf(channelId);
+        const turns: TopicTurn[] = [];
+        // done は turn を持たないので、待っているものを探さない
+        if (item.state !== "done") {
+          if (projectPermissions !== undefined) {
+            const row = projectPermissions.store.latestSdkFor(
+              channelId,
+              projectPermissions.sessions.get(channelId),
+              new Date(at - CC_PERMISSION_RECENT_MS),
+            );
+            if (row !== undefined && row.state === "pending") turns.push(permissionTurn(row, projectPermissions));
+          }
+          const confirm = closeConfirm(channelId, last);
+          if (confirm !== undefined) turns.push(confirm);
+        }
+        const persona = personaOf(channelId);
+        seeds.push({
+          id: `ch:${channelId}`,
+          title: item.title,
+          origin: found === undefined ? "session" : "project",
+          dir: found !== undefined && CC_PROJECT_PATTERN.test(found.projectDir) ? found.projectDir : null,
+          outside: false,
+          pinned: false,
+          persona,
+          sessionId: null,
+          cwdLabel: null,
+          state: item.state,
+          activityAt: last?.at ?? item.lastActivityAt,
+          last,
+          link: channelLink(guildId, channelId),
+          running: runningIds.has(channelId),
+          turns,
+          movable: sessionMovable(channelId, item.state, persona),
+          queued: queuedIds.has(channelId) && !runningIds.has(channelId),
+          lastAgent: lastAgentOf(latest.get(channelId)),
+          lastOwnerId: latest.get(channelId)?.lastOwnerId ?? null,
+          lastDividerId: latest.get(channelId)?.lastDividerId ?? null,
+          // session_open で始めた話題は origin inbox（#inbox の右腕。足した人格の入口 #<NAME> からも同じ）
+          byRightHand: item.origin === "inbox",
+        });
+        track(channelId, turns);
+      };
+      const listed = new Set<string>();
       for (const state of ["active", "waiting", "done"] as const) {
         const limit = state === "done" ? TOPICS_DONE_SCAN : SESSION_LIST_LIMITS[state];
         for (const item of topicSessions.listByState(guildId, state, limit)) {
-          if (item.state === "deleted") continue;
-          const channelId = item.channelId;
-          const found = topicSessions.projectDirOf?.(channelId);
-          const last = lastOf(channelId);
-          const turns: TopicTurn[] = [];
-          // done は turn を持たないので、待っているものを探さない
-          if (item.state !== "done") {
-            if (projectPermissions !== undefined) {
-              const row = projectPermissions.store.latestSdkFor(
-                channelId,
-                projectPermissions.sessions.get(channelId),
-                new Date(at - CC_PERMISSION_RECENT_MS),
-              );
-              if (row !== undefined && row.state === "pending") turns.push(permissionTurn(row, projectPermissions));
-            }
-            const confirm = closeConfirm(channelId, last);
-            if (confirm !== undefined) turns.push(confirm);
-          }
-          const persona = personaOf(channelId);
-          seeds.push({
-            id: `ch:${channelId}`,
-            title: item.title,
-            origin: found === undefined ? "session" : "project",
-            dir: found !== undefined && CC_PROJECT_PATTERN.test(found.projectDir) ? found.projectDir : null,
-            outside: false,
-            pinned: false,
-            persona,
-            sessionId: null,
-            cwdLabel: null,
-            state: item.state,
-            activityAt: last?.at ?? item.lastActivityAt,
-            last,
-            link: channelLink(guildId, channelId),
-            running: runningIds.has(channelId),
-            turns,
-            movable: sessionMovable(channelId, item.state, persona),
-            queued: queuedIds.has(channelId) && !runningIds.has(channelId),
-            lastAgent: lastAgentOf(latest.get(channelId)),
-            lastOwnerId: latest.get(channelId)?.lastOwnerId ?? null,
-            lastDividerId: latest.get(channelId)?.lastDividerId ?? null,
-            // session_open で始めた話題は origin inbox（#inbox の右腕。足した人格の入口 #<NAME> からも同じ）
-            byRightHand: item.origin === "inbox",
-          });
-          track(channelId, turns);
+          pushSession(item);
+          listed.add(item.channelId);
+        }
+      }
+      // 留めた話題は件数の上限の外でも話題に入れる（#507。進行中・待ちで、このサーバーのものだけ。完了は上の走査に在れば出るだけ）
+      if (deps.pins !== undefined) {
+        for (const channelId of deps.pins.store.all()) {
+          if (listed.has(channelId)) continue;
+          const item = topicSessions.get(channelId);
+          if (item === undefined || item.guildId !== guildId) continue;
+          if (item.state !== "active" && item.state !== "waiting") continue;
+          pushSession(item);
         }
       }
 
