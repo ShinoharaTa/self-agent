@@ -518,7 +518,7 @@ CREATE TABLE topic_pins (
 実際の形（P5）:
 - 上の帯: `shell.js` の `renderBand` が `turnAway`（スマホでなく帯が出ていて、`SA.pins.turnSeen()` が偽）を渡し、入口の `drawBand` は `turnAway` の間だけ列の見出しと同じ番の数（1 以上）を `DeckBand` の `turn` にする。`turnAway` が変わった時だけ帯を描き直す（帯の `scroll`・止まった時・`fitDeck` の終わり）。押すと帯の `scrollLeft` を 0 にし、`SA.pins.settle()` の後に `SA.deck.focusCol("turn")`（置けなければ［探す］）。
 - 上限: 席のピンのボタンは `{ on: false, disabled: true, why }`（文は「…」の行・409 の知らせと同じ `pinLimitText`）。押せない形は `IconButton` の `aria-disabled`（押しても `on.pin` を呼ばない）。
-- 動き: `pins.js` が前の `sync` の留めた話題（`prevPins`。一覧を読む前は null）に無い列にだけ `data-new` を付け、`opacity` の `transitionend` か 400ms で外す。`shell.css` の `.v3[data-deck][data-moves="on"] .v3-pin[data-new]` と `@starting-style`（席と同じ値。reduced-motion は `base.css` が止める）。帯が出ていない時も `sync` を通して留めた話題を覚える。
+- 動き: `pins.js` が前の `sync` の留めた話題（`prevPins`。一覧を読む前は null）に無い列にだけ `data-new` を付け、`opacity` の `transitionend` か 400ms で外す。`shell.css` の `.v3[data-deck][data-moves="on"] .v3-pin[data-new]` と `@starting-style`（席と同じ値。reduced-motion は `base.css` が止める）。帯が出ていない時も `sync` を通して留めた話題を覚える。動きの間だけ `#v3-pins` を `overflow-x: clip` で横に切る（`:has(> .v3-pin[data-new])`。切らないと transform のはみ出しで帯の送れる幅が 16px 伸び、末尾へ送った帯が動きにつれて戻って、新しい列は止まったままほかの列が右へ 16px 動いた。ui-shots で実測）。
 
 ## 6. 決まった事・既定・残る問い
 

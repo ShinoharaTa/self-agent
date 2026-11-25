@@ -5621,11 +5621,12 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
               store: { isUnread: (c: { id: string; last: unknown }) => boolean; markSeen: (id: string, n: number) => boolean };
               app: { shownChannelIds: () => string[]; readingChannelIds: () => string[] };
               deck: { stripFit: (w: number, open: boolean) => { show: boolean; room: number; colW: number; convW: number } };
-              pins: { seen: () => string[]; measure: () => void };
+              pins: { seen: () => string[] };
             };
             __pinEnds?: number;
             __pinMarks?: string[];
             __pinNew?: Array<{ id: string; on: boolean; seen: string[] }>;
+            __pinFrames?: Array<{ t: number; sl: number; col: number | null; nw: boolean | null; oth: number | null }>;
           };
           /** 今の帯と列の形（ブラウザの中で測る） */
           type Strip = {
@@ -5861,6 +5862,31 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
             await page.waitForSelector("#v3-sheet[open]", { timeout: 5000 });
             const rows = await sheetRows(page);
             if (!rows.includes("ピン留めする")) throw new Error(`「…」の板に「ピン留めする」が無い（${rows.join("・")}）`);
+            // 列が出る動き（#507 の P5）: 押す直前から 800ms、コマごとに帯の位置・新しい列の left と data-new・1 本目の列の left を覚える
+            await page.evaluate(
+              ({ id, other }: { id: string; other: string }) => {
+                const w = window as unknown as Win;
+                const frames: NonNullable<Win["__pinFrames"]> = [];
+                w.__pinFrames = frames;
+                const band = document.querySelector<HTMLElement>("#v3-deck")!;
+                const t0 = performance.now();
+                const tick = (): void => {
+                  const t = performance.now() - t0;
+                  const col = document.querySelector<HTMLElement>(`#v3-pins > section.v3-pin[data-pin="${id}"]`);
+                  const oth = document.querySelector<HTMLElement>(`#v3-pins > section.v3-pin[data-pin="${other}"]`);
+                  frames.push({
+                    t,
+                    sl: band.scrollLeft,
+                    col: col === null ? null : Math.round(col.getBoundingClientRect().left * 10) / 10,
+                    nw: col === null ? null : col.hasAttribute("data-new"),
+                    oth: oth === null ? null : Math.round(oth.getBoundingClientRect().left * 10) / 10,
+                  });
+                  if (t < 800) requestAnimationFrame(tick);
+                };
+                requestAnimationFrame(tick);
+              },
+              { id: b.id, other: a.id },
+            );
             await page.locator("#v3-sheet .more-row").filter({ hasText: "ピン留めする" }).first().click();
             await page.waitForSelector(`#v3-pins > section.v3-pin[data-pin="${b.id}"]`, { timeout: 5000 });
             await settled(page);
@@ -5872,6 +5898,18 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
             if (s.focus !== `${b.id}:pin`) say(`「ピン留めする」の後の焦点が ${s.focus}（留めた列のピンのボタンのはず）`);
             if (Math.abs(s.left - s.max) > 1) say(`留めた直後の帯の位置 ${s.left}（末尾の列の右端 ${s.max} のはず）`);
             stripLines(s, "2 本留めた所", 2);
+            // 列が出る間（帯の末尾へ送った後）: 帯の位置とほかの列（1 本目）は動かず、新しい列だけが右から寄り、data-new は付いて外れる
+            await page.waitForFunction(() => ((window as unknown as Win).__pinFrames ?? []).some((f) => f.t >= 800), undefined, { timeout: 5000 });
+            const frames = (await page.evaluate(() => (window as unknown as Win).__pinFrames ?? [])).filter((f) => f.col !== null);
+            if (frames.length < 3) say(`2 本目の列が出てからのコマが ${frames.length} 個（3 個以上のはず）`);
+            else {
+              const sls = [...new Set(frames.map((f) => f.sl))];
+              const oths = [...new Set(frames.map((f) => f.oth))];
+              if (sls.length !== 1) say(`2 本目の列が出る間に帯の位置が動いた（${sls.join(" → ")}）`);
+              if (oths.length !== 1) say(`2 本目の列が出る間に 1 本目の列が動いた（left ${oths.join(" → ")}）`);
+              if (!frames.some((f) => f.nw === true)) say("2 本目を留めた列に data-new が付かない（列が出る動き）");
+              if (frames.at(-1)!.nw !== false) say("2 本目を留めた列の data-new が外れない");
+            }
 
             // 左端: 読み込み直すと帯は左端（位置は覚えない）
             await load(page, "/");
@@ -5916,23 +5954,6 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
             else if (turnEnd.button !== turnEnd.col) say(`上の帯の「あなたの番」の数 ${turnEnd.button}（番の列の見出しの ${String(turnEnd.col)} のはず）`);
             await page.mouse.move(1, 1);
             await shot(page, `${p}-a-deck-pins-wide-end`);
-
-            // 列が出る動きの初めの形（右へ --c-deck-seat-in ずらす）を右端の 2 本目に当てても、数え直した見えている列は変わらない（位置は offsetLeft で測る）。
-            // ずらす間は帯の送れる幅が増え、ブラウザが止まる位置を合わせ直して帯を送る（scroll が出る）ので、戻した後は止まるのを待つ
-            const shifted = await page.evaluate((id: string) => {
-              const w = window as unknown as Win;
-              const col = document.querySelector<HTMLElement>(`#v3-pins > section.v3-pin[data-pin="${id}"]`)!;
-              const before = w.SA.pins.seen();
-              col.style.transform = "translateX(var(--c-deck-seat-in))";
-              w.SA.pins.measure();
-              const moved = w.SA.pins.seen();
-              col.style.removeProperty("transform");
-              if (col.style.length === 0) col.removeAttribute("style");
-              w.SA.pins.measure();
-              return { before, moved };
-            }, b.id);
-            if (JSON.stringify(shifted.moved) !== JSON.stringify(shifted.before)) say(`列をずらした間の見えている列が「${shifted.moved.join("・")}」（ずらす前の「${shifted.before.join("・")}」のはず）`);
-            await settled(page);
 
             // 「あなたの番 n」を押す: 帯はすぐ左端へ、焦点は番の列の中、ボタンは消える
             if (turnEnd.button !== null) {
