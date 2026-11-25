@@ -5176,8 +5176,9 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           await page.waitForSelector("#v3[data-deck] #c-deck-root .c-deck .c-col", { timeout: 5000 });
           await settled(page);
           const problems: string[] = [...(await deckLines(page, vp, "列"))];
-          // 広い幅の列は右腕の丸（D6）が accent の塗り（1 つは数える）。スマホの列に決まった accent の塗りは無い（下のバーの右腕は #514 の R3a で外した）ので数を求めない
-          problems.push(...(await page.evaluate(accentProblems, { label: "列", areaMax: ACCENT_AREA_MAX, bigMax: ACCENT_BIG_MAX, min: vp === "phone" ? 0 : 1 })));
+          // 数える関数とセレクタは幅に依らず同じなので、空振りは pc の 1 個以上で拾う。スマホと tablet の列には決まって見える accent の塗りが無い
+          // （下のバーの右腕は #514 の R3a、右腕の丸は R3b で無くなった）ので数を求めない
+          problems.push(...(await page.evaluate(accentProblems, { label: "列", areaMax: ACCENT_AREA_MAX, bigMax: ACCENT_BIG_MAX, min: vp === "pc" ? 1 : 0 })));
           // スマホの帯の題は今の列（あなたの番）の名前と数で、帯のボタンに重ならない
           if (vp === "phone") problems.push(...bandTitleProblems(await page.evaluate(bandTitleState), `スマホの帯（${theme}）`).map((l) => `流れの列: ${l}`));
           // あなたの番の列の待機の節（#505）
