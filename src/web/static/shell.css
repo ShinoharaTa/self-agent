@@ -465,6 +465,23 @@
   transition-duration: var(--dur-long);
 }
 
+/*
+ * 留めた会話の列（docs/plan/web-ui-pins.md §5 の P5）は新しく留めた列（pins.js が data-new を付ける。読み込み・帯が出直した列には付けない）だけ、席と同じく右から --c-deck-seat-in + 透明 → 定位置。
+ * 消えるのはすぐ。帯の送り・列の位置の測り（offsetLeft・offsetWidth。transform に動かされない）は動かさない。reduced-motion では base.css が止める
+ */
+.v3[data-deck][data-moves="on"] .v3-pin[data-new] {
+  transition-property: opacity, transform;
+  transition-duration: var(--dur-short);
+  transition-timing-function: var(--ease-out);
+}
+
+@starting-style {
+  .v3[data-deck][data-moves="on"] .v3-pin[data-new] {
+    opacity: 0;
+    transform: translateX(var(--c-deck-seat-in));
+  }
+}
+
 .v3[data-deck="0"][data-view="body"][data-seat] .v3-deck {
   display: none;
 }

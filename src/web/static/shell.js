@@ -410,16 +410,23 @@
     const pins = SA.topics.pins();
     if (pins.includes(t.id.slice(3))) return { icon: "pin", label: "ピン留めを外す", run: () => setPin(t.id, false) };
     const full = pins.length >= max;
-    return { icon: "pin", label: "ピン留めする", run: full ? null : () => pinSeat(t.id), why: full ? "ピン留めは " + max + " つまで" : "" };
+    return { icon: "pin", label: "ピン留めする", run: full ? null : () => pinSeat(t.id), why: full ? pinLimitText(max) : "" };
+  }
+
+  /** 上限の理由の文（#507。「…」の行・席のピンのボタン・409 の知らせで同じ文） */
+  function pinLimitText(max) {
+    return "ピン留めは " + max + " つまで";
   }
 
   /**
    * 席の見出しのピンのボタン（#507）: 帯が出る幅（640px 以上で席だけの幅でない）で、「…」の板に「ピン留めする」を出す話題（pinRow）のうち留めていない物だけ { on: false }。ほかは null。
-   * 上限でも押せる（理由はサーバーの 409 の知らせ。押せなくするのは P5）
+   * 上限の時は押せず（IconButton の aria-disabled。押しても on.pin を呼ばない）、理由の文を出す。ほかの端末と競った時はサーバーの 409 の知らせ
    */
   function seatPin(t) {
     if (phone() || !deckOn() || !SA.pins || typeof SA.deck.stripFit !== "function" || !t || pinRow(t) === null) return null;
     if (SA.topics.pins().includes(t.id.slice(3)) || SA.deck.stripFit(refs.v3.clientWidth, true).show !== true) return null;
+    const max = SA.topics.pinMax();
+    if (SA.topics.pins().length >= max) return { on: false, disabled: true, why: pinLimitText(max) };
     return { on: false };
   }
 
@@ -1779,7 +1786,7 @@
       const code = err && err.status === 409 ? err.code : null;
       if (code === "pin_limit") {
         const max = err.data && typeof err.data.max === "number" ? err.data.max : SA.topics.pinMax();
-        SA.ui.toast("ピン留めは " + max + " つまで", null, { level: "error" });
+        SA.ui.toast(pinLimitText(max), null, { level: "error" });
         // 画面の pins が古いので読み直す
         SA.topics.load();
       } else if (err && err.status === 404) {
@@ -2036,6 +2043,7 @@
       applyPins(pins);
       measurePins();
       if (refocus !== null) SA.pins.jump(refocus, "composer");
+      syncBandTurn();
       return;
     }
     S.deckCols = fit.cols;
@@ -2056,6 +2064,8 @@
     if (full) SA.deck.page(S.deckPage);
     measurePins();
     if (refocus !== null) SA.pins.jump(refocus, "composer");
+    // 帯が出る・やめる・列の数が変わると番の列の見え方が変わる（上の帯の「あなたの番 n」）
+    syncBandTurn();
   }
 
   /** 列を今の値で描き直す（流れの列の間だけ） */
@@ -2185,12 +2195,15 @@
       v3.style.setProperty("--c-deck-col-w", fit.colW + "px");
       v3.style.setProperty("--c-deck-conv-w", fit.convW + "px");
       SA.pins.sync({ show: true, fit, on: PINS_ON });
-    } else if (v3.getAttribute("data-pins") !== null) {
-      v3.removeAttribute("data-pins");
-      v3.style.removeProperty("--c-deck-col-w");
-      v3.style.removeProperty("--c-deck-conv-w");
-      // 変数のほかに書いた物は無いので、空になった style の属性ごと外す（留めた数 0 の今の形に戻す）
-      if (v3.style.length === 0) v3.removeAttribute("style");
+    } else {
+      if (v3.getAttribute("data-pins") !== null) {
+        v3.removeAttribute("data-pins");
+        v3.style.removeProperty("--c-deck-col-w");
+        v3.style.removeProperty("--c-deck-conv-w");
+        // 変数のほかに書いた物は無いので、空になった style の属性ごと外す（留めた数 0 の今の形に戻す）
+        if (v3.style.length === 0) v3.removeAttribute("style");
+      }
+      // 帯を出していない時も sync を通す（pins.js が留めた話題を覚え、後で帯が出直した列を「新しく留めた列」と取り違えない。列が無ければほかは何もしない）
       if (SA.pins) SA.pins.sync({ show: false, fit: null, on: PINS_ON });
     }
   }
@@ -2214,11 +2227,13 @@
       clearTimeout(timer);
       timer = null;
       SA.pins.settle();
+      syncBandTurn();
     };
     band.addEventListener(
       "scroll",
       () => {
         SA.pins.moved();
+        syncBandTurn();
         clearTimeout(timer);
         timer = setTimeout(settle, PINS_SCROLL_MS);
       },
@@ -2239,6 +2254,14 @@
     hand: (opener) => openHand(opener, true),
     start: (opener) => openStart("general", opener),
     more: (opener) => openDeckMore(opener),
+    // 「あなたの番 n」（#507）: 帯を左端へすぐ送り（動かさない）、数え直して帯を描き直し、番の列の最初の押せる物へ（置けなければ［探す］）
+    turn: () => {
+      const band = $("v3-deck");
+      if (band) band.scrollLeft = 0;
+      if (SA.pins) SA.pins.settle();
+      syncBandTurn();
+      if (!(typeof SA.deck.focusCol === "function" && SA.deck.focusCol("turn"))) SA.deck.focusBand("find");
+    },
   };
 
   /** 右腕の丸の押した先（帯の［右腕］と同じ。開いて入力欄に焦点） */
@@ -2273,14 +2296,29 @@
     if (!deckOn()) return;
     const orb = renderOrb();
     const bot = connBot();
+    bandTurnAway = turnAway();
     SA.deck.drawBand({
       variant: phone() ? "phone" : "wide",
       conn: bot ? { tone: bot.connected ? "ok" : "bad", label: bot.label } : null,
       hand: orb ? null : { mark: handMark(), open: S.handMode === "over" && S.handOver },
       controls: "v3-hand",
       page: phone() ? S.deckPage : undefined,
+      turnAway: bandTurnAway,
       on: BAND_ON,
     });
+  }
+
+  /** 最後に renderBand が渡した turnAway（#507。syncBandTurn が比べる） */
+  let bandTurnAway = false;
+
+  /** 番の列が帯で送られて端まで見えていないか（#507 の上の帯の「あなたの番 n」。数は入口が列の見出しと同じ所から引く）。スマホ・帯が出ていない時は false */
+  function turnAway() {
+    return !phone() && pinsShown() && !!SA.pins && !SA.pins.turnSeen();
+  }
+
+  /** 上の帯の turnAway が変わった時だけ帯を描き直す（帯の scroll・止まった時・fitDeck の終わり） */
+  function syncBandTurn() {
+    if (turnAway() !== bandTurnAway) renderBand();
   }
 
   /** 上の帯の歯車の「ほか」の板（引けるものだけ。会話ログは dev のとき。タスク・リマインド・GitHub・知らせは列にあるので出さない） */
