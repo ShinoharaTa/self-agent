@@ -173,6 +173,8 @@ function newShellNames(vp: Viewport, theme: Theme, full: boolean): string[] {
     ...(vp === "phone" && theme === "dark" ? ["a-deck-tasks", "a-deck-feed", "a-deck-more"] : []),
     // あなたの番の列の節「ピン留め」（#507 の P2。ダークのスマホだけ）: 動いている話題と待機の話題を「…」から留めた所
     ...(vp === "phone" && theme === "dark" ? ["a-deck-pins"] : []),
+    // あなたの番の列の一番上の右腕の行から開いた全画面の会話（#514 の R2。ダークのスマホだけ）
+    ...(vp === "phone" && theme === "dark" ? ["a-deck-hand"] : []),
     // 帯と会話の列（#507 の P4。ダークの PC だけ）: 2 つ留めた帯の左端と、右端まで送った所
     ...(vp === "pc" && theme === "dark" ? ["a-deck-pins-wide", "a-deck-pins-wide-end"] : []),
     // 列の中の操作（D1 の PR-2。ダークの PC と、D2 からダークのスマホ）: タスクを［完了］にした直後
@@ -181,7 +183,7 @@ function newShellNames(vp: Viewport, theme: Theme, full: boolean): string[] {
     ...(vp === "pc" && theme === "dark" ? ["a-deck-rem"] : []),
     // 席だけの幅（幅 700 で席を開いた。D6。ダークの PC だけ）: 丸が無く、帯に［右腕］が出た所
     ...(vp === "pc" && theme === "dark" ? ["a-deck-solo"] : []),
-    // ［広げる］で右腕の会話を席に開いた所（D6 の PR-6b。ダークの PC だけ。タブレットは検査だけ）
+    // 右腕の行から右腕の会話を席に開いた所（#514 の R2。D6 の PR-6b は［広げる］から。ダークの PC だけ。タブレットは［広げる］の道の検査だけ）
     ...(vp === "pc" && theme === "dark" ? ["c-hand-seat"] : []),
     "b-chat-top",
     "b-chat-middle",
@@ -1459,6 +1461,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
   const BAR_HAND = '#c-foot-root button[data-act="hand"]';
   /** 広い幅の流れの列の右下の右腕の丸（D6） */
   const ORB = '#c-orb-root button.c-orb[data-act="hand"]';
+  /** あなたの番の列の一番上の右腕の行の押すボタン（#514 の R2。列の見出しと本体の間の .c-col-top） */
+  const HAND_ROW = '#c-deck-root .c-col[data-col="turn"] > .c-col-top .c-item[data-kind="hand"] > button.c-item-main';
 
   /** 右腕を開くボタン（スマホの流れの列は下のバーの右腕、広い幅の流れの列は右下の丸（席だけの幅で丸が無ければ帯の［右腕］。D6）、ほかは畳んだ帯の #v3-hand-show） */
   const handShow = async (page: Page): Promise<string> =>
@@ -2853,31 +2857,45 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
   /** 右腕の見出しの［広げる］（入口 c-app.js の HandHead。D6 の PR-6b） */
   const HAND_SEAT = '#c-hand-root [data-act="seat"] button';
 
+  /** 右腕の入力欄の薄い字（shell.js の HAND_FRAME の placeholder。席でも同じ） */
+  const HAND_PLACEHOLDER = "右腕に頼む・訊く";
+
   /**
-   * ［広げる］で右腕の会話を席に開く（D6 の PR-6b。広い幅の流れの列の、列が見える幅）: 丸で開いた枠の見出しに［広げる］が 1 つ（名前「広げる」）で、押すと枠は閉じ、
-   * 席に右腕の会話が 1 つ（右腕の入れ物には 0）・席の題「右腕」・札 4 つ・入力欄の placeholder は枠と同じ・帯と丸と列は押せ・焦点は席の入力欄。
-   * 丸を押しても枠は開かず、焦点は席の入力欄。席を閉じた後の丸は枠を開く（会話は枠の 1 つだけ）。shotName が在れば席の絵を撮る
+   * 右腕の会話を席に開く（広い幅の流れの列の、列が見える幅）。via が row なら あなたの番の列の一番上の右腕の行から（#514 の R2）、seat なら丸で開いた枠の見出しの［広げる］から（D6 の PR-6b。R3b まで）。
+   * 行: 押すと住所が #/ch/<右腕>・行に data-current・焦点は行のまま。［広げる］: 枠の見出しに 1 つ（名前「広げる」）で、押すと焦点は席の入力欄。
+   * どちらも 枠は閉じ、席に右腕の会話が 1 つ（右腕の入れ物には 0）・席の題「右腕」・札 4 つ・入力欄の placeholder は右腕の物・帯と丸と列は押せる。
+   * 丸を押しても枠は開かず、焦点は席の入力欄。席を閉じると（行から開いたなら焦点は行へ戻る）枠は閉じたまま、その後の丸は枠を開く（会話は枠の 1 つだけ）。
+   * 行から開いたときは続けて、読み直し（住所が右腕）で席に右腕（枠は閉じたまま）と、「探す」の板の最初の行が右腕で押すと板が閉じて席に右腕を見る。shotName が在れば席の絵を撮る
    */
-  async function handSeatLines(page: Page, shotName: string | null): Promise<string[]> {
+  async function handSeatLines(page: Page, shotName: string | null, via: "row" | "seat"): Promise<string[]> {
     const lines: string[] = [];
-    const say = (text: string): void => void lines.push(`［広げる］: ${text}`);
+    const say = (text: string): void => void lines.push(`${via === "row" ? "右腕の行" : "［広げる］"}: ${text}`);
     const talks = (): Promise<{ seat: number; hand: number }> =>
       page.evaluate(() => ({ seat: document.querySelectorAll("#ed .c-talk").length, hand: document.querySelectorAll("#v3-hand-ed .c-talk").length }));
+    const handTab = async (): Promise<string | null> =>
+      page.evaluate(() => (window as unknown as { SA: { topics: { data: () => { rightHands: Array<{ id: string }> } | null } } }).SA.topics.data()?.rightHands[0]?.id ?? null);
     await load(page, "/");
-    await page.click(ORB);
-    await page.waitForSelector('#v3[data-hand="open"]', { timeout: 5000 });
-    await page.waitForSelector("#v3-hand-ed textarea", { timeout: 5000 });
-    await settled(page);
-    const button = await page.evaluate((sel: string) => {
-      const found = [...document.querySelectorAll(sel)];
-      return { count: found.length, name: found[0]?.getAttribute("aria-label") ?? null };
-    }, HAND_SEAT);
-    if (button.count !== 1 || button.name !== "広げる") {
-      say(`枠の見出しの［広げる］が ${button.count} 個・名前 ${JSON.stringify(button.name)}（1 つで「広げる」のはず）`);
-      return lines;
+    let placeholder: string | null = HAND_PLACEHOLDER;
+    if (via === "seat") {
+      await page.click(ORB);
+      await page.waitForSelector('#v3[data-hand="open"]', { timeout: 5000 });
+      await page.waitForSelector("#v3-hand-ed textarea", { timeout: 5000 });
+      await settled(page);
+      const button = await page.evaluate((sel: string) => {
+        const found = [...document.querySelectorAll(sel)];
+        return { count: found.length, name: found[0]?.getAttribute("aria-label") ?? null };
+      }, HAND_SEAT);
+      if (button.count !== 1 || button.name !== "広げる") {
+        say(`枠の見出しの［広げる］が ${button.count} 個・名前 ${JSON.stringify(button.name)}（1 つで「広げる」のはず）`);
+        return lines;
+      }
+      placeholder = await page.getAttribute("#v3-hand-ed textarea", "placeholder");
+      if (placeholder !== HAND_PLACEHOLDER) say(`枠の入力欄の placeholder が ${JSON.stringify(placeholder)}（${JSON.stringify(HAND_PLACEHOLDER)} のはず）`);
+      await page.click(HAND_SEAT);
+    } else {
+      await page.waitForSelector(HAND_ROW, { timeout: 5000 });
+      await page.click(HAND_ROW);
     }
-    const placeholder = await page.getAttribute("#v3-hand-ed textarea", "placeholder");
-    await page.click(HAND_SEAT);
     await page.waitForSelector('#v3[data-hand="closed"][data-view="body"]', { timeout: 5000 });
     await page.waitForSelector("#ed .c-talk", { timeout: 5000 });
     await page.waitForSelector("#ed textarea", { timeout: 5000 });
@@ -2904,7 +2922,17 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     if (seat.placeholder !== placeholder) say(`席の入力欄の placeholder が ${JSON.stringify(seat.placeholder)}（枠と同じ ${JSON.stringify(placeholder)} のはず）`);
     if (seat.inert.length > 0) say(`押せない物が在る（${seat.inert.join("・")}）`);
     if (seat.orbs !== 1) say(`丸が ${seat.orbs} 個（1 のはず）`);
-    if (!(await activeIs(page, "#ed textarea"))) say(`押した後の焦点が席の入力欄に無い（${await activeTag(page)}）`);
+    if (via === "seat") {
+      if (!(await activeIs(page, "#ed textarea"))) say(`押した後の焦点が席の入力欄に無い（${await activeTag(page)}）`);
+    } else {
+      // 行から開いた: 住所は右腕・行に data-current（押せるボタンに aria-current）・焦点は押した行のまま（項目から開いた話題と同じ）
+      const tab = await handTab();
+      const hash = await page.evaluate(() => location.hash);
+      if (tab === null || hash !== `#/${tab.replace(":", "/")}`) say(`押した後の住所が ${JSON.stringify(hash)}（右腕のチャンネルの物のはず）`);
+      const current = await page.evaluate(() => document.querySelectorAll('#c-deck-root .c-col-top .c-item[data-kind="hand"][data-current="true"] > button.c-item-main[aria-current="true"]').length);
+      if (current !== 1) say(`押した後の右腕の行の印（data-current・aria-current）が ${current} 個（1 個のはず）`);
+      if (!(await activeIs(page, HAND_ROW))) say(`押した後の焦点が右腕の行に無い（${await activeTag(page)}）`);
+    }
     lines.push(...(await page.evaluate(accentProblems, { label: "席の右腕", areaMax: ACCENT_AREA_MAX, bigMax: ACCENT_BIG_MAX })));
     if (shotName !== null) await shot(page, shotName);
     // 席に右腕が出ている間の丸: 枠は開かず、焦点は席の入力欄
@@ -2913,11 +2941,13 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     await settled(page);
     if ((await page.getAttribute("#v3", "data-hand")) !== "closed") say("席に右腕が出ている間の丸で枠が開いた");
     if (!(await activeIs(page, "#ed textarea"))) say(`席に右腕が出ている間の丸の後の焦点が席の入力欄に無い（${await activeTag(page)}）`);
-    // 席を閉じた後の丸は枠を開く（会話は枠の 1 つだけ）
-    await page.evaluate(() => history.back());
+    // 席を閉じた後の丸は枠を開く（会話は枠の 1 つだけ）。行から開いたときは席の［閉じる］で閉じ、焦点は行へ戻る
+    if (via === "row") await page.click('#c-top-root [data-act="close"] button');
+    else await page.evaluate(() => history.back());
     await page.waitForSelector('#v3[data-view="list"]', { timeout: 5000 });
     await settled(page);
     if ((await page.getAttribute("#v3", "data-hand")) !== "closed") say("席を閉じたら枠が開いた");
+    if (via === "row" && !(await activeIs(page, HAND_ROW))) say(`席を閉じた後の焦点が右腕の行に無い（${await activeTag(page)}）`);
     await page.click(ORB);
     await page.waitForSelector('#v3[data-hand="open"]', { timeout: 5000 });
     await page.waitForSelector("#v3-hand-ed .c-talk", { timeout: 5000 });
@@ -2927,6 +2957,40 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     await page.keyboard.press("Escape");
     await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
     await settled(page);
+    if (via === "seat") return lines;
+    // 読み直し（住所が右腕）: 席に右腕が開き、枠は閉じたまま。会話は席の 1 つだけ
+    const tab = await handTab();
+    if (tab === null) {
+      say("右腕のチャンネルが一覧に無い");
+      return lines;
+    }
+    await load(page, `/#/${tab.replace(":", "/")}`);
+    await page.waitForSelector('#v3[data-view="body"] #ed .c-talk', { timeout: 5000 });
+    await settled(page);
+    const reloaded = await page.evaluate(() => ({
+      hand: document.querySelector("#v3")?.getAttribute("data-hand") ?? null,
+      titles: [...document.querySelectorAll("#c-top-root .c-top-title")].map((el) => (el.textContent ?? "").trim()),
+    }));
+    const again = await talks();
+    if (reloaded.hand !== "closed" || reloaded.titles.join() !== "右腕" || again.seat !== 1 || again.hand !== 0) {
+      say(`読み直した後が 枠 ${String(reloaded.hand)}・題 ${JSON.stringify(reloaded.titles)}・席の会話 ${again.seat} 個・枠の会話 ${again.hand} 個（closed・「右腕」・1・0 のはず）`);
+    }
+    // 「探す」の板の最初の行が右腕で、押すと板が閉じて席に右腕
+    await load(page, "/");
+    await openFind(page);
+    const firstRow = await page.evaluate(() => document.querySelector("#c-list-root button[data-topic]")?.getAttribute("data-topic") ?? null);
+    if (firstRow !== tab) say(`「探す」の板の最初の行が ${JSON.stringify(firstRow)}（右腕 ${tab} のはず）`);
+    else {
+      await page.click("#c-list-root button[data-topic]");
+      await page.waitForSelector('#v3[data-find="closed"][data-view="body"] #ed .c-talk', { timeout: 5000 });
+      await settled(page);
+      const fromFind = await page.evaluate(() => ({
+        hand: document.querySelector("#v3")?.getAttribute("data-hand") ?? null,
+        titles: [...document.querySelectorAll("#c-top-root .c-top-title")].map((el) => (el.textContent ?? "").trim()),
+      }));
+      if (fromFind.hand !== "closed" || fromFind.titles.join() !== "右腕") say(`板の右腕の行を押した後が 枠 ${String(fromFind.hand)}・題 ${JSON.stringify(fromFind.titles)}（closed・「右腕」のはず）`);
+    }
+    await load(page, "/");
     return lines;
   }
 
@@ -5087,6 +5151,43 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
    * あなたの番の列の待機の節（#505。段 deck の a-deck を撮る前。絵に残る物は変えない）: 節の見出しが上から「動いている」「待機」・待機の項目の題が作り物のデータの既読の待機の話題と同じ並び・
    * ［ほか n 件］は 8 件を越えたときだけ・同じ題が通知の列に無い。足りない物の文
    */
+  /**
+   * あなたの番の列の一番上の右腕の行（#514 の R2）: 列の見出しと本体（.c-col-body）の間の .c-col-top に右腕の行（data-kind hand）が 1 つで題は「右腕」・押せる。
+   * ほかの列・本体の中には無い。本体を末尾まで送っても行は動かない（送られない。送った位置は戻す）
+   */
+  async function handRowLines(page: Page): Promise<string[]> {
+    const seen = await page.evaluate((sel: string) => {
+      const col = document.querySelector('#c-deck-root .c-col[data-col="turn"]');
+      const top = col?.querySelector(":scope > .c-col-top") ?? null;
+      const body = col?.querySelector<HTMLElement>(":scope > .c-col-body") ?? null;
+      const row = document.querySelector<HTMLElement>(sel);
+      const before = row === null ? null : row.getBoundingClientRect().top;
+      let after = before;
+      if (body !== null && row !== null) {
+        const keep = body.scrollTop;
+        body.scrollTop = body.scrollHeight;
+        after = row.getBoundingClientRect().top;
+        body.scrollTop = keep;
+      }
+      return {
+        tops: col === null ? -1 : col.querySelectorAll(":scope > .c-col-top").length,
+        inTop: top === null ? 0 : top.querySelectorAll('.c-item[data-kind="hand"]').length,
+        all: document.querySelectorAll('#c-deck-root .c-item[data-kind="hand"]').length,
+        inBody: body === null ? -1 : body.querySelectorAll('.c-item[data-kind="hand"]').length,
+        order: col === null ? [] : [...col.children].map((el) => el.className),
+        title: row === null ? null : (row.querySelector(".c-item-title")?.textContent ?? "").trim(),
+        moved: before === null || after === null ? null : after - before,
+      };
+    }, HAND_ROW);
+    const lines: string[] = [];
+    const say = (text: string): void => void lines.push(`流れの列（右腕の行）: ${text}`);
+    if (seen.tops !== 1 || seen.inTop !== 1 || seen.all !== 1 || seen.inBody !== 0) say(`.c-col-top が ${seen.tops} 個・その中の右腕の行が ${seen.inTop} 個・列全体で ${seen.all} 個・本体の中に ${seen.inBody} 個（1・1・1・0 のはず）`);
+    if (seen.order.join(" ") !== "c-col-head c-col-top c-col-body") say(`あなたの番の列の子の並びが ${seen.order.join(" ")}（c-col-head c-col-top c-col-body のはず）`);
+    if (seen.title !== "右腕") say(`右腕の行の押せるボタンの題が ${JSON.stringify(seen.title)}（「右腕」のはず）`);
+    if (seen.moved === null || Math.abs(seen.moved) > 0.5) say(`本体を末尾まで送ると右腕の行が ${String(seen.moved)}px 動いた（0 のはず。送られない）`);
+    return lines;
+  }
+
   async function idleListLines(page: Page): Promise<string[]> {
     const lines: string[] = [];
     const say = (text: string): void => void lines.push(`流れの列（待機）: ${text}`);
@@ -5430,6 +5531,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           if (vp === "phone") problems.push(...bandTitleProblems(await page.evaluate(bandTitleState), `スマホの帯（${theme}）`).map((l) => `流れの列: ${l}`));
           // あなたの番の列の待機の節（#505）
           problems.push(...(await idleListLines(page)));
+          // あなたの番の列の一番上の右腕の行（#514 の R2）
+          problems.push(...(await handRowLines(page)));
           await shot(page, `${p}-a-deck`);
           // 広い幅の右腕の丸（D6）: 列の最後の項目と知らせに重ならない
           if (vp !== "phone") problems.push(...(await orbListLines(page)));
@@ -5604,6 +5707,43 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
             say(`外した後の「動いている」「待機」が「${end.running.join("・")}」「${end.idle.join("・")}」（留める前の「${before.running.join("・")}」「${before.idle.join("・")}」のはず）`);
           for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
           if (problems.length > 0) throw new Error(`節「ピン留め」の検査で ${problems.length} 件`);
+        });
+      }
+      // あなたの番の列の一番上の右腕の行（#514 の R2。ダークのスマホだけ）: 押すと全画面の会話（枠は閉じたまま・会話は席の 1 つだけ）で、見出しは［戻る］・題「右腕」・入力欄の薄い字は右腕の物。
+      // 撮った後に［戻る］で あなたの番 の列へ戻り、焦点は右腕の行
+      if (vp === "phone" && theme === "dark") {
+        await step(`${p} hand-row`, [`${p}-a-deck-hand`], async () => {
+          const problems: string[] = [];
+          const say = (text: string): void => void problems.push(`右腕の行（スマホ）: ${text}`);
+          await load(page, "/");
+          await page.waitForSelector(HAND_ROW, { timeout: 5000 });
+          await settled(page);
+          problems.push(...(await handRowLines(page)));
+          await page.click(HAND_ROW);
+          await page.waitForSelector('#v3[data-view="body"] #ed .c-talk', { timeout: 5000 });
+          await page.waitForSelector("#ed textarea", { timeout: 5000 });
+          await settled(page);
+          const got = await page.evaluate(() => ({
+            hand: document.querySelector("#v3")?.getAttribute("data-hand") ?? null,
+            titles: [...document.querySelectorAll("#c-top-root .c-top-title")].map((el) => (el.textContent ?? "").trim()),
+            back: [...document.querySelectorAll('#c-top-root [data-act="back"] button')].map((el) => el.getAttribute("aria-label")),
+            placeholder: document.querySelector("#ed textarea")?.getAttribute("placeholder") ?? null,
+            seat: document.querySelectorAll("#ed .c-talk").length,
+            frame: document.querySelectorAll("#v3-hand-ed .c-talk").length,
+          }));
+          if (got.hand !== "closed") say(`押した後の枠が ${String(got.hand)}（closed のはず）`);
+          if (got.titles.join() !== "右腕") say(`見出しの題が ${JSON.stringify(got.titles)}（「右腕」のはず）`);
+          if (got.back.join() !== "戻る") say(`見出しの［‹］が ${JSON.stringify(got.back)}（1 つで「戻る」のはず）`);
+          if (got.placeholder !== HAND_PLACEHOLDER) say(`入力欄の placeholder が ${JSON.stringify(got.placeholder)}（${JSON.stringify(HAND_PLACEHOLDER)} のはず）`);
+          if (got.seat !== 1 || got.frame !== 0) say(`席の会話が ${got.seat} 個・枠の会話が ${got.frame} 個（1 と 0 のはず。同じチャンネルを 2 か所に描かない）`);
+          await shot(page, `${p}-a-deck-hand`);
+          await page.click(TOP_BACK);
+          await page.waitForSelector('#v3[data-view="list"]', { timeout: 5000 });
+          await settled(page);
+          if ((await page.getAttribute("#v3", "data-hand")) !== "closed") say("戻った後に枠が開いている");
+          if (!(await activeIs(page, HAND_ROW))) say(`戻った後の焦点が右腕の行に無い（${await activeTag(page)}）`);
+          for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
+          if (problems.length > 0) throw new Error(`右腕の行の検査で ${problems.length} 件`);
         });
       }
       // 帯と会話の列（#507 の P4。ダークの PC だけ）: 待機・動いている話題（番の無い・既読の物）の 2 つを、席の見出しのピンのボタンと「…」の「ピン留めする」で留め、帯の左端と右端まで送った所を撮る。
@@ -6271,25 +6411,27 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
                   from: { opacity: getComputedStyle(hand).opacity, transform: getComputedStyle(hand).transform, backOpacity: getComputedStyle(back).opacity },
                 };
               }, HAND_OPEN);
-            // 読み込み（右腕のチャンネルの hash）で開いた枠: 印が無く、枠と幕に動きの規則が当たらない
+            // 読み込み（右腕のチャンネルの hash）: #514 の R2 から枠でなく席に開く。枠は閉じたまま、印が無く、席・枠・幕に動きの規則が当たらない
             await load(page, "/");
             await page.waitForSelector(HAND_OPEN, { timeout: 5000 });
             await settled(page);
             const handTab = await page.evaluate(() => (window as unknown as { SA: { topics: { data: () => { rightHands: Array<{ id: string }> } | null } } }).SA.topics.data()?.rightHands[0]?.id ?? null);
             if (handTab === null) throw new Error("右腕のチャンネルが一覧に無い");
             await load(page, `/#/${handTab.replace(":", "/")}`);
-            await page.waitForSelector('#v3[data-hand="open"]', { timeout: 5000 });
+            await page.waitForSelector('#v3[data-view="body"] #ed textarea', { timeout: 5000 });
             await settled(page);
             const loaded = await page.evaluate(() => {
+              const main = document.querySelector<HTMLElement>("#v3-main");
               const hand = document.querySelector<HTMLElement>("#v3-hand");
               const back = document.querySelector<HTMLElement>("#v3-hand-backdrop");
               return {
+                hand: document.querySelector("#v3")?.getAttribute("data-hand") ?? null,
                 moves: document.querySelector("#v3")?.getAttribute("data-moves") ?? null,
-                running: hand === null || back === null ? -1 : hand.getAnimations().length + back.getAnimations().length,
-                duration: hand === null ? "" : getComputedStyle(hand).transitionDuration,
+                running: main === null || hand === null || back === null ? -1 : main.getAnimations().length + hand.getAnimations().length + back.getAnimations().length,
+                duration: main === null ? "" : getComputedStyle(main).transitionDuration,
               };
             });
-            if (loaded.moves !== null || loaded.running !== 0 || loaded.duration !== "0s") sayHand(`読み込みで開いた枠が ${JSON.stringify(loaded)}（印なし・動き 0・transition-duration 0s のはず）`);
+            if (loaded.hand !== "closed" || loaded.moves !== null || loaded.running !== 0 || loaded.duration !== "0s") sayHand(`読み込みで右腕を開いた所が ${JSON.stringify(loaded)}（枠は closed・印なし・動き 0・席の transition-duration 0s のはず）`);
             // 最初の操作の後に口を押す
             await load(page, "/");
             await page.waitForSelector(HAND_OPEN, { timeout: 5000 });
@@ -6338,30 +6480,48 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
               .then((h) => h.jsonValue() as Promise<{ display: string; running: number }>, () => null);
             if (closed === null || closed.display !== "none" || closed.running !== 0) sayHand(`Esc で閉じた直後が ${JSON.stringify(closed)}（closed・display none・動き 0 のはず）`);
             await settled(page);
-            // 入力欄でなく［畳む］に焦点が行く道（右腕のタブを開く。あなたの番 の右腕の項目・「探す」の行・hash と同じ）: 動きの間、［畳む］は画面の外へはみ出しているが、焦点で画面を送らない
-            const byTab = await page.evaluate(
-              (tab: string) => {
-                (window as unknown as { SA: { app: { open: (id: string) => void } } }).SA.app.open(tab);
+            // 入力欄でなく［畳む］に焦点が行く道: 動きの間、［畳む］は画面の外へはみ出しているが、焦点で画面を送らない。
+            // #514 の R2 から右腕のタブ（あなたの番 の右腕の行・「探す」の行・hash）は席に開くので、スマホは話題を開いた見出しの［右腕］（R3a まで残る）で見る。
+            // 広い幅にこの道は無いので、右腕のタブを開くと枠は開かず席に開き、画面がずれない事を見る
+            const measureOpen = (how: { tab: string } | { button: string }) =>
+              page.evaluate((h: { tab: string } | { button: string }) => {
+                if ("tab" in h) (window as unknown as { SA: { app: { open: (id: string) => void } } }).SA.app.open(h.tab);
+                else document.querySelector<HTMLElement>(h.button)?.click();
                 const hand = document.querySelector<HTMLElement>("#v3-hand");
                 const root = document.documentElement;
                 const v3 = document.querySelector("#v3");
                 const active = document.activeElement;
                 return {
                   hand: document.querySelector("#v3")?.getAttribute("data-hand") ?? null,
+                  view: document.querySelector("#v3")?.getAttribute("data-view") ?? null,
                   running: hand === null ? 0 : hand.getAnimations().length,
                   close: active !== null && active.closest('#v3-hand [data-act="close"]') !== null,
                   shift: { rootLeft: root.scrollLeft, bodyLeft: document.body.scrollLeft, v3Left: v3?.scrollLeft ?? -1, rootTop: root.scrollTop, bodyTop: document.body.scrollTop, v3Top: v3?.scrollTop ?? -1, innerW: window.innerWidth, clientW: root.clientWidth, scrollW: root.scrollWidth, innerH: window.innerHeight, clientH: root.clientHeight, scrollH: root.scrollHeight },
                 };
-              },
-              handTab,
-            );
-            if (byTab.hand !== "open" || byTab.running === 0 || !byTab.close) sayHand(`右腕のタブを開いた直後が ${JSON.stringify({ hand: byTab.hand, running: byTab.running, close: byTab.close })}（open・動きあり・焦点は［畳む］のはず）`);
-            for (const line of shiftLines(byTab.shift, "右腕のタブを開いた直後（焦点は［畳む］）", false)) sayHand(line);
-            await settled(page);
-            for (const line of shiftLines(await shiftNow(), "右腕のタブを開いて動きが終わった後", true)) sayHand(line);
-            await page.keyboard.press("Escape");
-            await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
-            await settled(page);
+              }, how);
+            if (vp === "phone") {
+              // 話題を全画面に開いてから、見出しの［右腕］
+              await page.evaluate((tab: string) => (window as unknown as { SA: { app: { open: (id: string) => void } } }).SA.app.open(tab), `ch:${open}`);
+              await page.waitForSelector(`#v3[data-view="body"] ${TOP_HAND}`, { timeout: 5000 });
+              await settled(page);
+              const byTop = await measureOpen({ button: TOP_HAND });
+              if (byTop.hand !== "open" || byTop.running === 0 || !byTop.close) sayHand(`見出しの［右腕］を押した直後が ${JSON.stringify({ hand: byTop.hand, running: byTop.running, close: byTop.close })}（open・動きあり・焦点は［畳む］のはず）`);
+              for (const line of shiftLines(byTop.shift, "見出しの［右腕］を押した直後（焦点は［畳む］）", false)) sayHand(line);
+              await settled(page);
+              for (const line of shiftLines(await shiftNow(), "見出しの［右腕］を押して動きが終わった後", true)) sayHand(line);
+              await page.keyboard.press("Escape");
+              await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
+              await settled(page);
+            } else {
+              const byTab = await measureOpen({ tab: handTab });
+              if (byTab.hand !== "closed" || byTab.view !== "body") sayHand(`右腕のタブを開いた直後が ${JSON.stringify({ hand: byTab.hand, view: byTab.view })}（枠は closed・席が body のはず）`);
+              for (const line of shiftLines(byTab.shift, "右腕のタブを開いた直後（席）", false)) sayHand(line);
+              await settled(page);
+              for (const line of shiftLines(await shiftNow(), "右腕のタブを開いて席の動きが終わった後", true)) sayHand(line);
+              await page.click('#c-top-root [data-act="close"] button');
+              await page.waitForSelector('#v3[data-view="list"]', { timeout: 5000 });
+              await settled(page);
+            }
             // 動きを減らす設定: 押しても枠と幕の動きが 0 個
             await page.emulateMedia({ reducedMotion: "reduce" });
             try {
@@ -6628,7 +6788,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       // タブレット: ［広げる］で右腕の会話を席に開く検査だけ（絵は撮らない。D6 の PR-6b）。--only では席の絵（a-deck-seat）と一緒に回す。右腕を開くので、この組の最後の段
       if (vp === "tablet") {
         await step(`${p} seat-hand`, [`${p}-a-deck-seat`], async () => {
-          const problems = await handSeatLines(page, null);
+          const problems = await handSeatLines(page, null, "seat");
           for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
           if (problems.length > 0) throw new Error(`［広げる］の検査で ${problems.length} 件`);
         });
@@ -6799,11 +6959,11 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
           if (problems.length > 0) throw new Error(`席だけの幅の検査で ${problems.length} 件`);
         });
-        // ［広げる］で右腕の会話を席に開く（D6 の PR-6b）。右腕を開くので段 c の後に置く
+        // 右腕の行から右腕の会話を席に開く（#514 の R2。D6 の PR-6b は［広げる］から。［広げる］の道はタブレットの検査で見る）。右腕を開くので段 c の後に置く
         await step(`${p} seat-hand`, [`${p}-c-hand-seat`], async () => {
-          const problems = await handSeatLines(page, `${p}-c-hand-seat`);
+          const problems = await handSeatLines(page, `${p}-c-hand-seat`, "row");
           for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
-          if (problems.length > 0) throw new Error(`［広げる］の検査で ${problems.length} 件`);
+          if (problems.length > 0) throw new Error(`右腕の行から席に開く検査で ${problems.length} 件`);
         });
       }
       await step(`${p} e`, [`${p}-e-start-dialog`], async () => {
