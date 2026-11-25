@@ -47,12 +47,14 @@ const finite = (v) => typeof v === "number" && Number.isFinite(v);
 
 /**
  * 帯の中で端まで見えている列の id（cols の順。#507）。view は { left, width }（帯の送りの位置と見える幅）、cols は [{ id, x, w }]（帯の中の位置と幅）。
- * 左端 x ≥ left − slack かつ右端 x + w ≤ left + width + slack の列。view・cols が壊れていれば []、x・w が有限の数でない列は捨てる
+ * 左端 x ≥ left − slack かつ右端 x + w ≤ left + width + slack の列。迷えば見えていない側に倒す: view・cols が壊れている・見える幅が 0 以下・slack が 0 以上の有限の数でなければ []、
+ * x・w が有限の数でない列と幅が 0 以下の列は捨てる
  */
 export function stripSeen(view, cols, slack = 1) {
-  if (view === null || typeof view !== "object" || !finite(view.left) || !finite(view.width) || !Array.isArray(cols)) return [];
+  if (view === null || typeof view !== "object" || !finite(view.left) || !finite(view.width) || !(view.width > 0) || !Array.isArray(cols)) return [];
+  if (!finite(slack) || slack < 0) return [];
   const { left, width } = view;
-  return cols.filter((c) => c !== null && typeof c === "object" && finite(c.x) && finite(c.w) && c.x >= left - slack && c.x + c.w <= left + width + slack).map((c) => c.id);
+  return cols.filter((c) => c !== null && typeof c === "object" && finite(c.x) && finite(c.w) && c.w > 0 && c.x >= left - slack && c.x + c.w <= left + width + slack).map((c) => c.id);
 }
 
 const filled = (v) => typeof v === "string" && v !== "";

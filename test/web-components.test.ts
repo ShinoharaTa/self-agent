@@ -771,6 +771,18 @@ test("web components: IconButton の pressed は true・false のときだけ ar
   assert.deepEqual(rules.map((r) => [r.at, r.body]), [[[], "color: var(--accent);"]]);
 });
 
+test("web components: 押された形の絵の色は乗った時も --accent（乗った時の規則の color: var(--text) に負けない。地は乗った時の --muted のまま。#507）", () => {
+  const rules = parseCss(read("c-atoms.css"));
+  const hover = rules.filter((r) => r.selectors.includes('.c-iconbtn[aria-pressed="true"]:not([aria-disabled="true"]):hover'));
+  assert.deepEqual(hover.map((r) => [r.at, r.body]), [[["@media (hover: hover) and (pointer: fine)"], "color: var(--accent);"]]);
+  // 今の乗った時の規則はそのまま（地 --muted・字 --text）
+  const plain = rules.filter((r) => r.selectors.includes('.c-iconbtn:not([aria-disabled="true"]):hover'));
+  assert.deepEqual(plain.map((r) => [r.at, r.body]), [[["@media (hover: hover) and (pointer: fine)"], "background: var(--muted); color: var(--text);"]]);
+  // 押された形の乗った時の規則は後ろに在る（同じ media の中で詳しさが上なので勝つ）
+  const src = stripCssComments(read("c-atoms.css"));
+  assert.ok(src.indexOf('.c-iconbtn[aria-pressed="true"]:not([aria-disabled="true"]):hover') > src.indexOf('.c-iconbtn:not([aria-disabled="true"]):hover'));
+});
+
 test("web components: badgeText と Badge（1 未満・数でない物は出さない、99+）", () => {
   for (const v of [0, -1, Number.NaN, "3", undefined]) assert.equal(atoms.badgeText(v), "", String(v));
   assert.deepEqual([1, 99, 99.9].map((n) => atoms.badgeText(n)), ["1", "99", "99"]);
@@ -1921,7 +1933,7 @@ test("web components: topModel の pin は広い幅（compact も）の会話で
   for (const pin of [null, undefined, true, "on", 1]) assert.equal(wide(pin), null, String(pin));
 });
 
-test("web components: TopBar の pin（hand の後・× の前の data-act=pin の IconButton。aria-pressed・aria-label、押せないときは aria-disabled と title が理由で on.pin を呼ばない）。pin を渡さない描き出しは今と同じ（#507）", () => {
+test("web components: TopBar の pin（hand の後・× の前の data-act=pin の IconButton。名前は「ピン留め」に固定し状態は aria-pressed だけ、押せないときは aria-disabled と title が理由で on.pin を呼ばない）。pin を渡さない描き出しは今と同じ（#507）", () => {
   const calls: unknown[][] = [];
   const on = { ...topRec().on, close: () => void calls.push(["close"]), pin: (o: unknown) => void calls.push(["pin", o]) };
   const base = topProps({ variant: "wide", close: true });
@@ -1933,19 +1945,22 @@ test("web components: TopBar の pin（hand の後・× の前の data-act=pin �
   const holder = bar.children.find((c) => typeof c !== "string" && c.props["data-act"] === "pin") as El;
   assert.equal(holder.props.class, "c-top-act");
   const btn = find(holder, "c-iconbtn")[0]!;
-  assert.deepEqual([btn.props["aria-label"], btn.props["aria-pressed"], btn.props["aria-disabled"], btn.props.title], ["ピン留めする", "false", undefined, "ピン留めする"]);
+  assert.deepEqual([btn.props["aria-label"], btn.props["aria-pressed"], btn.props["aria-disabled"], btn.props.title], ["ピン留め", "false", undefined, "ピン留め"]);
   assert.match(String(((find(btn, "c-icon")[0] as El).children[0] as El).props.href), /\/static\/icons-app\.svg#pin$/);
   const ev = fakeEvent();
   (btn.props.onClick as (e: unknown) => void)(ev);
   assert.deepEqual(calls, [["pin", ev.currentTarget]]);
-  // 留めてある: 押された形と「ピン留めを外す」
-  const onBtn = find(one(html`<${shell.TopBar} ...${base} pin=${{ on: true, disabled: false }} on=${on} />`), "c-iconbtn").find((b) => b.props["aria-label"] === "ピン留めを外す")!;
-  assert.deepEqual([onBtn.props["aria-pressed"], onBtn.props.title], ["true", "ピン留めを外す"]);
+  // 留めてある: 押された形だけが変わり、名前は同じ「ピン留め」（状態は aria-pressed だけで伝える）
+  const onBar = one(html`<${shell.TopBar} ...${base} pin=${{ on: true, disabled: false }} on=${on} />`);
+  const onBtn = find(onBar.children.find((c) => typeof c !== "string" && c.props["data-act"] === "pin") as El, "c-iconbtn")[0]!;
+  assert.deepEqual([onBtn.props["aria-label"], onBtn.props["aria-pressed"], onBtn.props.title], ["ピン留め", "true", "ピン留め"]);
+  assert.equal(find(onBar, "c-iconbtn").filter((b) => /ピン留めする|ピン留めを外す/.test(String(b.props["aria-label"]))).length, 0);
+  assert.doesNotMatch(stripJsComments(read("c-shell.js")), /ピン留めする|ピン留めを外す/);
   // 上限で押せない: aria-disabled と title が理由、押しても on.pin を呼ばない
   calls.length = 0;
   const offBar = one(html`<${shell.TopBar} ...${base} pin=${{ on: false, disabled: true, why: "ピン留めは 4 つまで" }} on=${on} />`);
   const off = find(offBar.children.find((c) => typeof c !== "string" && c.props["data-act"] === "pin") as El, "c-iconbtn")[0]!;
-  assert.deepEqual([off.props["aria-label"], off.props["aria-pressed"], off.props["aria-disabled"], off.props.title], ["ピン留めする", "false", "true", "ピン留めは 4 つまで"]);
+  assert.deepEqual([off.props["aria-label"], off.props["aria-pressed"], off.props["aria-disabled"], off.props.title], ["ピン留め", "false", "true", "ピン留めは 4 つまで"]);
   const oe = fakeEvent();
   (off.props.onClick as (e: unknown) => void)(oe);
   assert.deepEqual([calls, oe.count()], [[], 1]);
@@ -1955,6 +1970,25 @@ test("web components: TopBar の pin（hand の後・× の前の data-act=pin �
   assert.deepEqual(keysOf((shell.TopBar({ ...base, on }) as VNode).props.children), ["text", "status", "place", "gap", "menu", "close"]);
   same(html`<${shell.TopBar} ...${topProps()} on=${on} />`, html`<${shell.TopBar} ...${topProps({ pin: { on: true } })} on=${on} />`);
   same(html`<${shell.TopBar} ...${topProps({ variant: "wide", view: "other" })} on=${on} />`, html`<${shell.TopBar} ...${topProps({ variant: "wide", view: "other", pin: { on: true } })} on=${on} />`);
+});
+
+test("web components: TopBar の level（2 のときだけ題を h2。class・中身は同じ。渡さない・ほかの値は h1 で今と同じ。#507）", () => {
+  const { on } = topRec();
+  const titleOf = (props: Obj): El => {
+    const t = find(one(html`<${shell.TopBar} ...${props} on=${on} />`), "c-top-title");
+    assert.equal(t.length, 1);
+    return t[0]!;
+  };
+  for (const props of [topProps(), topProps({ variant: "wide", pin: { on: true }, close: true }), topProps({ variant: "wide", view: "other", title: "ナレッジ" })]) {
+    const h2 = titleOf({ ...props, level: 2 });
+    assert.deepEqual([h2.type, h2.props.class, textOf(h2)], ["h2", "c-top-title", textOf(titleOf(props))]);
+    assert.equal(titleOf(props).type, "h1");
+    for (const level of [1, "2", 3, null, undefined, 0]) assert.equal(titleOf({ ...props, level }).type, "h1", String(level));
+    // 渡さない描き出しは今と同じ（level 1 も同じ）
+    assert.deepEqual(shapeOf(expand(html`<${shell.TopBar} ...${props} level=${1} on=${on} />`)), shapeOf(expand(html`<${shell.TopBar} ...${props} on=${on} />`)));
+  }
+  // モデルは変えない（鍵 level は無い）
+  assert.ok(!("level" in (shell.topModel({ ...topProps(), level: 2 }) as Obj)));
 });
 
 test("web components: TopBar は view が none・知らない値で null。c-shell.js（TopBar を含む）は id の見張りの対象", () => {
@@ -4501,6 +4535,26 @@ test("web components: stripSeen は帯の中で端まで見えている列の id
   assert.deepEqual(deck.stripSeen({ left: 0, width: 100 }, mixed), ["ok"]);
 });
 
+test("web components: stripSeen は迷えば見えていない側に倒す（見える幅が 0 以下・slack が 0 以上の有限の数でない → []、幅が 0 以下の列は数えない。#507）", () => {
+  const cols = [
+    { id: "turn", x: 0, w: 300 },
+    { id: "tasks", x: 308, w: 300 },
+  ];
+  for (const width of [0, -1]) assert.deepEqual(deck.stripSeen({ left: 0, width }, cols), [], String(width));
+  // 幅 0 の view でも、幅 0 の列が左端に在れば数えない
+  assert.deepEqual(deck.stripSeen({ left: 0, width: 0 }, [{ id: "z", x: 0, w: 0 }]), []);
+  // 見える幅 0 では、slack の中に入る細い列（幅 1）も数えない
+  assert.deepEqual(deck.stripSeen({ left: 0, width: 0 }, [{ id: "t", x: 0, w: 1 }]), []);
+  assert.deepEqual(deck.stripSeen({ left: 0, width: 1 }, [{ id: "t", x: 0, w: 1 }]), ["t"]);
+  // 幅が 0 以下の列は捨てる（ほかは残す）
+  assert.deepEqual(deck.stripSeen({ left: 0, width: 1360 }, [{ id: "z", x: 10, w: 0 }, { id: "n", x: 20, w: -5 }, ...cols]), ["turn", "tasks"]);
+  // slack が 0 以上の有限の数でなければ []（Infinity・文字列・負・NaN・null）
+  for (const slack of [Number.POSITIVE_INFINITY, "1", -1, Number.NaN, null]) assert.deepEqual(deck.stripSeen({ left: 0, width: 1360 }, cols, slack as number), [], String(slack));
+  // 0 と既定（undefined = 1）は今のまま
+  assert.deepEqual(deck.stripSeen({ left: 0, width: 1360 }, cols, 0), ["turn", "tasks"]);
+  assert.deepEqual(deck.stripSeen({ left: 0, width: 1360 }, cols, undefined), ["turn", "tasks"]);
+});
+
 test("web components: turnItems は turnIds の順に話題と右腕（題「右腕」）を引き、引けない id・番の無い物を捨て、開いている物に current", () => {
   const topics = {
     turnIds: ["hand:1", "ch:1", "ch:missing", "ch:2", "ch:1"],
@@ -5626,6 +5680,19 @@ test("web components: Deck は model.strip が true のときだけ data-strip=\
   const turn = body(".c-band-turn");
   for (const decl of ["gap: var(--space-2)", "min-height: var(--c-tap)", "border: 0", "background: transparent", "font: inherit", "cursor: pointer"]) assert.ok(turn.includes(decl), decl);
   assert.ok(!/outline|box-shadow|background: var/.test(turn), turn);
+});
+
+test("web components: 帯の「あなたの番 n」のボタンは中身の幅（flex: 0 1 auto）で右の操作を右端に残し（margin-right: auto）、数は縮めない。見本に band-turn・deck-strip・top-wide-pin・top-wide-pinned・top-wide-pin-full が在る（#507）", () => {
+  const rules = parseCss(read("c-deck.css"));
+  const body = (sel: string): string => rules.filter((r) => r.at.length === 0 && r.selectors.includes(sel)).map((r) => r.body).join(" ");
+  const turn = body(".c-band-turn");
+  for (const decl of ["flex: 0 1 auto", "margin-right: auto"]) assert.ok(turn.includes(decl), decl);
+  assert.ok(body(".c-band-turn > :not(.c-band-title)").includes("flex: none"));
+  // .c-band-name（flex: 1 1 auto）より後ろに在って勝つ
+  const src = stripCssComments(read("c-deck.css"));
+  assert.ok(src.indexOf(".c-band-turn {") > src.indexOf(".c-band-name {"));
+  const gallery = read("c-gallery.js");
+  for (const demo of ["band-turn", "deck-strip", "top-wide-pin", "top-wide-pinned", "top-wide-pin-full"]) assert.match(gallery, new RegExp(`(data-)?demo(=|: )"${demo}"`), demo);
 });
 
 test("web components: c-deck.css のスマホの帯の題（名前と数を横に並べ、名前は省き数は縮めない）と、paged の列の見出しを出さない", () => {

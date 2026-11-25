@@ -13248,13 +13248,29 @@ test("web static: 入口（c-app.js）に留めた会話の列の見出しの口
   const head = app.slice(app.indexOf("function drawPinHead(root, state) {"), app.indexOf("function clearPinHead(root) {"));
   assert.ok(head.length > 0, "drawPinHead が無い");
   assert.match(head, /if \(!root\) return false;/);
-  assert.match(head, /render\(topBar\(state, "wide"\), root\);/);
+  assert.match(head, /render\(topBar\(state, "wide", 2\), root\);/);
   assert.doesNotMatch(head, /lastTop|topRoot|focus\(/);
   assert.match(app, /function clearPinHead\(root\) \{\s*if \(root\) render\(null, root\);\s*\}/);
   // 見出しは drawTop と同じ vnode（pin を通す）
+  // drawTop は level を渡さない（題は今と同じ h1）
   assert.match(app, /render\(topBar\(state, env\.phone\.matches \? "phone" : "wide"\), topRoot\);/);
-  assert.match(app, /pin=\$\{state\.pin\}/);
+  // topBar が TopBar に渡す props（1 つずつ。level は引数から）
+  const bar = app.slice(app.indexOf("function topBar(state, variant, level) {"), app.indexOf("function drawTop(state) {"));
+  assert.ok(bar.length > 0, "topBar が無い");
+  for (const name of ["variant", "level"]) assert.match(bar, new RegExp(`\\n {6}${name}=\\$\\{${name}\\}\\n`), name);
+  assert.match(bar, /\n {6}compact=\$\{state\.compact === true\}\n/);
+  assert.match(bar, /\n {6}close=\$\{state\.close === true\}\n/);
+  for (const name of ["view", "title", "status", "note", "place", "views", "hand", "menu", "mode", "pin", "backLabel", "controls", "on"]) {
+    assert.match(bar, new RegExp(`\\n {6}${name}=\\$\\{state\\.${name}\\}\\n`), name);
+  }
   // 帯の算数は c-deck.js の物をそのまま
   assert.match(app, /import \{[^}]*\bstripFit, stripSeen \} from "\.\/c-deck\.js";/);
   assert.match(app, /Object\.assign\(window\.SA\.deck, \{ stripFit, stripSeen \}\);/);
+});
+
+test("web static: 次の段（P5）のための口: drawBand は state.turn を DeckBand に通し、focusBand は turn・focusTop は pin に焦点を置ける（shell.js は渡さないので今と同じ。#507）", () => {
+  const app = read("c-app.js");
+  assert.match(app, /<\$\{DeckBand\} variant=\$\{state\.variant\} conn=\$\{state\.conn\} hand=\$\{state\.hand\} controls=\$\{state\.controls\} title=\$\{bandTitle\(state\)\} turn=\$\{state\.turn\} on=\$\{state\.on\} \/>/);
+  assert.match(app, /if \(!\["status", "find", "hand", "start", "more", "turn"\]\.includes\(act\)\) return false;/);
+  assert.match(app, /if \(!topRoot \|\| !\["back", "place", "mode", "menu", "hand", "pin", "close"\]\.includes\(act\)\) return false;/);
 });

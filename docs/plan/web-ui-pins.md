@@ -320,7 +320,7 @@ stripSeen({ left, width }, cols, slack = 1):     // cols は [{ id, x, w }]（�
 
 - 語（指針の語の表に足す）: 名前 = 「ピン留め」。操作 = 「ピン留めする」「ピン留めを外す」。知らせ = 「ピン留めした」「ピン留めを外した」。上限 = 「ピン留めは 4 つまで」。
   - 候補と比べた: 「留める / 外す」は短いが、何を外すのか単独で分からない（✗ ではないが △）。「固定」は入口の意味（今の `pinned`）と紛れる（✗）。
-- ボタンは絵だけ + `aria-label`（「ピン留めする」/「ピン留めを外す」）+ `aria-pressed`。絵 `pin` を `icons-app.svg` に足す（今は無い: §2.4）。
+- ボタンは絵だけ + `aria-label`「ピン留め」+ `aria-pressed`（名前は留めていても留めていなくても同じで、状態は `aria-pressed` だけで伝える）。絵 `pin` を `icons-app.svg` に足す（今は無い: §2.4）。
 - キーボード: 新しい近道は足さない。ボタンと板は Tab で届く。留めた列は Tab の順で流れの列の後・席の前（§4.2）。
 - 焦点: 留めた後 → その列のピンのボタン（帯はその列へ送る）。外した後 → 右隣の列のピンのボタン、無ければ左隣、無ければ上の帯の［探す］。
 - 確認も［取り消す］も出さない（もう 1 回押せば戻る）。
@@ -487,7 +487,7 @@ CREATE TABLE topic_pins (
 - `Deck` は `model.strip === true` の時だけ `data-strip="true"` を書く。`c-deck.css` はその時、自分では送らず（`overflow: visible`）、3 列を `--c-deck-col-w` の幅で並べ、各列に `scroll-snap-align: start`。
 - `deckModel(state)`: `state.strip` を model に通す。`state.seen`（タブの ID の配列。無ければ空）に在る話題の項目にも、開いている印（`current`）を付ける。`strip`・`seen` を渡さない今の呼び出しの結果は 1 字も変わらない。
 - `DeckBand`: 広い幅で `turn`（`{ count }`）が在る時だけ、名前「self-agent」の所をボタン（`data-act="turn"`・字「あなたの番」+ 番の Badge・読み上げ「あなたの番 n 件」・`on.turn(opener)`）にする。渡さない時の描き出しは変わらない。
-- `topModel` に `pin`（`null` / `{ on: boolean, disabled: boolean, why: string | null }`）を足し、`TopBar` は `pin` が在る時だけボタンを描く（`data-act="pin"`・`aria-label`「ピン留めする」/「ピン留めを外す」・`aria-pressed`・当たり 44px・× の左）。`pin` を渡さない今の呼び出しの描き出しは変わらない。
+- `topModel` に `pin`（`null` / `{ on: boolean, disabled: boolean, why: string | null }`）を足し、`TopBar` は `pin` が在る時だけボタンを描く（`data-act="pin"`・`aria-label`「ピン留め」+ `aria-pressed`・当たり 44px・× の左）。`pin` を渡さない今の呼び出しの描き出しは変わらない。
 - 口: `SA.pin.drawHead(root, state)`（根ごとに `TopBar` を描く。`SA.top` の `lastTop` を使わない）・`SA.pin.clear(root)`・`SA.deck.stripFit`・`SA.deck.stripSeen`。
 - 本番の画面は変わらない（今ある ui-shots が全部通る）。
 

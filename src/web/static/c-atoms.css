@@ -203,9 +203,15 @@
   cursor: not-allowed;
 }
 
-/* 押された形（切り替えのボタン。#507）は絵の色だけ */
+/* 押された形（切り替えのボタン。#507）は絵の色だけ。乗った時も絵の色は残す（地は乗った時の --muted のまま） */
 .c-iconbtn[aria-pressed="true"] {
   color: var(--accent);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .c-iconbtn[aria-pressed="true"]:not([aria-disabled="true"]):hover {
+    color: var(--accent);
+  }
 }
 
 /* 件数の札は右上の角に寄せる（ボタンの箱の外へは出さない） */
