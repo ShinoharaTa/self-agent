@@ -892,6 +892,15 @@ export const MIGRATIONS: readonly string[] = [
   );
   ALTER TABLE usage_log ADD COLUMN model TEXT;
   `,
+  // v48（#507）: 話題のピン留め。会話（チャンネル）ごとに 1 行で、position の小さい順に並べる（TopicPinStore）。
+  // 上限は API が見る。完了・削除で行は消さない（GET /api/topics の pins に出ないだけ）。ほかの表は変えない
+  `
+  CREATE TABLE topic_pins (
+    channel_id TEXT PRIMARY KEY,
+    position INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {

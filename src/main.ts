@@ -118,6 +118,7 @@ import { RoutineStore } from "./store/routines.ts";
 import { SdkSessionStore } from "./store/sdk-sessions.ts";
 import { TaskStore } from "./store/tasks.ts";
 import { TopicMoveStore } from "./store/topic-moves.ts";
+import { TopicPinStore } from "./store/topic-pins.ts";
 import { TopicReadStore } from "./store/topic-reads.ts";
 import { TopicSessionStore } from "./store/topic-sessions.ts";
 import { USAGE_KEEP_DAYS, UsageStore } from "./store/usage.ts";
@@ -237,6 +238,8 @@ const topicMoves = new TopicMoveStore(db, now);
 recoverMoves({ moves: topicMoves, topicSessions, ...history, log });
 // 既読（#378。docs/plan/web-ui-v3.md §3.3）。書くのは Web の POST /api/topics/ch:<id>/read だけ
 const topicReads = new TopicReadStore(db, now);
+// 話題のピン留め（#507）。書くのは Web の POST /api/topics/ch:<id>/pin だけ
+const topicPins = new TopicPinStore(db, now);
 // この機械の Claude Code のセッション（docs/plan/claude-code-sessions.md §9）。書くのは SELF_AGENT_CC=1 のときだけで、古い行は有効・無効を問わず tick で消す
 const ccSessions = new CcSessionStore(db, now);
 const ccSends = new CcSendStore(db, now);
@@ -1360,6 +1363,8 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
       proposals: topicProposals,
       // 既読（M7）。GET /api/topics の reads と POST /api/topics/ch:<id>/read（会話の判定は /messages と同じ webChannelOf）
       reads: { store: topicReads, lookup: webChannelOf },
+      // ピン留め（#507）。GET /api/topics の pins・pinMax と POST /api/topics/ch:<id>/pin（会話の判定は reads と同じ webChannelOf）
+      pins: { store: topicPins, lookup: webChannelOf },
       now,
   };
   const webTopicCollect = createTopicCollector(webTopicDeps);
