@@ -15,6 +15,8 @@
   let current = null;
   /** 1 列ずつの横送りか（スマホ。shell.js が幅から決める） */
   let paged = false;
+  /** 留めた話題の会話の列と 1 本の帯に並べているか（#507。shell.js が帯を出している間だけ true） */
+  let strip = false;
   /** GitHub の通知を読むか（/api/status の github.enabled が true になった後） */
   let githubOn = false;
   let started = false;
@@ -111,6 +113,8 @@
       busy: [...busy.keys()],
       busyOp: Object.fromEntries(busy),
       on: FLOW_ON,
+      // 帯（#507）の間だけ、帯の中の流れの列。帯が出ていなければ鍵を足さない
+      ...(strip ? { strip: true } : {}),
     };
   }
 
@@ -140,6 +144,7 @@
     cols = view.cols;
     current = view.current;
     paged = view.paged === true;
+    strip = view.strip === true;
   }
 
   /** 入口が在れば描く。描けなければ話題の無い形で 1 回だけ描き直す */

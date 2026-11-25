@@ -350,6 +350,49 @@
 }
 
 /*
+ * 留めた話題の会話の列（docs/plan/web-ui-pins.md §4.2）: 留めた数が 1 以上で帯が出る幅の間だけ、shell.js が data-pins と列の幅（--c-deck-col-w・--c-deck-conv-w）を書く。
+ * 帯（.v3-deck）が流れの 3 列（.c-deck[data-strip]）と会話の列を 1 本に並べて横に送り、列の左端で止まる（末尾は右端）。右に丸の通り道（--c-deck-lane）を空ける。
+ * 帯は列の位置（offsetLeft）の基準（pins.js が見えている列を数える）。ホイールは取らない（縦はポインタの下の列の縦送り、横は Shift + ホイール・トラックパッド・送りのバー・指）
+ */
+.v3[data-deck]:not([data-pins="true"]) .v3-pins {
+  display: none;
+}
+
+.v3[data-deck][data-pins="true"] .v3-deck {
+  position: relative;
+  display: flex;
+  gap: var(--space-2);
+  margin-right: var(--c-deck-lane);
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: thin;
+}
+
+.v3[data-deck][data-pins="true"] .v3-pins {
+  display: flex;
+  flex: none;
+  gap: var(--space-2);
+}
+
+/* 会話の列は席と同じ 1 枚の板（線で囲まない。D3） */
+.v3[data-deck][data-pins="true"] .v3-pin {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  width: var(--c-deck-conv-w);
+  min-height: 0;
+  background: var(--surface);
+  scroll-snap-align: start;
+}
+
+/* 列の会話の端で、帯や画面へ縦の送りを伝えない */
+.v3[data-deck][data-pins="true"] .v3-pin .ed-scroll {
+  overscroll-behavior-y: contain;
+}
+
+/*
  * 右腕の丸（D6 の PR-1b）: 列の場所（格子の 1 列目・2 行目）の右下に重ねる。席が閉じていれば画面の右下、開いていれば席のすぐ左の下。
  * 入れ物は丸の箱より広げない（余白は margin）。position は使わない。スマホ（full）と席だけの幅（下の data-deck="0"）では出さない
  */
