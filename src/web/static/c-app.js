@@ -457,12 +457,20 @@ if (deckRoot && bandRoot) {
     return true;
   };
 
-  /** 列（data-col）の項目のうち、押せる物（ボタン・リンク）を持つ項目の key の並び（押せない項目は数えない）。kind が文字列ならその種類（data-kind）の項目だけ */
+  /** 列（data-col）の入れ物（無ければ null） */
+  const colBoxOf = (col) => (col === null ? null : Array.from(deckRoot.querySelectorAll("[data-col]")).find((n) => n.dataset.col === col) || null);
+
+  /**
+   * 列（data-col）の本体の項目のうち、押せる物（ボタン・リンク）を持つ項目の key の並び（押せない項目は数えない）。kind が文字列ならその種類（data-kind）の項目だけ。
+   * 右腕の行（.c-col-top。#514）は数えない（焦点の落ち先の候補にしない）
+   */
   const colKeys = (col, kind) => {
-    const box = col === null ? null : Array.from(deckRoot.querySelectorAll("[data-col]")).find((n) => n.dataset.col === col);
+    const box = colBoxOf(col);
     if (!box) return [];
     return pressableKeys(
-      Array.from(box.querySelectorAll("[data-key]")).map((n) => ({ key: n.dataset.key, kind: n.dataset.kind, pressable: n.querySelector("button, a[href]") !== null })),
+      Array.from(box.querySelectorAll("[data-key]"))
+        .filter((n) => n.closest(".c-col-top") === null)
+        .map((n) => ({ key: n.dataset.key, kind: n.dataset.kind, pressable: n.querySelector("button, a[href]") !== null })),
       kind,
     );
   };
@@ -479,8 +487,14 @@ if (deckRoot && bandRoot) {
     return true;
   };
 
-  /** 列（data-col）の最初の押せる項目の最初の押せる物にフォーカス（上の帯の「あなたの番 n」。#507）。押せる項目が無ければ false */
+  /**
+   * 列（data-col）の最初の押せる項目の最初の押せる物にフォーカス（上の帯の「あなたの番 n」。#507）。押せる項目が無ければ false。
+   * 右腕の行（#514）は番（data-turn）の時だけ先に選び、番でなければ飛ばして本体の最初の押せる項目へ
+   */
   const focusCol = (col) => {
+    const box = colBoxOf(col);
+    const top = box ? box.querySelector('.c-col-top [data-key][data-turn="true"]') : null;
+    if (top && focusFirstIn(top.dataset.key)) return true;
     const keys = colKeys(col);
     return keys.length > 0 && focusFirstIn(keys[0]);
   };
@@ -497,6 +511,8 @@ if (deckRoot && bandRoot) {
     const inside = !!before && deckRoot.contains(before);
     const holder = inside ? before.closest("[data-key]") : null;
     const key = holder ? holder.dataset.key : null;
+    // 右腕の行（.c-col-top。#514）に焦点が在った: 同じ key の行に残す（行は落ち先の候補に数えない）
+    const onTop = !!holder && holder.closest(".c-col-top") !== null;
     const colBox = holder ? holder.closest("[data-col]") : null;
     const col = colBox ? colBox.dataset.col : null;
     const kind = col === "tasks" && holder ? holder.dataset.kind : undefined;
@@ -517,6 +533,7 @@ if (deckRoot && bandRoot) {
     // スマホの帯の題（今いる列の名前と数）と、広い幅の帯の「あなたの番 n」（番の列が見えない間。#507）は列と同じ数
     if (lastBand !== null && (bandTitleKey() !== titleBefore || (lastBand.turnAway === true && turnCount() !== turnsBefore))) drawBand(lastBand);
     if (inside && !document.contains(before)) {
+      if (onTop && focusItem(key)) return true;
       const keysAfter = colKeys(col, kind);
       const next = key === null || keysAfter.includes(key) ? null : focusAfter(keysBefore, keysAfter, key);
       const moved = key === null ? false : next === null ? keysAfter.includes(key) && focusItem(key) : focusFirstIn(next);

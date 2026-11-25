@@ -89,6 +89,8 @@
   }
 
   const isUnread = (channelId, last) => store.isUnread({ id: channelId, last });
+  /** 右腕の行の作業中の印（#514）。チャンネルに実行中のターンが在るか */
+  const isRunning = (channelId) => store.runningOf(channelId) !== null;
 
   /** 部品に渡す state（c-deck.js の deckModel の引数） */
   function flowState() {
@@ -104,6 +106,9 @@
       notices: store.notices ? store.notices.notices : null,
       today: store.today,
       isUnread,
+      isRunning,
+      // あなたの番の列の一番上に右腕の行（#514。いつも）
+      handRow: true,
       time: SA.ui.shortTime,
       ago: SA.views.ago,
       day: SA.views.dayLabel,
