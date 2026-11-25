@@ -4832,7 +4832,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
   /**
    * 流れの列の検査（D1）: 見える列の数が data-deck と c-deck.js の deckFit と合う・列の幅は 420 以下・席の幅は deckFit と同じ・
    * 列と項目と帯で字が横にはみ出ない・番の項目の地は --turn-surface で左の線は --warning・開いている番の項目（D3）の地は --turn-surface で左の線は --accent・
-   * 右腕の丸（D6）の数・箱・場所・顔と席の入力欄に重ならない事・帯のボタン（丸が在れば 3 つ。data-act）。足りない物の文
+   * 右腕の丸・枠・data-act="hand" がどの幅にも無い事（D6 の丸と枠は #514 の R3b で消した）・帯のボタン（探す・始める・ほかの 3 つ。data-act）。足りない物の文
    */
   /**
    * スマホの流れの列（D2。ダークのスマホの段 deck の続き。スレッドを開いた所から）: スレッドの間は帯・列・下のバーが見えない・戻ると列で焦点は押した項目（UI-7）・
@@ -6834,15 +6834,15 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         const name = band.querySelector(".c-band-name");
         if (name === null || (name.textContent ?? "") !== "self-agent" || cut(name)) out.push("band-phone: 「self-agent」が省かれているか無い");
       }
-      // 丸を描けた広い幅の帯（D6）: ［右腕］が無く、探す・始める（字つき）・ほか
-      const noHand = document.querySelector('[data-demo="band-no-hand"] .c-band');
-      if (noHand === null) out.push("band-no-hand: 帯が無い");
+      // 広い幅の帯（band）: ［右腕］が無く、探す・始める（字つき）・ほか（帯の［右腕］と D6 の丸は #514 の R3b で消した。同じ中身の band-no-hand は R7 で band に畳んだ）
+      const noHand = document.querySelector('[data-demo="band"] .c-band');
+      if (noHand === null) out.push("band: 帯が無い");
       else {
         const acts = [...noHand.querySelectorAll("[data-act]")].map((el) => el.getAttribute("data-act"));
-        if (acts.join(",") !== "status,find,start,more") out.push(`band-no-hand: ボタン ${acts.join(",")}（status,find,start,more のはず）`);
-        if (noHand.querySelector(".c-band-hand") !== null) out.push("band-no-hand: 右腕が在る");
+        if (acts.join(",") !== "status,find,start,more") out.push(`band: ボタン ${acts.join(",")}（status,find,start,more のはず）`);
+        if (noHand.querySelector(".c-band-hand") !== null) out.push("band: 右腕が在る");
         const labels = [...noHand.querySelectorAll(".c-btn-label")].map((el) => (el.textContent ?? "").trim());
-        if (labels.join(",") !== "探す,始める") out.push(`band-no-hand: 字つきのボタン ${labels.join(",")}（探す,始める のはず）`);
+        if (labels.join(",") !== "探す,始める") out.push(`band: 字つきのボタン ${labels.join(",")}（探す,始める のはず）`);
       }
       // 題つきのスマホの帯: 列の名前と数（あなたの番 は Badge・タスクは数・通知は 0 なので数なし）。題は省かれず、帯のボタンに重ならない
       const titled: ReadonlyArray<[string, string, string, string]> = [

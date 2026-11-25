@@ -1363,7 +1363,7 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
       proposals: topicProposals,
       // 既読（M7）。GET /api/topics の reads と POST /api/topics/ch:<id>/read（会話の判定は /messages と同じ webChannelOf）
       reads: { store: topicReads, lookup: webChannelOf },
-      // ピン留め（#507）。GET /api/topics の pins・pinMax と POST /api/topics/ch:<id>/pin（会話の判定は reads と同じ webChannelOf）
+      // ピン留め（#507）。GET /api/topics の pins・pinMax・handPins と POST /api/topics/ch:<id>/pin（会話の判定は reads と同じ webChannelOf）
       pins: { store: topicPins, lookup: webChannelOf },
       now,
   };
