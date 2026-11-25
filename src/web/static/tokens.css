@@ -24,7 +24,7 @@
 
 /*
  * 動きの長さと曲線（docs/design/WEB-UI-GUIDELINES.md §6）。押下は micro、ダイアログ・トーストの出は short、ドロワーの開きは long。
- * 流れの列の席が開くとき（shell.css。D5 の PR-1）と右腕の枠・幕が出るとき（D6 の PR-4）は short（スマホの全面は long）で、右から（スマホの枠は下から）のずれは --c-deck-seat-in。
+ * 流れの列の席が開くとき（shell.css。D5 の PR-1）と新しく留めた会話の列が出るとき（P5）は short（スマホの全面は long）で、右からのずれは --c-deck-seat-in。
  * 消えるときは出るときの 65%（ダイアログ・トースト）か short（ドロワー）。prefers-reduced-motion では base.css が transition を全部止める
  */
 :root {
@@ -167,7 +167,6 @@
   --c-row-h: 44px;
   --c-gutter: 16px;
   --c-list-w: 280px;
-  --c-hand-w: 420px;
   --c-gallery-pane-w: 360px;
   --c-card-r: 10px;
   --c-btn-sm-h: 36px;

@@ -658,29 +658,18 @@ export function Item({ item, on }) {
   </div>`;
 }
 
-/** 右腕のボタンの印（turn・unread・running。知らない値は null。c-shell の handMarkOf と同じ。c-deck は c-shell を import しない） */
-function bandMark(mark) {
-  return mark === "turn" || mark === "unread" || mark === "running" ? mark : null;
-}
-
-/** 右腕のボタンの読み上げの名前（印があれば語で足す） */
-function bandHandName(mark) {
-  return bandMark(mark) ? "右腕（" + MARK_LABEL[mark] + "）" : undefined;
-}
-
 /**
- * 上の帯。conn は { tone: "ok"|"bad", label } か null（状態をまだ読めていない）、hand は { mark, open } か null、controls は右腕のボタンの aria-controls。
- * variant が phone（スマホ。D2）なら［右腕］を出さず（右腕は あなたの番 の列の一番上の行。#514）、［始める］は字のないボタン。ほかは今の形。hand が無ければ［右腕］を出さない（広い幅の口は右下の丸。D6）。
+ * 上の帯。conn は { tone: "ok"|"bad", label } か null（状態をまだ読めていない）。右腕は帯に出さない（あなたの番 の列の一番上の行。#514）。
+ * variant が phone（スマホ。D2）なら［始める］は字のないボタン。ほかは今の形。
  * title は { name, count: number|null, tone: "warning"|undefined } か null（今いる列）。phone で name が空でないときだけ「self-agent」の代わりに列の名前と数を出す（列の見出しは出さない）。
  * turn は { count } か null（番の列が見えていない間の あなたの番 の数。#507）。phone でなく count が 1 以上の数のときだけ「self-agent」の代わりにボタン「あなたの番」と数。
- * on: { status(), find(opener), hand(opener), start(opener), more(opener), turn(opener) }
+ * on: { status(), find(opener), start(opener), more(opener), turn(opener) }
  */
-export function DeckBand({ variant, conn, hand, controls, title, turn, on }) {
+export function DeckBand({ variant, conn, title, turn, on }) {
   const phone = variant === "phone";
   const page = phone && title && filled(title.name) ? title : null;
   const count = page ? countLabel(page.name, page.count) : null;
   const turns = !phone && turn !== null && typeof turn === "object" && typeof turn.count === "number" && turn.count >= 1 ? Math.floor(turn.count) : 0;
-  const mark = hand ? bandMark(hand.mark) : null;
   return html`<header class="c-band">
     ${conn
       ? html`<button class="c-band-conn" key="conn" type="button" data-act="status" aria-label=${conn.label} title=${conn.label} onClick=${() => on.status()}>
@@ -704,13 +693,6 @@ export function DeckBand({ variant, conn, hand, controls, title, turn, on }) {
         : html`<span class="c-band-name" key="name">self-agent</span>`}
     <span class="c-band-ops" key="ops">
       <span class="c-band-act" data-act="find"><${Button} kind="ghost" size="sm" icon="search" label="探す" onPress=${(event) => on.find(event.currentTarget)} /></span>
-      ${phone || !hand
-        ? null
-        : html`<button class="c-band-hand" type="button" data-act="hand" aria-label=${bandHandName(mark)} aria-controls=${filled(controls) ? controls : undefined}
-            aria-expanded=${hand && hand.open ? "true" : "false"} onClick=${(event) => on.hand(event.currentTarget)}>
-            <span class="c-band-hand-label">右腕</span>
-            ${mark ? html`<span class="c-band-hand-mark" data-state=${mark} aria-hidden="true"></span>` : null}
-          </button>`}
       <span class="c-band-act" data-act="start">
         ${phone
           ? html`<${IconButton} icon="plus" label="始める" onPress=${(event) => on.start(event.currentTarget)} />`

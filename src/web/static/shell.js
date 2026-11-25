@@ -1,6 +1,6 @@
 // 新しい殻（index.html。docs/plan/web-ui-v3.md §2・§11 の M2）: 話題の一覧（列 1。topics.js）と開いた話題（列 2）、
 // SA.app（古い殻 workbench.js と同じ名前の契約。chat.js・views.js・api.js・ui.js・sound.js が呼ぶ）・hash・スマホの一覧 ⇄ 会話・テーマ・書きかけ・シート・キーボードの高さ、
-// 下のバー（描くのは入口 c-app.js）と「ほか」の板・接続の点と鈴・絞り込み・一覧のキー、列 2 の見出し（描くのは入口 c-app.js の SA.top。[会話][端末]・場所・「…」の板。K4）、右腕の枠（列 3。§4 の M3。畳んだ帯・流れの列の丸と帯の［右腕］・重ねる形（スマホの口は #514 の R3a で無くした）・「いま見ている話題」の 1 行・札）、話題を始めるダイアログ（#v3-start。§2・§5 の M4）、場所を変える（シートと確認。§6.3 の M5）、
+// 下のバー（描くのは入口 c-app.js）と「ほか」の板・接続の点と鈴・絞り込み・一覧のキー、列 2 の見出し（描くのは入口 c-app.js の SA.top。[会話][端末]・場所・「…」の板。K4）、右腕（#514。一覧・列の一番上の行からほかの話題と同じに列 2（席）に開く。見出し・印・札）、話題を始めるダイアログ（#v3-start。§2・§5 の M4）、場所を変える（シートと確認。§6.3 の M5）、
 // 640px 以上の流れの列（docs/plan/web-ui-deck.md の D1。入口 c-app.js の SA.deck が在るときだけ）: 上の帯・3 つの列（状態は flows.js）・席（列 2 を開いたときだけ）・「探す」の板（一覧を重ねる）
 "use strict";
 
@@ -41,7 +41,7 @@
   // スマホ（639px 以下）は 1 列（一覧 ⇄ 会話）、640px 以上は 2 列
   const mqPhone = window.matchMedia ? window.matchMedia("(max-width: 639px)") : { matches: false, addEventListener() {} };
   const phone = () => mqPhone.matches;
-  // 流れの列の入口（c-app.js の SA.deck）が在れば、640px 以上は上の帯 + 3 列 + 席。無ければ今の広い幅の形（一覧 + 列 2 + 右腕の列）に落ちる（D6 で落ち先ごと消す）
+  // 流れの列の入口（c-app.js の SA.deck）が在れば、640px 以上は上の帯 + 3 列 + 席。無ければ今の広い幅の形（一覧 + 列 2）に落ちる（D10 で落ち先ごと消す）
   // スマホは入口に下のバーの口（SA.deck.drawBar）も在るときだけ、上の帯 + 1 列ずつの横送り + 下のバー（deckFull。D2）。無ければ今のスマホの殻（一覧 ⇄ 会話）
   const deckOn = () => !!SA.deck && (!phone() || typeof SA.deck.drawBar === "function");
   const deckFull = () => phone() && deckOn();
@@ -61,10 +61,6 @@
     view2: "talk",
     // 端末のセッションの話題（cc:）で見ている物（"card" 札 | "pane" 今の［端末］のタブ）。話題を開くたびに card
     term: "card",
-    // 右腕: 列のとき開いているか（localStorage の v3-hand）・重ねる形で開いているか（保存しない）・形（"column" | "over"）
-    handWant: true,
-    handOver: false,
-    handMode: "over",
     // 見出しを compact（場所・[会話][端末] を「…」の板へ）にするか。列 2 の幅を測れるまでは compact（fitTop が入口に測らせて決める）
     topCompact: true,
     // 流れの列: 最後に書いた見える列の数と席に開いている物（null は流れの列でない）・席を開いた元（{ key } か { find: true }。閉じた後の焦点）
@@ -198,11 +194,10 @@
       ed.replaceChildren(el("div", { class: "v3-empty" }, [el("p", { class: "meta", text: "左の一覧から話題を選んでください" })]));
       return;
     }
-    // 席の右腕（#514。行から開く）は右腕の会話の指定で描き、右腕の入れ物は空にする（同じチャンネルを 2 つの入れ物に描かない）。札の <#ID> を覚え直す（一覧が変われば syncHand が描き直す）
+    // 席の右腕（#514。行から開く）は右腕の会話の指定で描く。札の <#ID> を覚え直す（一覧が変われば syncHand が描き直す）
     const seatId = tabId === handTab() ? handChannelId() : null;
     if (seatId !== null) {
       edHand = true;
-      clearHandEd();
       handCardIds = [];
       SA.chat.render(ed, seatId, HAND_TALK);
       handCardSig = cardSig();
@@ -353,11 +348,10 @@
 
   /**
    * 列 2 の幅を入口に測らせ、見出しの compact を決める（替わったときだけ描く）。測れなければ compact。
-   * 重ねた右腕・板が開いている間は測らない（後ろの見出しの形を替えない。板は opener を覚えている）。呼ぶのは resize・applyHand の最後・スマホの境・板の close
+   * 板が開いている間は測らない（後ろの見出しの形を替えない。板は opener を覚えている）。呼ぶのは起動・resize・スマホの境・板の close
    */
   function fitTop() {
     if (!SA.top) return;
-    if (S.handMode === "over" && S.handOver) return;
     const sheet = $("v3-sheet");
     if (sheet && sheet.open) return;
     const next = SA.top.compact() === false ? false : true;
@@ -471,14 +465,12 @@
   }
 
   /**
-   * 画面に描かれていて見えている会話のチャンネル（ch: を外したもの）。列 2 の会話の 1 つ（[端末] の間は無い）と、見えている右腕と、帯の見えている留めた話題の列（#507）。
+   * 画面に描かれていて見えている会話のチャンネル（ch: を外したもの）。列 2 の会話の 1 つ（[端末] の間は無い。右腕も列 2 の会話。#514）と、帯の見えている留めた話題の列（#507）。
    * スマホで一覧を出している間（会話の列が隠れている間）も、最後に開いた会話を返す（M2a からの動き。変えるなら polling・音が一緒に変わる（既読は readingChannelIds））
    */
   function shownChannelIds() {
     const tabId = shownTabId();
     const ids = tabId && tabId.startsWith("ch:") ? [tabId.slice(3)] : [];
-    const hand = handVisible() ? handChannelId() : null;
-    if (hand && !ids.includes(hand)) ids.push(hand);
     for (const id of pinsSeen()) if (!ids.includes(id)) ids.push(id);
     return ids;
   }
@@ -489,17 +481,13 @@
   }
 
   /**
-   * 既読を付ける会話（chat.js の markSeen。M7）。shownChannelIds から、スマホで一覧を出している間の列 2 の会話と、
-   * 重ねた右腕の下の会話を除いたもの（見えている右腕は入れる）。帯の留めた話題の列（#507）は、右腕の枠が重なっている間と「探す」の板が開いている間は入れない
+   * 既読を付ける会話（chat.js の markSeen。M7）。shownChannelIds から、スマホで一覧を出している間（流れの列では席を閉じている間）の列 2 の会話を除いたもの。
+   * 帯の留めた話題の列（#507）は、「探す」の板が開いている間は入れない
    */
   function readingChannelIds() {
     const tabId = shownTabId();
-    const over = S.handMode === "over" && S.handOver;
-    const covered = mainHidden() || over;
-    const ids = !covered && tabId && tabId.startsWith("ch:") ? [tabId.slice(3)] : [];
-    const hand = handVisible() ? handChannelId() : null;
-    if (hand && !ids.includes(hand)) ids.push(hand);
-    if (!over && !findOpen()) for (const id of pinsSeen()) if (!ids.includes(id)) ids.push(id);
+    const ids = !mainHidden() && tabId && tabId.startsWith("ch:") ? [tabId.slice(3)] : [];
+    if (!findOpen()) for (const id of pinsSeen()) if (!ids.includes(id)) ids.push(id);
     return ids;
   }
 
@@ -527,13 +515,9 @@
     // 流れの列の項目から開いたときの key（押した直後の 1 回だけ。ほかの開き方では null）
     const fromKey = SA.flows ? SA.flows.lastKey() : null;
     if (!tabId) return;
-    // 帯が出ている間の留めた話題（#507）は席に開かず、その列へ送って入力欄に焦点（住所は書かない）。「探す」の板・重ねた右腕は先に畳む
+    // 帯が出ている間の留めた話題（#507）は席に開かず、その列へ送って入力欄に焦点（住所は書かない）。「探す」の板は先に畳む
     if (tabId.startsWith("ch:") && pinsShown() && SA.pins.has(tabId.slice(3))) {
       if (findOpen()) closeFind(false);
-      if (S.handMode === "over" && S.handOver) {
-        S.handOver = false;
-        applyHand();
-      }
       SA.pins.jump(tabId.slice(3), "composer");
       return;
     }
@@ -548,8 +532,7 @@
       if (tabId.startsWith("cc:") && SA.store.status === null) deferred = tabId;
       return;
     }
-    // 右腕のタブもほかの ch: と同じに席（列 2）に開く（#514）。枠・列の右腕は下で畳む（同じチャンネルを 2 つの入れ物に描かない）
-    const toHand = tabId === handTab();
+    // 右腕のタブもほかの ch: と同じに席（列 2）に開く（#514）
     const seatedBefore = handSeated();
     const switched = S.active !== tabId;
     const shownBefore = edTab;
@@ -568,11 +551,7 @@
       hiddenScroll = null;
       stickOnShow = false;
     }
-    // スマホは先に会話の列を出してから描く（隠れたままではスクロールを書けない）。重ねた右腕は畳む（履歴の entry は showBody が話題に置き換える）
-    const handWasOver = S.handMode === "over" && S.handOver;
-    // 落ち先の形の右腕の列（開いていれば）も、右腕を列 2 に開くときは［畳む］と同じに畳む
-    const handColumn = toHand && S.handMode === "column" && S.handWant;
-    const focusInHand = (handWasOver || handColumn) && handHasFocus();
+    // スマホは先に会話の列を出してから描く（隠れたままではスクロールを書けない）
     // 流れの列: 「探す」の板から開いたか（板は閉じ、焦点は席の［閉じる］へ）
     const fromFind = deckOn() && findOpen();
     if (phone()) {
@@ -581,30 +560,17 @@
         if (fromFind) closeFind(false);
         S.seatFrom = fromFind ? { find: true } : { key: fromKey };
       }
-      if (S.handOver) {
-        S.handOver = false;
-        applyHand();
-      }
       showBody();
     } else if (deckOn()) {
-      // 席はスマホの会話と同じ履歴（v3Body の entry）。重ねた右腕・板は畳む
+      // 席はスマホの会話と同じ履歴（v3Body の entry）。板は畳む
       if (fromFind) closeFind(false);
-      if (S.handOver) {
-        S.handOver = false;
-        applyHand();
-      }
       S.seatFrom = fromFind ? { find: true } : { key: fromKey };
       showBody();
-    } else if (handWasOver) {
-      // 640px 以上の重ねる形は entry を積んでいないので、その場で畳む
-      S.handOver = false;
-      applyHand();
     }
-    if (handColumn) foldHand();
     // 同じ話題でも [端末] から会話に戻ったときは別のタブとして描く
     renderMain(switched || shownBefore !== shownTabId());
     SA.topics.render();
-    // 席の右腕が出た・やめた: 口の印（見えている右腕には未読・作業中を出さない）
+    // 席の住人が右腕になった・やめた: 右腕の印（見えている右腕には未読・作業中を出さない）
     if (handSeated() !== seatedBefore) renderHandEntries();
     // 札のときは画面の写しを読まない（判定だけ読む）
     const term = termSession();
@@ -621,24 +587,11 @@
     } else if (deckOn() && (fromFind || S.deckCols === 0)) {
       // 板から開いた・席だけの幅（列が隠れて押した項目が見えない）: 席の［閉じる］へ。項目から開いたなら焦点は項目のまま
       if (SA.top) SA.top.focus("close");
-    } else if (focusInHand) {
-      // 畳んだ右腕の中にあった焦点は列 2 の側へ（入力欄が無ければ一覧の開いた行）。入力欄が部品なら口に頼む
-      const root = [...$("ed").children].find((child) => child.getAttribute("data-composer") !== null);
-      if (!(root && SA.composer && SA.composer.focus(root))) {
-        const input = $("ed").querySelector("textarea.composer-input");
-        if (input) input.focus({ preventScroll: true });
-        else focusCurrentRow();
-      }
     }
   }
 
   /** tabId が列 2 に出ていれば見出しと中身だけ描き直す */
   function refresh(tabId) {
-    // 席の右腕は席の側（下の renderEd）を描く
-    if (tabId !== null && tabId === handTab() && !handSeated()) {
-      renderHand();
-      return;
-    }
     // 帯の中の留めた話題の列（#507）は、見えていなくても描き直す（留めた話題は席に開かないので席の側とは取り合わない）
     if (tabId !== null && tabId.startsWith("ch:") && SA.pins && SA.pins.has(tabId.slice(3))) SA.pins.refresh(tabId.slice(3));
     if (shownTabId() !== tabId) return;
@@ -648,22 +601,10 @@
     if (ed) renderEd(ed, tabId);
   }
 
-  // ===== 右腕（列 3。中身は既定の人格の #inbox を chat.js で描く。docs/plan/web-ui-v3.md §4） =====
-  /** 列 2 が残す最小の幅（px）。これを切るなら右腕を列にせず重ねる */
-  const HAND_MAIN_MIN = 360;
-  const HAND_NONE_TEXT = "右腕はまだありません。Discord で /setup を実行すると、ここで頼めます。";
-  const HAND_MARK_TEXT = { turn: "あなたの番", unread: "未読" };
-
-  // 閉じた後に焦点を戻すボタン・最初の読み込みを済ませた右腕のチャンネル・最後に描いた物（チャンネル ID か "none"・"loading"）・次に描くとき下端に寄せるか
+  // ===== 右腕（既定の人格の #inbox。一覧・列の一番上の行からほかの話題と同じに列 2（席）に開き、chat.js が描く。#514） =====
   // 札: 最後に描いた返事の <#ID> と、その札の中身の署名（一覧を読んで変わったら描き直す）
   let handCardIds = [];
   let handCardSig = null;
-  let handOpener = null;
-  let handLoadedId = null;
-  let handShown = null;
-  let handStick = true;
-  // 重ねた右腕の [畳む] で history.back() を呼んでから popstate が来るまで（連打で 2 つ戻らない）
-  let handClosing = false;
 
   /** 右腕のタブ（/api/topics の rightHands の先頭。サーバーが複数でも選ぶ口は作らない）。無ければ null */
   function handTab() {
@@ -677,144 +618,40 @@
     return tab && tab.startsWith("ch:") ? tab.slice(3) : null;
   }
 
-  function handVisible() {
-    return S.handMode === "column" ? S.handWant : S.handOver;
-  }
-
-  /** 席に右腕の会話を開いているか（席の住人が右腕のタブの間。#514 で行からも［広げる］からも同じ open。閉じると leaveHandSeat が住人を空にする） */
+  /** 席の住人が右腕か（行から開く open はほかの話題と同じ。席を閉じても住人は右腕のまま） */
   function handSeated() {
     return S.active !== null && S.active === handTab();
   }
 
-  /** 右腕の会話が見えているか（枠か席）。口に未読・作業中を出さない */
+  /** 右腕の会話が見えているか（席の住人が右腕で、席が隠れていない間）。見えていなければ行と下のバーに未読・作業中を出す */
   function handSeen() {
-    return handVisible() || handSeated();
-  }
-
-  /** 枠の見出しに［広げる］を出すか（流れの列・スマホでない・右腕のチャンネルが在る） */
-  function handSeatable() {
-    return deckOn() && !phone() && handChannelId() !== null;
-  }
-
-  /** 列 3 が入るか（スマホか、列 2 が HAND_MAIN_MIN を切るなら重ねる形） */
-  function handModeOf(isPhone, total, list, hand) {
-    return isPhone || total - list - hand < HAND_MAIN_MIN ? "over" : "column";
-  }
-
-  /** shell.css の --v3-hand-w（読めなければ 360） */
-  function handWidth() {
-    try {
-      const v = parseFloat(getComputedStyle(root).getPropertyValue("--v3-hand-w"));
-      return Number.isFinite(v) ? v : 360;
-    } catch {
-      return 360;
-    }
-  }
-
-  /** 幅を測って形を決める。形が変わったら重ねて開いていた状態を閉じる（列は保存した開閉に従う） */
-  function fitHand() {
-    if (!refs.v3) return;
-    const list = $("v3-list");
-    // 流れの列では右腕は常に重ねる形（列の形は D6 で枠ごと消す）
-    const mode = deckOn() ? "over" : handModeOf(phone(), refs.v3.clientWidth, list ? list.offsetWidth : 0, handWidth());
-    if (mode === S.handMode) return;
-    const focusInHand = handHasFocus();
-    S.handMode = mode;
-    S.handOver = false;
-    dropHandMark();
-    applyHand();
-    if (focusInHand && !handVisible()) restoreHandFocus();
-  }
-
-  /** 焦点が右腕の中にあるか */
-  function handHasFocus() {
-    const hand = $("v3-hand");
-    return !!hand && hand.contains(document.activeElement);
-  }
-
-  /** 履歴を戻らずに右腕を閉じた状態にするとき、今の entry の右腕の印（v3Hand）を外す（残すと次の [畳む] がその entry へ戻るだけになる） */
-  function dropHandMark() {
-    try {
-      if (history.state && history.state.v3Hand) {
-        // 一覧までの段数を持つ。右腕の entry の v3Depth は下の entry の段数なので、会話の上に積んだものはその 1 つ上（印の無い古い entry は下を 1 と見る）
-        const st = history.state.v3Body ? { v3Body: true, v3Depth: depthOf(history.state) + 1 } : { v3Body: false };
-        history.replaceState(st, "", location.href);
-      }
-    } catch {
-      // 書けなくても右腕は閉じている
-    }
+    return handSeated() && !mainHidden();
   }
 
   /**
-   * 押せない（inert）所を 1 か所で決める: 重ねた右腕の間は一覧・列 2・上の帯・右腕の丸・列、「探す」の板の間は上の帯・右腕の丸・列・列 2（一覧は板として前に出る）。
-   * 呼ぶのは applyHand・openFind・closeFind・fitDeck（流れの列でなくなったとき）
+   * 押せない（inert）所を 1 か所で決める: 「探す」の板の間は上の帯・列・下のバー・列 2（一覧は板として前に出る）。
+   * 呼ぶのは openFind・closeFind・fitDeck（流れの列でなくなったとき）
    */
   function applyInert() {
-    const over = S.handMode === "over" && S.handOver;
     const find = deckOn() && findOpen();
-    const set = (id, on) => {
+    for (const id of ["v3-band", "v3-deck", "v3-foot", "v3-main"]) {
       const n = $(id);
-      if (n) n.inert = on;
-    };
-    set("v3-list", over);
-    for (const id of ["v3-band", "v3-orb", "v3-deck", "v3-foot", "v3-main"]) set(id, over || find);
-  }
-
-  /** 開閉と形を属性に書き、見えていれば描く（見えていない間は高さが測れないので、属性を書いた後で描く） */
-  function applyHand() {
-    const v3 = refs.v3;
-    if (!v3) return;
-    const visible = handVisible();
-    const over = S.handMode === "over" && S.handOver;
-    v3.setAttribute("data-hand-mode", S.handMode);
-    v3.setAttribute("data-hand", visible ? "open" : "closed");
-    const backdrop = $("v3-hand-backdrop");
-    if (backdrop) backdrop.hidden = !over;
-    // 重ねている間は後ろ（一覧・列 2。流れの列では上の帯と列も）を押せず、Tab でも入らない
-    applyInert();
-    const hand = $("v3-hand");
-    if (hand) {
-      if (over) hand.setAttribute("role", "dialog");
-      else hand.removeAttribute("role");
+      if (n) n.inert = find;
     }
-    const show = $("v3-hand-show");
-    if (show) show.setAttribute("aria-expanded", String(visible));
-    // 隠れていた間の位置は当てにならないので、次に描くときは下端から
-    if (!visible) handStick = true;
-    renderHand();
-    renderHandEntries();
-    // 帯の見えている列を数え直す（#507。変わった時だけ pins.js が読み直す）
-    if (SA.pins) SA.pins.measure();
-    // 右腕を開いた・重ねた右腕を畳んで下の会話が出た（readingChannelIds が変わる）
-    SA.chat.markSeenShown();
-    // 列 2 の幅が変わった（右腕の開閉・形）
-    fitTop();
   }
 
-  /** 右腕の入れ物を描く。描く前の位置を覚え、下に付いていたら（か bottom なら）下へ、でなければ前の位置（renderEd と同じ考え方） */
-  function keepScroll(ed, draw, bottom) {
-    const old = ed.querySelector(".ed-scroll");
-    const wasBottom = bottom || !old || atBottom(old);
-    const oldTop = old ? old.scrollTop : 0;
-    draw();
-    const scroll = ed.querySelector(".ed-scroll");
-    if (!scroll) return;
-    if (scroll.dataset.stick === "bottom" && wasBottom) scroll.scrollTop = scroll.scrollHeight;
-    else scroll.scrollTop = oldTop;
-  }
-
-  /** chat.js に渡す枠の指定（毎回同じ物）。札は古い描き方では replyExtras（DOM）、部品の道では replyRefs・noticeRefs（データ）と onRef */
-  const HAND_FRAME = { title: "右腕", placeholder: "右腕に頼む・訊く", ops: handOps, outgoing: withViewing, replyText: namedText, noticeText: handNoticeText, replyExtras: handCards, replyRefs: handRefs, noticeRefs: handRefs, onRef: (id) => SA.app.open(id) };
-  /** 見出しを入口 c-app.js の部品（SA.hand）が描くときの枠（chat.js は見出しを作らない） */
-  const HAND_FRAME_BARE = Object.assign({}, HAND_FRAME, { head: false });
-  /** 席（#ed）に右腕の会話を描くときの枠（#514。見出しは列 2 の部品が描く。席では「いま見ている話題」を添えないので outgoing は無し） */
-  const HAND_TALK = Object.assign({}, HAND_FRAME_BARE);
-  delete HAND_TALK.outgoing;
-
-  /** 部品の見出しで描けなかった（以後はこのタブで古い見出し） */
-  let handHeadBroken = false;
-  /** 部品の見出しの on（1 回だけ作る） */
-  const HAND_ON = { menu: (opener) => openHandMenu(opener), close: () => closeHand(), seat: () => seatHand() };
+  /** chat.js に渡す席の右腕の枠の指定（毎回同じ物）。見出しは列 2 の部品が描く（head: false）。送る本文は入力のまま。札は古い描き方では replyExtras（DOM）、部品の道では replyRefs・noticeRefs（データ）と onRef */
+  const HAND_TALK = {
+    title: "右腕",
+    placeholder: "右腕に頼む・訊く",
+    replyText: namedText,
+    noticeText: handNoticeText,
+    replyExtras: handCards,
+    replyRefs: handRefs,
+    noticeRefs: handRefs,
+    onRef: (id) => SA.app.open(id),
+    head: false,
+  };
 
   /** 右腕の「…」の行（chat.js の head の menu。#inbox では会話を新しくする・Discord で開く）。チャンネルが無ければ空 */
   function handMenu() {
@@ -826,163 +663,7 @@
   function openHandMenu(opener) {
     const items = handMenu();
     if (items.length === 0) return;
-    openSheet(HAND_FRAME.title + " の操作", items, opener);
-  }
-
-  /** 右腕の見出しを部品で描く（閉じていれば消す）。描けたら true、口が無い・描けなければ false（古い見出しに戻す） */
-  function drawHandHead() {
-    if (!SA.hand || handHeadBroken) return false;
-    if (SA.hand.draw(handVisible() ? { title: HAND_FRAME.title, menu: handMenu().length > 0, seat: handSeatable(), on: HAND_ON } : null)) return true;
-    handHeadBroken = true;
-    SA.hand.draw(null);
-    return false;
-  }
-
-  /** 右腕の [畳む] に焦点（部品の見出しか、古い見出しの #v3-hand-close） */
-  function focusHandClose() {
-    if (SA.hand && !handHeadBroken && SA.hand.focus("close")) return;
-    const close = $("v3-hand-close");
-    if (close) close.focus();
-  }
-
-  /** 何を描くか（右腕のチャンネル ID か、無ければ "none"、一覧をまだ読んでいなければ "loading"） */
-  function handKey() {
-    return handChannelId() || (SA.topics.data() === null ? "loading" : "none");
-  }
-
-  /** 見えている右腕を描く（[畳む] に焦点があれば、描き直した後の [畳む] に戻す。入力欄は chat.js が残す） */
-  function renderHand() {
-    // 閉じたら部品の見出しを消す
-    if (!handVisible()) {
-      drawHandHead();
-      return;
-    }
-    // 席に右腕が出ている間は枠に描かず畳む（同じチャンネルを 2 つの入れ物に描かない。#514）
-    if (handSeated()) {
-      foldHand();
-      return;
-    }
-    const ed = $("v3-hand-ed");
-    if (!ed) return;
-    const bare = drawHandHead();
-    // [畳む] の焦点を戻すのは古い見出しのとき（部品の見出しは描き直しで要素が替わらない）
-    const closeBefore = $("v3-hand-close");
-    const refocus = !!closeBefore && document.activeElement === closeBefore;
-    const id = handChannelId();
-    const key = handKey();
-    handCardIds = [];
-    if (id) {
-      const first = handLoadedId !== id;
-      keepScroll(ed, () => SA.chat.render(ed, id, bare ? HAND_FRAME_BARE : HAND_FRAME), handStick || handShown !== key);
-      if (first) {
-        handLoadedId = id;
-        SA.store.load.turns(id);
-      }
-    } else {
-      // 部品の見出しがあれば本文だけ
-      ed.replaceChildren(
-        ...[
-          bare ? null : el("header", { class: "ed-toolbar" }, [el("div", { class: "ed-title" }, [el("h2", { text: "右腕" })]), el("div", { class: "ed-actions" }, handOps())]),
-          key === "loading" ? SA.views.loading() : el("div", { class: "v3-empty" }, [el("p", { class: "meta", text: HAND_NONE_TEXT })]),
-        ].filter(Boolean),
-      );
-    }
-    handShown = key;
-    handStick = false;
-    handCardSig = cardSig();
-    if (refocus) {
-      const close = $("v3-hand-close");
-      if (close) close.focus();
-    }
-  }
-
-  /** 右腕の見出しの右端（[畳む]） */
-  function handOps() {
-    const b = el("button", { class: "btn btn-ghost btn-sm", id: "v3-hand-close", type: "button", "aria-label": "右腕を畳む", text: "畳む" });
-    b.addEventListener("click", () => closeHand());
-    return [b];
-  }
-
-  /** 右腕を開く。focusInput なら入力欄に（部品なら口に頼む）、でなければ [畳む] に焦点 */
-  function openHand(opener, focusInput) {
-    // 席に右腕が出ている間は枠を開かず、席の入力欄へ
-    if (handSeated()) {
-      focusSeatInput();
-      return;
-    }
-    // 流れの列で「探す」の板の中から開いたら、先に板を閉じる（右腕は modal。畳んだ後の焦点は板を開いたボタンへ。板の中の要素は閉じると隠れる）
-    if (deckOn() && findOpen()) {
-      const from = findOpener;
-      const list = $("v3-list");
-      closeFind(false);
-      if (!opener || (list && list.contains(opener))) opener = from;
-    }
-    handOpener = opener || null;
-    handClosing = false;
-    const wasVisible = handVisible();
-    if (S.handMode === "column") {
-      if (!S.handWant) {
-        S.handWant = true;
-        save("v3-hand", "1");
-      }
-    } else if (!S.handOver) {
-      S.handOver = true;
-      // スマホは戻る（端のスワイプ）で閉じられるよう entry を 1 つ積む（「探す」の板の entry の上なら置き換える。戻る 1 回で列）
-      if (phone()) {
-        try {
-          // 板の entry の上なら、板の下の段数を引き継ぐ（スレッドの上で開いた板。札で話題を開いた後の［‹］が列まで戻る）
-          const onFind = !!(history.state && history.state.v3Find);
-          const st = { v3Body: S.view === "body", v3Hand: true, v3Depth: onFind ? underFind(history.state) : depthOf(history.state) };
-          if (onFind) history.replaceState(st, "", location.href);
-          else history.pushState(st, "", location.href);
-        } catch {
-          // 積めなくても [畳む]・backdrop で閉じられる
-        }
-      }
-    }
-    // 畳んでいた間の返事を読む（初めて描くチャンネルは renderHand が読む）
-    const id = handChannelId();
-    const reload = !wasVisible && id !== null && handLoadedId === id;
-    applyHand();
-    if (reload && handVisible()) SA.store.load.turns(id);
-    const ed = $("v3-hand-ed");
-    if (focusInput && ed) {
-      const root = [...ed.children].find((child) => child.getAttribute("data-composer") !== null);
-      if (root && SA.composer && SA.composer.focus(root)) return;
-      const input = ed.querySelector(".composer-input");
-      if (input) {
-        input.focus();
-        return;
-      }
-    }
-    focusHandClose();
-  }
-
-  /**
-   * 枠の見出しの［広げる］: 右腕の会話を席に開き（行から開くのと同じ open。枠は open が今の決まりで畳む。履歴の entry は席の物に置き換わる。口へ焦点は戻さない）、焦点は席の入力欄（無ければ席の［閉じる］）
-   */
-  function seatHand() {
-    const tab = handTab();
-    if (tab === null || !handSeatable()) return;
-    open(tab);
-    if (handSeated()) focusSeatInput();
-  }
-
-  /**
-   * 枠・列の右腕を畳む（席に右腕を開くとき。列の形は［畳む］と同じに保存する。重ねる形は fitHand と同じに今の entry の右腕の印（v3Hand）を外す。焦点は動かさない）。畳んだら true
-   */
-  function foldHand() {
-    if (S.handMode === "column") {
-      if (!S.handWant) return false;
-      S.handWant = false;
-      save("v3-hand", "0");
-    } else {
-      if (!S.handOver) return false;
-      S.handOver = false;
-      dropHandMark();
-    }
-    applyHand();
-    return true;
+    openSheet(HAND_TALK.title + " の操作", items, opener);
   }
 
   /** 席の入力欄に焦点（部品なら口に頼む）。無ければ席の［閉じる］ */
@@ -995,22 +676,6 @@
     else if (SA.top) SA.top.focus("close");
   }
 
-  /** 右腕の入れ物を空にする（席に右腕を描くとき。部品の根は外してから）。次に枠を開いたら下端から描き直す */
-  function clearHandEd() {
-    const ed = $("v3-hand-ed");
-    if (!ed || ed.children.length === 0) return;
-    for (const [attr, part] of [
-      ["data-talk", SA.talk],
-      ["data-composer", SA.composer],
-      ["data-cards", SA.cards],
-    ]) {
-      if (part && typeof part.drop === "function") for (const n of ed.querySelectorAll("[" + attr + "]")) part.drop(n);
-    }
-    ed.replaceChildren();
-    handShown = null;
-    handStick = true;
-  }
-
   /** 席の右腕の見出しの state: 題「右腕」・状態は あなたの番 > 作業中・場所・モード・［会話］［端末］は無し・「…」は右腕の操作 */
   function handSeatTop() {
     const data = SA.topics.data();
@@ -1020,7 +685,7 @@
     else if (SA.store.runningOf(handChannelId()) !== null) status = { text: "作業中", tone: "accent" };
     return {
       view: "talk",
-      title: HAND_FRAME.title,
+      title: HAND_TALK.title,
       status,
       note: null,
       place: null,
@@ -1035,8 +700,8 @@
   }
 
   /**
-   * 席の右腕をやめる（席を閉じた・右腕のチャンネルが替わった（無くなった）。呼ぶ側が席の住人を確かめる）。席の住人を空にし、枠は開かない（次の口は今までどおり枠を開く）。
-   * 席を閉じた後（popstate・showList）は一覧の entry なので履歴に触らない。席が出たまま（右腕が替わった）なら一覧にし、席の entry を一覧の物に置き換える
+   * 席の右腕をやめる（右腕のチャンネルが替わった・無くなった。呼ぶ側が席の住人を確かめる）。席の住人を空にする（前の右腕を普通の会話の枠で描かない）。
+   * 席が出たままなら一覧にし、席の entry を一覧の物に置き換える
    */
   function leaveHandSeat() {
     if (S.active !== null) {
@@ -1057,50 +722,6 @@
     renderHandEntries();
   }
 
-  /** 右腕を畳む（列は保存して帯のボタンに焦点。重ねる形は履歴の entry があれば戻る = popstate で閉じる） */
-  function closeHand() {
-    if (S.handMode === "column") {
-      S.handWant = false;
-      save("v3-hand", "0");
-      applyHand();
-      const show = $("v3-hand-show");
-      if (show) show.focus();
-      return;
-    }
-    if (handClosing) return;
-    if (history.state && history.state.v3Hand) {
-      try {
-        handClosing = true;
-        history.back();
-        return;
-      } catch {
-        // 戻れなければその場で閉じる
-        handClosing = false;
-      }
-    }
-    S.handOver = false;
-    applyHand();
-    restoreHandFocus();
-  }
-
-  /** 閉じた後の焦点: 開いたボタンが見えていればそこ、無ければ見えている口（流れの列は右腕の丸か上の帯の［右腕］、落ち先の広い幅は畳んだ帯） */
-  function restoreHandFocus() {
-    const opener = handOpener;
-    handOpener = null;
-    let target = shownNode(opener) ? opener : null;
-    if (target) {
-      target.focus();
-      return;
-    }
-    // 流れの列は右腕の丸（無ければ上の帯の［右腕］）、広い幅は畳んだ帯。スマホ（下のバー・見出しの［右腕］は無い）は丸も帯の［右腕］も無いので当たらない（#514）
-    if (deckOn()) {
-      if (!(typeof SA.deck.focusOrb === "function" && SA.deck.focusOrb())) SA.deck.focusBand("hand");
-      return;
-    }
-    target = $("v3-hand-show");
-    if (target) target.focus();
-  }
-
   /** document の中にあり、自分も祖先も hidden・inert でない要素か（body は焦点の戻り先にしない） */
   function shownNode(n) {
     if (!n || n === document.body || !document.contains(n)) return false;
@@ -1108,7 +729,7 @@
     return true;
   }
 
-  /** 口の印（あなたの番 > 未読 > 作業中 で 1 つ。見えている右腕（枠か席）には未読・作業中を出さない。作業中は右腕のチャンネルに実行中のターンが在る間） */
+  /** 右腕の印（あなたの番 > 未読 > 作業中 で 1 つ。見えている右腕（handSeen）には未読・作業中を出さない。作業中は右腕のチャンネルに実行中のターンが在る間） */
   function handMark() {
     const data = SA.topics.data();
     const hand = data && data.rightHands[0];
@@ -1119,54 +740,24 @@
     return null;
   }
 
-  function handDot(mark) {
-    if (!mark) return null;
-    return el("span", { class: "dot " + (mark === "turn" ? "dot-warn" : "dot-unread"), "aria-hidden": "true" });
-  }
-
-  /** 畳んだ帯の口の中身（印が前と同じなら触らない）と、下のバーの［あなたの番］の未読の点。畳んだ帯の口は作業中を印なしとして扱う */
+  /** 右腕の印が変わり得るとき: 下のバーの［あなたの番］の未読の点（毎回。件数は印と別に変わる）と、見出しの状態（席の右腕の あなたの番・作業中） */
   function renderHandEntries() {
-    const mark = handMark();
-    const showMark = mark === "running" ? null : mark;
-    const sig = String(showMark);
-    const fill = (id, build) => {
-      const b = $(id);
-      if (!b || b.getAttribute("data-sig") === sig) return;
-      b.setAttribute("data-sig", sig);
-      build(b);
-    };
-    fill("v3-hand-show", (b) => {
-      const label = "右腕を開く" + (showMark ? "（" + HAND_MARK_TEXT[showMark] + "）" : "");
-      b.setAttribute("aria-label", label);
-      b.setAttribute("title", label);
-      b.replaceChildren(...[icon("bot"), handDot(showMark)].filter(Boolean));
-    });
-    // 下のバーは毎回（件数は印と別に変わる）
-    renderBottom(mark);
-    // 見出しの状態（席の右腕の あなたの番・作業中）と、右腕の丸か上の帯の［右腕］の印と開閉（流れの列）
+    renderBottom(handMark());
     renderBar();
-    renderBand();
   }
 
   /** 最後の syncHand が見た右腕のタブ（右腕のチャンネルが替わった・無くなったかを比べる。#514） */
   let lastHandTab = null;
 
   /**
-   * 話題の一覧を読むたびに: 右腕が替わっていたら（席の前の右腕をやめ）描き直し、口を描く。席の右腕は一覧より先に開いた（hash）・札の中身が変わったら席の側を描き直す（#514）
+   * 話題の一覧を読むたびに: 右腕が替わっていたら席の前の右腕をやめ、席の右腕は一覧より先に開いた（hash）・札の中身が変わったら席の側を描き直し、印を描く（#514）
    */
   function syncHand() {
     const tab = handTab();
     // 席に右腕を開いた後で右腕のチャンネルが替わった・無くなった: 席の右腕をやめ、席を空にする（前の右腕を普通の会話の枠で描かない）
     if (lastHandTab !== null && lastHandTab !== tab && S.active === lastHandTab) leaveHandSeat();
     lastHandTab = tab;
-    if (handSeated()) {
-      // 同じチャンネルを 2 つの入れ物に描かない（一覧より先に開いた枠・落ち先の右腕の列が開いていれば畳む）。畳んだ枠の中の焦点は、描き直した後の席の入力欄へ
-      const focusInHand = handHasFocus();
-      const folded = foldHand();
-      if (!edHand || handCardSig !== cardSig()) refresh(tab);
-      if (folded && focusInHand) focusSeatInput();
-    }
-    if (handVisible() && (handShown !== handKey() || handCardSig !== cardSig())) renderHand();
+    if (handSeated() && (!edHand || handCardSig !== cardSig())) refresh(tab);
     renderHandEntries();
   }
 
@@ -1248,23 +839,6 @@
     }
   }
 
-  /** 列 2 に話題が出ていれば、その題名（空白を詰めて前後を落とし、80 字まで）。スマホは会話の上に右腕を出したときだけ */
-  function viewingTitle() {
-    if ((phone() || deckOn()) && S.view !== "body") return null;
-    const t = S.active ? SA.topics.find(S.active) : null;
-    if (!t) return null;
-    const title = String(t.title).replace(/\s+/g, " ").trim();
-    // サロゲートペアを割らないよう code point で数える
-    const chars = Array.from(title);
-    return chars.length > 80 ? chars.slice(0, 80).join("") + "…" : title;
-  }
-
-  /** 右腕へ送る本文の先頭に「（いま見ている話題: <題名>）」を毎回 1 行添える（モデルがどの話題の話かを取り違えないため） */
-  function withViewing(text) {
-    const title = viewingTitle();
-    return title === null ? text : "（いま見ている話題: " + title + "）\n" + text;
-  }
-
   // ===== hash（#/ch/<id>・#/cc/<id>・#/tasks。古い殻と同じ形） =====
   function hashOf(tabId) {
     return "#/" + tabId.replace(":", "/");
@@ -1318,6 +892,8 @@
     fitDeck();
     const hidden = mainHidden();
     if (wasHidden === hidden) return;
+    // 席の住人が右腕なら、隠れた・出たで見えているか（handSeen）が変わる: 下のバーの未読の点と見出しを描き直す（#514）
+    if (handSeated()) renderHandEntries();
     if (hidden) {
       hiddenScroll = before;
       stickOnShow = false;
@@ -1333,7 +909,7 @@
     SA.chat.markSeenShown();
   }
 
-  /** 席が開くとき・右腕の枠と幕が出るときの動き（shell.css の [data-moves="on"]。D5 の PR-1・D6 の PR-4）は最初の操作（pointerdown か keydown）の後だけ。読み込みで開いた席（hash）は動かさない。付けた後は外さない */
+  /** 席が開くとき・留めた列が出るときの動き（shell.css の [data-moves="on"]。D5 の PR-1・#507 の P5）は最初の操作（pointerdown か keydown）の後だけ。読み込みで開いた席（hash）は動かさない。付けた後は外さない */
   function movesOn() {
     refs.v3.setAttribute("data-moves", "on");
   }
@@ -1342,11 +918,9 @@
     setView("body");
     const hash = S.active ? hashOf(S.active) : location.pathname + location.search;
     try {
-      // 右腕を開いたまま話題を開いたら、右腕の entry を話題の entry に置き換える（一覧までの段数は下の entry の 1 つ上）
-      if (history.state && history.state.v3Hand) history.replaceState({ v3Body: true, v3Depth: (history.state.v3Depth || 0) + 1 }, "", hash);
-      else if (history.state && history.state.v3Body) history.replaceState(history.state, "", hash);
+      if (history.state && history.state.v3Body) history.replaceState(history.state, "", hash);
       // スマホの「探す」の板の entry も話題に置き換える（戻ると列）
-      // スレッドの上で開いた板（Ctrl+K）なら、下の話題の entry も越えて列まで戻れるよう段数を 1 つ上にする（右腕の entry と同じ）
+      // スレッドの上で開いた板（Ctrl+K）なら、下の話題の entry も越えて列まで戻れるよう段数を 1 つ上にする
       else if (history.state && history.state.v3Find) history.replaceState(history.state.v3Depth ? { v3Body: true, v3Depth: history.state.v3Depth + 1 } : { v3Body: true }, "", hash);
       else history.pushState({ v3Body: true }, "", hash);
     } catch {
@@ -1394,8 +968,6 @@
     setView("list");
     if (deckOn()) focusSeatFrom();
     else focusCurrentRow();
-    // 席の右腕を閉じた: 席が隠れる形なら席を空にする（枠は開かない）。落ち先の広い幅は列 2 が見えたままなので、話題と同じに残す
-    if (handSeated() && (phone() || deckOn())) leaveHandSeat();
   }
 
   function openDrawer() {
@@ -1998,7 +1570,6 @@
       applyInert();
       S.deckCols = null;
       S.deckCurrent = null;
-      renderOrb();
       renderBottom(handMark());
       return;
     }
@@ -2238,8 +1809,6 @@
   const BAND_ON = {
     status: () => open("status"),
     find: (opener) => openFind(opener),
-    // 開いて入力欄に焦点（右腕の丸と同じ）
-    hand: (opener) => openHand(opener, true),
     start: (opener) => openStart("general", opener),
     more: (opener) => openDeckMore(opener),
     // 「あなたの番 n」（#507）: 帯を左端へすぐ送り（動かさない）、数え直して帯を描き直し、番の列の最初の押せる物へ（置けなければ［探す］）
@@ -2252,44 +1821,16 @@
     },
   };
 
-  /** 右腕の丸の押した先（帯の［右腕］と同じ。開いて入力欄に焦点） */
-  const ORB_ON = { hand: (opener) => openHand(opener, true) };
-
   /**
-   * 右腕の丸（D6。描くのは入口 c-app.js）。広い幅の流れの列で、席だけの幅（列が隠れる）でない間だけ描き、ほか（スマホ・席だけの幅・流れの列でない）は空にする。
-   * 色は席が閉じていれば accent、開いていれば静かな顔。描けたら true（帯に［右腕］を出さない）、空にした・入口に口が無い・描けなければ false
-   */
-  function renderOrb() {
-    if (!SA.deck || typeof SA.deck.drawOrb !== "function") return false;
-    if (!deckOn() || phone() || (S.deckCols === 0 && S.view === "body")) {
-      SA.deck.drawOrb(null);
-      return false;
-    }
-    return (
-      SA.deck.drawOrb({
-        mark: handMark(),
-        tone: S.view === "body" ? "quiet" : "accent",
-        open: S.handMode === "over" && S.handOver,
-        controls: "v3-hand",
-        on: ORB_ON,
-      }) === true
-    );
-  }
-
-  /**
-   * 上の帯（描くのは入口 c-app.js。流れの列の間だけ）。点は接続の Bot、右腕は印と開閉（スマホの形は［右腕］を出さない。右腕は あなたの番 の列の一番上の行。#514）。スマホは今の列（page）の名前と数を題に出す。
-   * 先に右腕の丸を描き、描けた間は帯に［右腕］を出さない（hand: null。席だけの幅・入口が丸を描けないときだけ出す）
+   * 上の帯（描くのは入口 c-app.js。流れの列の間だけ）。点は接続の Bot（右腕は帯に出さない。あなたの番 の列の一番上の行。#514）。スマホは今の列（page）の名前と数を題に出す
    */
   function renderBand() {
     if (!deckOn()) return;
-    const orb = renderOrb();
     const bot = connBot();
     bandTurnAway = turnAway();
     SA.deck.drawBand({
       variant: phone() ? "phone" : "wide",
       conn: bot ? { tone: bot.connected ? "ok" : "bad", label: bot.label } : null,
-      hand: orb ? null : { mark: handMark(), open: S.handMode === "over" && S.handOver },
-      controls: "v3-hand",
       page: phone() ? S.deckPage : undefined,
       turnAway: bandTurnAway,
       on: BAND_ON,
@@ -2331,12 +1872,11 @@
 
   /**
    * 「探す」の板: 一覧（話題の一覧と絞り込み）を列の上に重ね、後ろを押せなくして、絞り込み欄に焦点。履歴は広い幅では積まず、スマホは entry を 1 つ積む（戻るで閉じる）。
-   * ダイアログ・重ねた右腕の間は開かない（Ctrl+K と同じ）。開いていれば絞り込み欄に焦点を戻すだけ
+   * ダイアログの間は開かない（Ctrl+K と同じ）。開いていれば絞り込み欄に焦点を戻すだけ
    */
   function openFind(opener) {
     if (!deckOn() || !refs.searchBox) return;
     if (document.querySelector("dialog[open]")) return;
-    if (S.handMode === "over" && S.handOver) return;
     if (!findOpen()) {
       findOpener = opener || null;
       findClosing = false;
@@ -2369,7 +1909,7 @@
 
   /**
    * 板を閉じる（属性を戻し、絞り込みの字を空にする）。restore なら開いたボタンへ焦点。
-   * restore で今の entry が板の物（v3Find。スマホ）なら戻る（popstate で閉じる）。restore でない閉じ方（行を開く・右腕を開く）は戻らず、entry は開いた先が置き換える
+   * restore で今の entry が板の物（v3Find。スマホ）なら戻る（popstate で閉じる）。restore でない閉じ方（行を開く）は戻らず、entry は開いた先が置き換える
    */
   function closeFind(restore) {
     if (!findOpen()) return;
@@ -2481,8 +2021,6 @@
     // Ctrl+K（mac は Meta+K）: 絞り込み欄。入力欄に焦点があっても効かせる
     if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === "k" || e.key === "K")) {
       if (document.querySelector("dialog[open]")) return;
-      // 重ねた右腕が開いている間は絞り込み欄が inert の中なので取らない
-      if (S.handMode === "over" && S.handOver) return;
       e.preventDefault();
       // 流れの列は「探す」の板
       if (deckOn()) openFind(document.activeElement);
@@ -2496,11 +2034,6 @@
     // 「探す」の板は入力欄に焦点があっても閉じ、開いたボタンへ戻す
     if (findOpen()) {
       closeFind(true);
-      return;
-    }
-    // 重ねた右腕は入力欄に焦点があっても畳む（列の右腕は畳まない）
-    if (S.handMode === "over" && S.handOver) {
-      closeHand();
       return;
     }
     const input = $("v3-search");
@@ -2537,60 +2070,38 @@
       for (const [id, v] of Object.entries(drafts)) if (typeof v === "string" && v !== "") S.drafts[id] = v;
     }
 
-    S.handWant = load("v3-hand", "1") !== "0";
-
     bindViewport();
     mqPhone.addEventListener("change", () => {
-      // 開いている枠の見出しの［広げる］は描き直して出し入れする（席の右腕はほかの話題と同じに、スマホでは全画面の会話のまま。#514）
-      if (handVisible()) drawHandHead();
       // 流れの列とスマホの間は、席（会話）を出しているかをそのまま保つ。入口が無ければ今までどおり話題があれば会話
       if (SA.deck) setView(S.view);
       else setView(S.active ? "body" : "list");
       fitViewport();
-      // 見出しを先に（スマホの境で形が替わる。右腕の形・compact はその後に測る）
+      // 見出しを先に（スマホの境で形が替わる。compact はその後に測る）
       renderBar();
-      fitHand();
       fitTop();
       // 列 2 が見えるようになったときの既読（setView は切り替わった後の phone() で測るので、ここで付け直す。隠れた会話は readingChannelIds が外す）
       SA.chat.markSeenShown();
     });
     window.addEventListener("popstate", (e) => {
       const st = e.state || {};
-      handClosing = false;
       findClosing = false;
       // スマホの「探す」の板は履歴の v3Find に合わせて閉じる（進むでは開き直さない）
       const findClosed = findOpen() && !st.v3Find;
       if (findClosed) closeFind(true);
-      // 重ねた右腕の開閉は履歴の v3Hand に合わせる（スマホで開いたときだけ entry を積む）
-      // 先に変数だけ変え、面を変えてから当てる（2 つ一度に戻ったとき、隠れる会話を既読にしない）
-      let handClosed = false;
-      let handChanged = false;
-      if (S.handMode === "over" && S.handOver !== !!st.v3Hand) {
-        S.handOver = !!st.v3Hand;
-        handChanged = true;
-        handClosed = !S.handOver;
-      }
-      // スレッドの上で開いた板の entry（進むで戻ってきた。板は開き直さない）は、下のスレッドのまま
+      // スレッドの上で開いた板の entry（進むで戻ってきた。板は開き直さない）は、下のスレッドのまま。席の住人が右腕でも話題と同じ（住人は残す。#514）
       if ((st.v3Body || underFind(st) > 0) && S.active) setView("body");
       else {
         setView("list");
-        // 一覧の行（流れの列では席を開いた元）への焦点は右腕・板が関わらなかったときだけ（閉じたなら開いた口へ戻す）
-        if (!handChanged && !S.handOver && !findClosed) {
+        // 一覧の行（流れの列では席を開いた元）への焦点は板が関わらなかったときだけ（閉じたなら開いたボタンへ戻す）
+        if (!findClosed) {
           if (deckOn()) focusSeatFrom();
           else if (phone()) focusCurrentRow();
         }
-        // 席の右腕を閉じた: 席が隠れる形なら席を空にする（枠は開かない）。落ち先の広い幅は列 2 が見えたままなので、話題と同じに残す
-        if (handSeated() && (phone() || deckOn())) leaveHandSeat();
       }
-      if (handChanged) applyHand();
-      if (handClosed) restoreHandFocus();
-      // 進むで開いたら [畳む] に焦点
-      else if (handChanged) focusHandClose();
     });
-    // 流れの列の数と席の形を先に（右腕の形・見出しの compact はその後に測る）
+    // 流れの列の数と席の形を先に（見出しの compact はその後に測る）
     window.addEventListener("resize", fitDeck);
-    window.addEventListener("resize", fitHand);
-    // 右腕の形が決まった後に測る（登録の順に呼ばれる）
+    // 席の形が決まった後に測る（登録の順に呼ばれる）
     window.addEventListener("resize", fitTop);
     // 手で書き換えた hash・リンク（自分で書いた hash は replaceState・pushState なので来ない）
     window.addEventListener("hashchange", () => {
@@ -2600,11 +2111,6 @@
     document.addEventListener("keydown", onKey);
     // 押した物の受け口より先に（capture）、1 回だけ
     for (const type of ["pointerdown", "keydown"]) document.addEventListener(type, movesOn, { capture: true, once: true });
-    // 畳んだ帯の口と backdrop（流れの列の丸は ORB_ON.hand、上の帯の［右腕］は BAND_ON.hand）
-    const show = $("v3-hand-show");
-    if (show) show.addEventListener("click", () => openHand(show, false));
-    const backdrop = $("v3-hand-backdrop");
-    if (backdrop) backdrop.addEventListener("click", () => closeHand());
     const findBackdrop = $("v3-find-backdrop");
     if (findBackdrop) findBackdrop.addEventListener("click", () => closeFind(true));
     renderHeadOps();
@@ -2622,11 +2128,9 @@
       fitTop();
     });
 
-    // 最初の 1 枚の前に流れの列の形と右腕の形を決める（index.html の初期値は畳んだ重ねる形）。再読み込みで残った右腕の印は外す
+    // 最初の 1 枚の前に流れの列の形を決め、見出しの compact を測る
     fitDeck();
-    dropHandMark();
-    fitHand();
-    applyHand();
+    fitTop();
 
     const fromHash = tabFromHash(location.hash);
     // 流れの列の間の古い hash（#/tasks など）は列に読み替える（open の頭）

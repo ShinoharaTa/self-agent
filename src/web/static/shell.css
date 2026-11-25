@@ -5,7 +5,6 @@
 
 :root {
   --v3-list-w: 280px;
-  --v3-hand-w: 360px;
 }
 
 /* --vvh はスマホでだけ shell.js が visualViewport の高さを書く（キーボードの分を除く） */
@@ -15,7 +14,7 @@
   height: var(--vvh, 100dvh);
   /* ホーム画面から開いたとき（black-translucent）のステータスバーの裏。列・見出しはこの下から始まる（高さは border-box のままで変わらない） */
   padding-top: env(safe-area-inset-top, 0px);
-  grid-template-columns: var(--v3-list-w) minmax(0, 1fr) auto;
+  grid-template-columns: var(--v3-list-w) minmax(0, 1fr);
   background: var(--bg);
   font-size: var(--font-sm);
   /* 細いスクロールバー（app.css の .wb・.palette・dialog と同じ） */
@@ -208,70 +207,6 @@
   gap: var(--space-3);
 }
 
-/* ===== 列 3: 右腕（列か、列 2 が 360px を切る幅とスマホでは重ねる形。どちらに置くかは shell.js が測って data-hand-mode に書く） ===== */
-.v3-hand {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-  width: var(--v3-hand-w);
-  border-left: var(--border-width) solid var(--border);
-  background: var(--bg);
-}
-
-/* 畳んだ列は細い帯にボタン 1 つ（場所が動かない） */
-.v3[data-hand="closed"] .v3-hand {
-  width: auto;
-}
-
-.v3[data-hand="closed"] .v3-hand-ed {
-  display: none;
-}
-
-.v3[data-hand="open"] .v3-hand-show {
-  display: none;
-}
-
-.v3-hand-show {
-  margin: var(--space-2);
-}
-
-/* 重ねる形（640px 以上は右から。開いた瞬間に列 2 が帯の幅だけ広がるのは backdrop の下） */
-.v3[data-hand-mode="over"][data-hand="open"] .v3-hand {
-  position: absolute;
-  top: env(safe-area-inset-top, 0px);
-  right: 0;
-  bottom: 0;
-  z-index: var(--z-drawer);
-  width: min(var(--v3-hand-w), 100%);
-}
-
-.v3-hand-backdrop {
-  position: absolute;
-  inset: 0;
-  z-index: var(--z-drawer-backdrop);
-  background: var(--backdrop);
-}
-
-/* 右腕の見出し（列が 360px なので […] を幅によらず出し、区切りの線を付けない） */
-.v3-hand .ed-ops-more {
-  display: inline-flex;
-}
-
-.v3-hand .ed-ops {
-  margin-left: 0;
-  padding-left: 0;
-  border-left: 0;
-}
-
-/* 右腕の見出しの題は h2（ページの h1 は列 2 の見出しの 1 つ）。見た目は app.css の .ed-title h1 と同じ */
-.v3-hand .ed-title h2 {
-  overflow: hidden;
-  font-size: var(--font-base);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 /* 札（右腕の返事の <#ID>。吹き出しの下に 1 行。地は付けない） */
 .v3-card {
   display: flex;
@@ -303,12 +238,11 @@
  * ===== 流れの列（D1。docs/plan/web-ui-deck.md §4）: 640px 以上で入口が在る間だけ shell.js が data-deck（見える列の数）・data-seat・data-find を書く =====
  * 上の帯 + 3 つの列 + 席（列 2 を開いたときだけ）。一覧は「探す」の板として重ねる。幅の段は足さない（数は shell.js が c-deck.js の deckFit で測る）
  */
-/* 落ち先（入口が無いとき）では出さない。下のバーの入れ物（.v3-foot）はスマホの流れの列（data-seat="full"。D2）だけ、右腕の丸の入れ物（.v3-orb。D6）は広い幅（side・fold）だけ */
+/* 落ち先（入口が無いとき）では出さない。下のバーの入れ物（.v3-foot）はスマホの流れの列（data-seat="full"。D2）だけ */
 .v3-band,
 .v3-deck,
 .v3-find-backdrop,
-.v3-foot,
-.v3-orb {
+.v3-foot {
   display: none;
 }
 
@@ -397,28 +331,7 @@
   overscroll-behavior-y: contain;
 }
 
-/*
- * 右腕の丸（D6 の PR-1b）: 列の場所（格子の 1 列目・2 行目）の右下に重ねる。席が閉じていれば画面の右下、開いていれば席のすぐ左の下。
- * 入れ物は丸の箱より広げない（余白は margin）。position は使わない。スマホ（full）と席だけの幅（下の data-deck="0"）では出さない
- */
-.v3[data-deck][data-seat="side"] .v3-orb,
-.v3[data-deck][data-seat="fold"] .v3-orb {
-  display: block;
-  grid-column: 1;
-  grid-row: 2;
-  align-self: end;
-  justify-self: end;
-  z-index: var(--z-sash);
-  margin: 0 var(--space-4) calc(var(--space-4) + env(safe-area-inset-bottom, 0px)) 0;
-}
-
-/* 席が閉じている間は画面の右端なので、右の safe-area の分も内へ */
-.v3[data-deck][data-view="list"][data-seat="side"] .v3-orb,
-.v3[data-deck][data-view="list"][data-seat="fold"] .v3-orb {
-  margin-right: calc(var(--space-4) + env(safe-area-inset-right, 0px));
-}
-
-/* 丸の出る形では、列の本体の下に丸の分（丸 + 上下の余白 + 下の safe-area）を空け、一番下まで送った最後の項目を丸に隠さない（スマホ・落ち先は tokens.css の既定のまま） */
+/* 広い幅（side・fold）では、列の本体の下に消した右腕の丸の分（--c-orb + 上下の余白 + 下の safe-area）の余白が残る（スマホ・落ち先は tokens.css の既定のまま）。この余白と帯の右の通り道は R4 で外す */
 .v3[data-deck][data-seat="side"] .v3-deck,
 .v3[data-deck][data-seat="fold"] .v3-deck {
   --c-deck-tail: calc(var(--c-orb) + var(--space-4) + var(--space-4) + env(safe-area-inset-bottom, 0px));
@@ -430,12 +343,8 @@
   background: var(--surface);
 }
 
-/* app.css の .ed は --bg を塗るので、流れの列の形では板の色で上書きする（席の #ed と右腕の #v3-hand-ed） */
+/* app.css の .ed は --bg を塗るので、流れの列の形では板の色で上書きする（席の #ed） */
 .v3[data-deck] .ed {
-  background: var(--surface);
-}
-
-.v3[data-deck] .v3-hand {
   background: var(--surface);
 }
 
@@ -495,11 +404,6 @@
   grid-column: 1;
 }
 
-/* 席だけの幅では丸を出さない（口は上の帯の［右腕］） */
-.v3[data-deck="0"][data-view="body"] .v3-orb {
-  display: none;
-}
-
 /* 一覧は「探す」の板のときだけ。帯の下の中央に重ねる（一覧の見出しは帯が持つので出さない） */
 .v3[data-deck] .v3-list {
   display: none;
@@ -530,63 +434,6 @@
   inset: 0;
   z-index: var(--z-drawer);
   background: var(--backdrop);
-}
-
-/* 右腕は重ねる形だけ（畳んだ帯は出さない。口は右下の丸（席だけの幅は上の帯の［右腕］）。スマホに枠を開く口は無い） */
-.v3[data-deck][data-hand="closed"] .v3-hand {
-  display: none;
-}
-
-/*
- * 流れの列の形の開いた枠は 帯の下から・幅 --c-hand-w（420）・線なし（幕で区切る）。落ち先の形の枠は --v3-hand-w（360）のまま。
- * 広い幅（side・fold。席だけの幅も）は上端を席の上端に揃えて左の線を、スマホ（full）は上の線を外す
- */
-.v3[data-deck][data-seat="side"][data-hand-mode="over"][data-hand="open"] .v3-hand,
-.v3[data-deck][data-seat="fold"][data-hand-mode="over"][data-hand="open"] .v3-hand {
-  top: calc(env(safe-area-inset-top, 0px) + var(--c-deck-band-h) + var(--space-2));
-  width: min(var(--c-hand-w), 100%);
-  border-left: 0;
-}
-
-.v3[data-deck][data-seat="full"][data-hand-mode="over"][data-hand="open"] .v3-hand {
-  border-top: 0;
-}
-
-/*
- * 右腕の枠と幕が出るとき（display: none・hidden から出る）だけ動かす（D6 の PR-4）。広い幅は右から、スマホは下から --c-deck-seat-in + 透明 → 定位置。幕は透明 → 定位置。
- * data-moves="on" は席と同じ印（最初の操作の後）。閉じるのはすぐ。丸は動かさない。reduced-motion では base.css が止める
- */
-.v3[data-deck][data-moves="on"][data-hand="open"] .v3-hand {
-  transition-property: opacity, transform;
-  transition-duration: var(--dur-short);
-  transition-timing-function: var(--ease-out);
-}
-
-.v3[data-deck][data-moves="on"][data-hand="open"] .v3-hand-backdrop {
-  transition-property: opacity;
-  transition-duration: var(--dur-short);
-  transition-timing-function: var(--ease-out);
-}
-
-@starting-style {
-  .v3[data-deck][data-moves="on"][data-hand="open"] .v3-hand {
-    opacity: 0;
-    transform: translateX(var(--c-deck-seat-in));
-  }
-
-  .v3[data-deck][data-moves="on"][data-hand="open"] .v3-hand-backdrop {
-    opacity: 0;
-  }
-
-  .v3[data-deck][data-moves="on"][data-seat="full"][data-hand="open"] .v3-hand {
-    transform: translateY(var(--c-deck-seat-in));
-  }
-}
-
-/* スマホの枠と幕は long */
-.v3[data-deck][data-moves="on"][data-seat="full"][data-hand="open"] .v3-hand,
-.v3[data-deck][data-moves="on"][data-seat="full"][data-hand="open"] .v3-hand-backdrop {
-  transition-duration: var(--dur-long);
 }
 
 /* スマホの流れの列（data-seat="full"。D2）: 上の帯 / 1 列ずつ横に送る列 / 下のバー。スレッド（data-view="body"）は列の上に重ねる */
@@ -639,26 +486,6 @@
   /* 会話の列の下端。app.css の .composer-wrap は下の安全域を持たない（古い殻は下タブが持つ）。キーボードの間は足さない */
   .v3-main {
     padding-bottom: env(safe-area-inset-bottom, 0px);
-  }
-
-  /* 右腕は畳んだ帯を持たない。枠は下から出す形（上の安全域の下に 48px、後ろの画面を残す。.composer-wrap は下の安全域を持たない）。スマホに枠を開く口は無く、広い幅で開いたまま幅を変えた枠だけがこの形になる */
-  .v3-hand-show {
-    display: none;
-  }
-
-  .v3[data-hand="closed"] .v3-hand {
-    display: none;
-  }
-
-  .v3[data-hand-mode="over"][data-hand="open"] .v3-hand {
-    top: calc(var(--space-8) + env(safe-area-inset-top, 0px));
-    left: 0;
-    width: auto;
-    padding-bottom: env(safe-area-inset-bottom, 0px);
-    overflow: hidden;
-    border-left: 0;
-    border-top: var(--border-width) solid var(--border);
-    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
   }
 
   /* シートは今までどおり下から（app.css の dialog の全幅） */
