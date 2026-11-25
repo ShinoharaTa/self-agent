@@ -11805,7 +11805,7 @@ test("web static: 右腕の枠・丸・［広げる］のファイルと字が�
   for (const name of files.filter((n) => /\.(?:js|css|html)$/.test(n))) assert.doesNotMatch(read(name), /c-hand\.(?:js|css)/, name);
   for (const name of own) {
     const text = read(name);
-    for (const word of ["HandOrb", "HandHead", "drawOrb", "focusOrb", "v3Hand", "withViewing", "viewingTitle", "SA.hand.", "v3-hand", "v3-orb", "c-orb-root", "c-hand-root", "--c-hand-w", "c-band-hand", "data-hand", "--c-deck-lane", "--c-orb", "LANE:"]) {
+    for (const word of ["HandOrb", "HandHead", "drawOrb", "focusOrb", "v3Hand", "withViewing", "viewingTitle", "SA.hand.", "v3-hand", "v3-orb", "c-orb-root", "c-hand-root", "--c-hand-w", "c-band-hand", "data-hand", "--c-deck-lane", "--c-orb", "LANE"]) {
       assert.equal(text.includes(word), false, `${name}: ${word}`);
     }
   }

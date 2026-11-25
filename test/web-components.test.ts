@@ -4336,6 +4336,9 @@ test("web components: stripFit は帯の見える幅（幅 − 席 − 席との
     [820, true, true, 440, 372, 300, 372],
     [640, false, true, 0, 640, 300, 420],
     [640, true, false, 440, 0, 0, 0],
+    // 表の外の境い目: 席を開いて帯が出る一番狭い幅（流れの列も COL_MIN より細い）と、その 1 つ下（席だけの幅）
+    [740, true, true, 440, 292, 292, 292],
+    [739, true, false, 440, 0, 0, 0],
   ];
   for (const [width, open, show, seat, room, colW, convW] of table) assert.deepEqual(deck.stripFit(width, open), { show, seat, room, colW, convW }, `${width} ${open ? "開" : "閉"}`);
   for (const w of [Number.NaN, 0, -5, "1440", null, undefined, Number.POSITIVE_INFINITY]) {
