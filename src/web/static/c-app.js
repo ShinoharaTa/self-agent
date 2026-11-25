@@ -10,6 +10,7 @@
 // 流れの列と上の帯（D1）は flows.js が SA.deck.draw(state)・shell.js が SA.deck.drawBand(state) で押し込む。幅の計算（SA.deck.fit）は c-deck.js の deckFit
 // スマホの流れの列の下のバー（D2）は #c-foot-root が在るときだけ SA.deck.drawBar(bar)・SA.deck.page(id)・SA.deck.focusBar(act)（指で送った列は bar.on.paged(id) で知らせる）
 // スマホの上の帯の題（今いる列の名前と数）は drawBand の state.page の列を最後に描けた列のモデルから引き、列を描き直して題が変われば帯も描き直す
+// 広い幅の上の帯の「あなたの番 n」（#507）は state.turnAway の間だけ、数を同じく最後に描けた列のモデルから引き、番の数が変われば帯も描き直す。番の列への焦点は SA.deck.focusCol(col)
 // 広い幅の右腕の丸（D6）は #c-orb-root が在るときだけ shell.js が SA.deck.drawOrb(state) で押し込み、焦点は SA.deck.focusOrb()
 // 留めた会話の列（#507）の見出しは SA.pin.drawHead(root, state)・SA.pin.clear(root)、帯の幅と端まで見えている列は SA.deck.stripFit・SA.deck.stripSeen（配線は P4）
 import { html, render } from "./c-lib.js";
@@ -478,6 +479,12 @@ if (deckRoot && bandRoot) {
     return true;
   };
 
+  /** 列（data-col）の最初の押せる項目の最初の押せる物にフォーカス（上の帯の「あなたの番 n」。#507）。押せる項目が無ければ false */
+  const focusCol = (col) => {
+    const keys = colKeys(col);
+    return keys.length > 0 && focusFirstIn(keys[0]);
+  };
+
   /**
    * 3 つの列を描く。state は flows.js の flowState()。描けなければ false。列は同じ要素を使い回すので、列ごとの縦の位置は残る。
    * 焦点のあった物が消えたら、同じ key の項目が残っていればその項目（開くボタン）→ 帯の［探す］。項目がどの理由で消えても（完了・取り消し・読み直し）、
@@ -507,8 +514,8 @@ if (deckRoot && bandRoot) {
     }
     // 下のバーの番の数は列の見出しと同じ数
     if (lastBar !== null && turnCount() !== turnsBefore) drawBar(lastBar);
-    // スマホの帯の題（今いる列の名前と数）は列と同じ数
-    if (lastBand !== null && bandTitleKey() !== titleBefore) drawBand(lastBand);
+    // スマホの帯の題（今いる列の名前と数）と、広い幅の帯の「あなたの番 n」（番の列が見えない間。#507）は列と同じ数
+    if (lastBand !== null && (bandTitleKey() !== titleBefore || (lastBand.turnAway === true && turnCount() !== turnsBefore))) drawBand(lastBand);
     if (inside && !document.contains(before)) {
       const keysAfter = colKeys(col, kind);
       const next = key === null || keysAfter.includes(key) ? null : focusAfter(keysBefore, keysAfter, key);
@@ -521,14 +528,17 @@ if (deckRoot && bandRoot) {
     return true;
   };
 
-  /** 上の帯を描く。state は { variant, conn, hand, controls, page, turn, on }（variant は phone か、ほかは今の形。page は今いる列の id か undefined。turn は番の列が見えない間の { count }。#507）。描けなければ false */
+  /**
+   * 上の帯を描く。state は { variant, conn, hand, controls, page, turnAway, on }（variant は phone か、ほかは今の形。page は今いる列の id か undefined）。
+   * turnAway は番の列が帯で送られて見えない間 true（#507）: その間で番の数（列の見出しと同じ数）が 1 以上の時だけ「あなたの番 n」。描けなければ false
+   */
   const drawBand = (state) => {
     const before = document.activeElement;
     const inside = !!before && bandRoot.contains(before);
     const act = inside && before.closest("[data-act]") ? before.closest("[data-act]").getAttribute("data-act") : null;
     try {
       render(
-        html`<${DeckBand} variant=${state.variant} conn=${state.conn} hand=${state.hand} controls=${state.controls} title=${bandTitle(state)} turn=${state.turn} on=${state.on} />`,
+        html`<${DeckBand} variant=${state.variant} conn=${state.conn} hand=${state.hand} controls=${state.controls} title=${bandTitle(state)} turn=${bandTurn(state)} on=${state.on} />`,
         bandRoot,
       );
       lastBand = state;
@@ -551,6 +561,12 @@ if (deckRoot && bandRoot) {
   function bandTitleKey() {
     const t = lastBand !== null && lastBand.variant === "phone" ? bandTitle(lastBand) : null;
     return t === null ? null : [t.name, t.count, t.tone].join("\u0000");
+  }
+
+  /** 帯の「あなたの番 n」（DeckBand の turn）: turnAway で、最後に描けた列の番の数が 1 以上の時だけ { count }。ほかは undefined（渡さないのと同じ） */
+  function bandTurn(state) {
+    const count = state.turnAway === true ? turnCount() : null;
+    return count !== null && count >= 1 ? { count } : undefined;
   }
 
   /** 最後に描けた列の番の数（まだ描いていなければ null） */
@@ -664,7 +680,7 @@ if (deckRoot && bandRoot) {
   };
 
   window.SA = window.SA || {};
-  window.SA.deck = { draw: drawDeck, drawBand, fit: deckFit, focusItem, focusBand, drawOrb, focusOrb };
+  window.SA.deck = { draw: drawDeck, drawBand, fit: deckFit, focusItem, focusBand, focusCol, drawOrb, focusOrb };
   // 帯の幅と端まで見えている列（#507。配線は shell.js の P4）
   Object.assign(window.SA.deck, { stripFit, stripSeen });
   if (footRoot) {

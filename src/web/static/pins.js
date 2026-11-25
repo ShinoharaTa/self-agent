@@ -19,6 +19,13 @@
   let moving = false;
   /** shell.js から渡された押した先: { seen(), menu(channelId, opener), pin(channelId, opener) } */
   let hooks = null;
+  /**
+   * 前の sync の時の留めた話題（SA.topics.pins()。帯を出していない時も覚える。一覧をまだ読めていない間は null）。
+   * ここに無い話題の列だけが「新しく留めた列」（data-new。shell.css の列が出る動き）。読み込み・幅が変わって・席を閉じて帯が出直した列は動かさない
+   */
+  let prevPins = null;
+  /** 新しく留めた列の印 data-new を外すまでの時間（来なければ。--dur-short より長く） */
+  const NEW_MS = 400;
 
   // ===== 描く =====
   /** 下端から 48px 以内なら下端に居るとみなす（shell.js の atBottom と同じ） */
@@ -83,7 +90,7 @@
     const head = el("div", { class: "v3-slot v3-pin-head" });
     const ed = el("div", { class: "ed" });
     const section = el("section", { class: "v3-pin", "data-pin": id, "aria-label": titleOf(id, null) }, [head, ed]);
-    const c = { id, section, head, ed, stick: true, on: null };
+    const c = { id, section, head, ed, stick: true, on: null, newTimer: null, newEnd: null };
     // 見出しの押した先（列ごとに 1 回だけ作り、毎回同じ物を渡す）
     c.on = {
       menu: (opener) => {
@@ -96,8 +103,28 @@
     return c;
   }
 
+  /** 新しく留めた列に印 data-new を付ける（列が出る動き）。opacity の transitionend か、来なければ NEW_MS 後に外す */
+  function markNew(c) {
+    c.section.setAttribute("data-new", "true");
+    c.newEnd = (event) => {
+      if (event && event.target === c.section && event.propertyName === "opacity") unmarkNew(c);
+    };
+    c.section.addEventListener("transitionend", c.newEnd);
+    c.newTimer = setTimeout(() => unmarkNew(c), NEW_MS);
+  }
+
+  /** 印 data-new を外す（timer と受け手も外す） */
+  function unmarkNew(c) {
+    clearTimeout(c.newTimer);
+    c.newTimer = null;
+    if (c.newEnd) c.section.removeEventListener("transitionend", c.newEnd);
+    c.newEnd = null;
+    c.section.removeAttribute("data-new");
+  }
+
   /** 列を片付ける（右腕の clearHandEd と同じ順: 部品の根を外す → DOM を消す）。見出しの根も外す */
   function clear(c) {
+    unmarkNew(c);
     for (const [attr, part] of [
       ["data-talk", SA.talk],
       ["data-composer", SA.composer],
@@ -120,7 +147,8 @@
 
   /**
    * 留めた話題（SA.topics.pins()）に列を合わせる。opts は { show, fit, on }（show は帯が出る幅で留めた数が 1 以上、fit は SA.deck.stripFit の結果、on は shell.js の押した先）。
-   * 要らない列を片付け、無い列を足し、DOM の順を留めた順にする。足した列は 1 回描き、会話を 1 回読む。show が false なら全部片付けて空にする
+   * 要らない列を片付け、無い列を足し、DOM の順を留めた順にする。足した列は 1 回描き、会話を 1 回読む。show が false なら全部片付けて空にする。
+   * 足した列のうち前の sync の時に留めていなかった話題（prevPins に無い）の列にだけ data-new を付け、最後に今の留めた話題を prevPins に覚える
    */
   function sync(opts) {
     const o = opts || {};
@@ -136,6 +164,7 @@
     for (const id of want) {
       if (cols.has(id)) continue;
       const c = make(id);
+      if (prevPins !== null && !prevPins.includes(id)) markNew(c);
       cols.set(id, c);
       added.push(c);
     }
@@ -149,6 +178,8 @@
     }
     // 列が無ければ送りの途中の旗を下ろす（立ったまま残さない）
     if (want.length === 0) moving = false;
+    // 一覧を読めていれば、帯を出していない時も今の留めた話題を覚える（次の sync で新しく留めた列を見分ける）
+    if (SA.topics.data() !== null) prevPins = SA.topics.pins();
     // 消えた列は見えている物から外す（帯が出ている間は呼ぶ側が続けて measure で数え直す）
     if (keepSeen() && hooks && hooks.seen) hooks.seen();
   }
