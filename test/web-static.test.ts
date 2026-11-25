@@ -11706,6 +11706,26 @@ test("web static: 流れの列: 席は［閉じる］・Esc・戻るの 3 通り
   assert.equal(h.document.activeElement, h.nodes.bandButtons.find);
 });
 
+test("web static: 流れの列: 席を閉じた後の焦点は、通知の列（topic:）から開いた物なら節「ピン留め」（pin:）へ飛ばず帯の［探す］へ。動いている（run:）から開いた物は pin: の項目へ（#507）", async () => {
+  const h = await loadDeck({ width: 1440 });
+  const closeFrom = (key: string) => {
+    h.deck.items.clear();
+    h.deck.items.add("pin:ch:1");
+    h.flows.key = key;
+    h.app.open("ch:1");
+    assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
+    h.deck.focusItems.length = 0;
+    h.deck.focusBands.length = 0;
+    h.lastTop().on.close!();
+    return { items: [...h.deck.focusItems], bands: [...h.deck.focusBands] };
+  };
+  // (a) 通知の列から開いた項目がもう無い: pin: は試さず帯の［探す］
+  assert.deepEqual(closeFrom("topic:ch:1"), { items: ["topic:ch:1", "turn:ch:1", "run:ch:1", "topic:ch:1"], bands: ["find"] });
+  assert.equal(h.document.activeElement, h.nodes.bandButtons.find);
+  // (b) 動いているから開いた項目がもう無い: pin: の項目で止まる
+  assert.deepEqual(closeFrom("run:ch:1"), { items: ["run:ch:1", "turn:ch:1", "run:ch:1", "pin:ch:1"], bands: [] });
+});
+
 test("web static: 流れの列: 席を閉じている間は会話を読んでいる扱いにせず（readingChannelIds）、開くと読む。shownChannelIds は変わらない", async () => {
   const h = (await loadDeck({ width: 1440 })) as HandShell;
   h.app.open("ch:1");
