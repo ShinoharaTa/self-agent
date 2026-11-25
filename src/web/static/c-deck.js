@@ -222,7 +222,8 @@ export function handItem(state) {
   return flowItem(state, {
     key: "hand:" + id,
     kind: "hand",
-    word: itemWord("pin", { id, last: hand.last, mark: running ? "running" : null }, state),
+    // ch: でない右腕は未読・作業中を訊けないので待機の語（#514）
+    word: channelId === null ? itemWord("idle", { id, last: hand.last }, state) : itemWord("pin", { id, last: hand.last, mark: running ? "running" : null }, state),
     title: "右腕",
     mark: seen ? "none" : unread ? "unread" : running ? "running" : "none",
     target: id,
@@ -592,20 +593,14 @@ export function Column({ col, on }) {
           </div>`
         : null,
     ]);
-  const head = html`<header class="c-col-head">
-    <h2 class="c-col-name">${col.name}</h2>
-    ${counted ? (col.tone === "warning" ? html`<${Badge} count=${col.count} tone="warning" />` : html`<span class="c-col-count">${col.count}</span>`) : null}
-  </header>`;
-  const main = html`<div class="c-col-body" role="list">${body}</div>`;
-  if (col.top)
-    return html`<section class="c-col" data-col=${col.id} aria-label=${label}>
-      ${head}
-      <div class="c-col-top" role="list"><${Item} key=${col.top.key} item=${col.top} on=${on} /></div>
-      ${main}
-    </section>`;
+  // 右腕の行の穴は top が無くても null で残す（top が付く・外れる描き直しで本体が作り直されず、縦の位置と焦点が残る。#514）
   return html`<section class="c-col" data-col=${col.id} aria-label=${label}>
-    ${head}
-    ${main}
+    <header class="c-col-head">
+      <h2 class="c-col-name">${col.name}</h2>
+      ${counted ? (col.tone === "warning" ? html`<${Badge} count=${col.count} tone="warning" />` : html`<span class="c-col-count">${col.count}</span>`) : null}
+    </header>
+    ${col.top ? html`<div class="c-col-top" role="list"><${Item} key=${col.top.key} item=${col.top} on=${on} /></div>` : null}
+    <div class="c-col-body" role="list">${body}</div>
   </section>`;
 }
 

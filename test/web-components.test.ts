@@ -6135,12 +6135,20 @@ test("web components: .c-col-top と .c-list-hand は余白だけ（position・b
       .flatMap((r) => r.body.split(";").map((d) => d.trim()).filter((d) => d !== "").map((d) => `${r.selectors.join(",")}: ${d}`));
   const top = props("c-deck.css", /^\.c-col-top(?![a-z-])/);
   assert.deepEqual(top, [".c-col-top: padding-bottom: var(--space-1)"]);
-  const hand = props("c-list.css", /^\.c-list-hand(?![a-z])/);
-  assert.ok(hand.length > 0);
-  for (const d of hand) {
-    assert.doesNotMatch(d, /: (?:position|border|box-shadow|color: (?!var\(--text-muted\))|background: (?!transparent))/, d);
-    assert.doesNotMatch(d, /#[0-9a-f]{3,8}\b|rgba?\(|hsl/i, d);
-  }
+  // 右腕の行の規則（.c-list-hand・.c-list-hand-note・data-none の 3 つ）は、外側の at-rule ごと宣言の並びを固定する
+  const hand = parseCss(read("c-list.css"))
+    .filter((r) => r.selectors.some((sel) => sel.includes("c-list-hand")))
+    .flatMap((r) => r.body.split(";").map((d) => d.trim()).filter((d) => d !== "").map((d) => `${r.at.join(" ")}|${r.selectors.join(",")}: ${d}`));
+  assert.deepEqual(hand, [
+    "|.c-list-hand: padding-top: var(--space-1)",
+    '|.c-list-hand[data-none="true"] > .c-row: cursor: default',
+    "|.c-list-hand-note: margin: 0",
+    "|.c-list-hand-note: padding: 0 var(--c-gutter) var(--space-2) calc(var(--c-row-indent) + var(--c-mark) + var(--c-list-gap))",
+    "|.c-list-hand-note: color: var(--text-muted)",
+    "|.c-list-hand-note: font-size: var(--font-xs)",
+    '|.c-list-hand[data-none="true"] > .c-row:active: background: transparent',
+    '@media (hover: hover) and (pointer: fine)|.c-list-hand[data-none="true"] > .c-row:hover: background: transparent',
+  ]);
   for (const file of ["flows.js", "topics.js", "shell.js", "c-app.js"]) assert.doesNotMatch(read(file), /handRow/, file);
   const gallery = read("c-gallery.js");
   for (const demo of ["deck-hand-turn", "deck-hand-unread", "deck-hand-running", "deck-hand-idle", "deck-hand-none", "list-hand", "list-hand-unread", "list-hand-none"]) assert.ok(gallery.includes(`"${demo}"`), demo);
@@ -6156,4 +6164,33 @@ test("web components: 右腕の行が番で あなたの番 の列の節が空�
   for (const [topics, o] of [[handTopics([handOf()]), { handRow: true }], [handTopics([]), { handRow: true }], [handTopics([handOf()]), {}]] as const) {
     assert.equal(textOf(find(find(colOf(topics, o), "c-col-body")[0]!, "c-empty-text")), "今は待たせている事がありません", JSON.stringify(o));
   }
+});
+
+test("web components: Column の .c-col-body は top の在り・無しで同じ子の位置（右腕の行の穴は null で残る）。top が付く・外れる描き直しで本体が作り直されない（#514）", () => {
+  const on = { open: () => undefined };
+  const topics = handTopics([handOf()], { turnIds: [] });
+  const childrenOf = (o: Obj): unknown[] => {
+    const col = deck.deckModel(flowOf({ topics, ...o })).columns[0]!;
+    return ((deck.Column({ col, on }) as VNode).props.children as unknown[]).flat();
+  };
+  const bodyAt = (kids: unknown[]): number => kids.findIndex((c) => c !== null && typeof c === "object" && (c as VNode).props.class === "c-col-body");
+  const withTop = childrenOf({ handRow: true });
+  const without = childrenOf({});
+  assert.ok(bodyAt(withTop) >= 0);
+  assert.equal(bodyAt(withTop), bodyAt(without));
+  assert.equal(withTop.length, without.length);
+  const topAt = withTop.findIndex((c) => c !== null && typeof c === "object" && (c as VNode).props.class === "c-col-top");
+  assert.ok(topAt >= 0 && topAt < bodyAt(withTop));
+  assert.equal(without[topAt], null);
+});
+
+test("web components: handItem は ch: で始まらない右腕では未読・作業中を訊かず、語は待機・印は none（#514）", () => {
+  let asked = 0;
+  const yes = (): boolean => {
+    asked += 1;
+    return true;
+  };
+  const item = handDeck.handItem(flowOf({ topics: handTopics([handOf({ id: "hand:1" })]), isUnread: yes, isRunning: yes }))!;
+  assert.deepEqual([item.key, item.word, item.mark, item.target], ["hand:hand:1", "待機", "none", "hand:1"]);
+  assert.equal(asked, 0);
 });

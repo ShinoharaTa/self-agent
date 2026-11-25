@@ -156,6 +156,7 @@
 - スマホの あなたの番 の列は同じ `Column` なので、同じ行が同じ場所に出る（1 列ずつの横送りでも、番の列の中では送られない）。
 - 「探す」の板と落ち先の一覧は `c-list.js` の `TopicList`（`c-list.js:239–260`）。`listModel` に `hand`（上と同じ中身を一覧の行の形にした物）を足し、
   `YourTurn` の前に `div.c-list-hand` > `button.c-row[data-topic=<右腕の id>]` を 1 つ描く。
+  - 一覧の行の印と語は、隣の話題の行と同じ決め方（`rowModel`）。列の行（§4.2）とは 未読 と 作業中 が重なった時の印が違う。
   - `button[data-topic]` なので、板の ↑↓・Home・End（`c-app.js:48, 390`）に何も足さずに入る。
   - `turnItem`（`c-list.js:89–99`）の右腕の枝は消す（板でも二重に出さない）。`turns.count` は今のまま。
   - 絞り込みの言葉が在る間は、題「右腕」に当たるときだけ出す（話題の行と同じ当たり方）。既定。
@@ -440,7 +441,7 @@ R5 は R2 の後ならいつ入れてもよい（R3・R4 と並べて進めら�
 - 受け入れ（テストで）:
   - `handItem`: 待機・未読・作業中・番・右腕なし・データなし（null）の 6 つの形。見えている間（`current` か `seen`）は unread・running の印が無い。key は `hand:<id>`。
   - `deckModel({ handRow: true })`: 番の列だけに `top`。右腕が番でも `sections` の番の項目に右腕が無く、`count` は右腕を含む数。`handRow` が無ければ今と同じ出力（今のテストがそのまま通る）。
-  - `Column`: `.c-col-head` → `.c-col-top` → `.c-col-body` の順。`.c-col-top` の中に `.c-item[data-kind="hand"]` が 1 つ。列が空でも `.c-col-body` に `Empty` が出る。
+  - `Column`: `.c-col-head` → `.c-col-top` → `.c-col-body` の順。`.c-col-top` の中に `.c-item[data-kind="hand"]` が 1 つ。列が空でも `.c-col-body` に `Empty` が出る（右腕の行が番の時は出さない。§4.3）。
   - `TopicList`: `hand` が在れば最初の `button[data-topic]` が右腕。絞り込み中は「右腕」に当たるときだけ。
   - CSS: `.c-col-top` に `position`・`border`・新しい色が無い。
 - 絵: 見本の `g-deck`・`g-list` に写る（新しい種類は足さない）。
