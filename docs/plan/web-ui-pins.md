@@ -377,6 +377,7 @@ stripSeen({ left, width }, cols, slack = 1):     // cols は [{ id, x, w }]（�
 ### 4.8 並び順・無くなった話題・留められる物
 
 > 注記（#514）: 表の「右腕（#inbox）は留められない」は #514 で変える（留められる・上限 4 つの外。`docs/plan/web-ui-hand-row.md` §6。サーバーは R5）。
+> R5 で入れた: サーバーは右腕を上限の外で留められ、`pins` に入れず応答の `handPins` で返す（§4.11 の注記）。右腕を留める画面は R6。
 
 | 論点 | 答え | 理由 |
 |---|---|---|
@@ -431,6 +432,9 @@ CREATE TABLE topic_pins (
   - `GET /api/topics` の返事の最上位に `pins: string[]` と `pinMax: number`。`pins` は生きている留めた話題（一覧に在って完了でない物）の channelId（`ch:` を付けない。position 順）。`Topic` の形と `pinned` は変えない。
   - `POST /api/topics/ch:<id>/pin` 本文 `{ "on": true | false }` → 200 `{ pins, pinMax }`。400 = `on` が真偽値でない・右腕（右腕は `on: true` の時だけ）。404 = 引けない・一覧に無い・完了（`on: true` の時だけ）。409 `{ error: "pin_limit", max }` = 生きている物が上限以上（`web/routes/topics.ts:517–530` の `/read` と同じ守り）。`on: false` はいつも成功。同じ状態への要求は成功（冪等）。
   - 完了・削除でストアの行は消さない（`pins` に出ないだけ。完了から戻ると留めたまま戻る）。留めた話題は、一覧の件数の上限（進行中 25・待ち 25）の外に落ちても話題に入れる（留めたまま黙って消えない。上限 4 の数にも入る）。上限を越えて生きている物が在っても、切らずに返す。
+
+  > 注記（#514 の R5）: 右腕（#inbox）も留められる。`on: true` で右腕は 400 でなく、上限を見ずに表に足して 200（上限の外。右腕を留めていても話題を 4 つ留められ、話題を 4 つ留めていても右腕を留められる）。
+  > GET と POST の 200 の返事に `handPins: string[]`（表の channelId のうち応答の右腕に在る物。position 順・`ch:` なし）を足す。`pins`・`pinMax` は変えない（右腕は `pins` に入らない）。配線が無ければ `handPins: []`。上の 400 の「右腕」は、この時からもう無い。
 - 配線は任意（`pins?`。`reads?` と同じ: `web/routes/topics.ts:106`）。無ければ `pins: []`・`pinMax: 0` で、画面は `pinMax` が 0 の時ピン留めの操作を出さない。
 - 軽いモードのキャッシュ: 触らない。確かめ方 = PR の差分に `src/agent/` と `topicListRows`（`app/topics.ts:383–410`）が無い事。`Topic` に項目を足さない（右腕のツール `topic_list` の行と同じ作りを通るため）。
 
