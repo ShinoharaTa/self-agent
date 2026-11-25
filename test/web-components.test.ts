@@ -398,9 +398,10 @@ test("web components: 一覧と下のバー（c-list・c-shell）と会話（c-t
   if (CSS_FILES.includes("c-term.css")) assert.doesNotMatch(stripCssComments(read("c-term.css")), /position:\s*(?:fixed|absolute)/, "c-term.css");
 });
 
-test("web components: shell.css の動きは流れの列の席が開くとき（D5 の PR-1）と右腕の枠と幕が出るとき（D6 の PR-4）だけ。transition と @starting-style を書くのは決めた 5 つと 4 つの規則で、どれも [data-moves=\"on\"] 付き。対象は opacity と transform（幕は opacity だけ）、長さは --dur-short（スマホの全面は --dur-long）、曲線は --ease-out、ずれは --c-deck-seat-in（席・広い幅の枠は X、スマホの枠は Y）。all・will-change・animation・@keyframes は無い", () => {
+test("web components: shell.css の動きは流れの列の席が開くとき（D5 の PR-1）と新しく留めた会話の列が出るとき（#507 の P5）と右腕の枠と幕が出るとき（D6 の PR-4）だけ。transition と @starting-style を書くのは決めた 6 つと 5 つの規則で、どれも [data-moves=\"on\"] 付き。対象は opacity と transform（幕は opacity だけ）、長さは --dur-short（スマホの全面は --dur-long）、曲線は --ease-out、ずれは --c-deck-seat-in（席・会話の列・広い幅の枠は X、スマホの枠は Y）。all・will-change・animation・@keyframes は無い", () => {
   const SEAT = '.v3[data-deck][data-moves="on"][data-view="body"] .v3-main';
   const FULL = '.v3[data-deck][data-moves="on"][data-seat="full"][data-view="body"] .v3-main';
+  const PIN = '.v3[data-deck][data-moves="on"] .v3-pin[data-new]';
   const HAND = '.v3[data-deck][data-moves="on"][data-hand="open"] .v3-hand';
   const BACK = '.v3[data-deck][data-moves="on"][data-hand="open"] .v3-hand-backdrop';
   const HAND_FULL = '.v3[data-deck][data-moves="on"][data-seat="full"][data-hand="open"] .v3-hand';
@@ -413,29 +414,31 @@ test("web components: shell.css の動きは流れの列の席が開くとき（
   assert.deepEqual(moving, [
     { at: [], selectors: [SEAT], body: "transition-property: opacity, transform; transition-duration: var(--dur-short); transition-timing-function: var(--ease-out);" },
     { at: [], selectors: [FULL], body: "transition-duration: var(--dur-long);" },
+    { at: [], selectors: [PIN], body: "transition-property: opacity, transform; transition-duration: var(--dur-short); transition-timing-function: var(--ease-out);" },
     { at: [], selectors: [HAND], body: "transition-property: opacity, transform; transition-duration: var(--dur-short); transition-timing-function: var(--ease-out);" },
     { at: [], selectors: [BACK], body: "transition-property: opacity; transition-duration: var(--dur-short); transition-timing-function: var(--ease-out);" },
     { at: [], selectors: [HAND_FULL, BACK_FULL], body: "transition-duration: var(--dur-long);" },
   ]);
   assert.deepEqual(starting, [
     { at: ["@starting-style"], selectors: [SEAT], body: "opacity: 0; transform: translateX(var(--c-deck-seat-in));" },
+    { at: ["@starting-style"], selectors: [PIN], body: "opacity: 0; transform: translateX(var(--c-deck-seat-in));" },
     { at: ["@starting-style"], selectors: [HAND], body: "opacity: 0; transform: translateX(var(--c-deck-seat-in));" },
     { at: ["@starting-style"], selectors: [BACK], body: "opacity: 0;" },
     { at: ["@starting-style"], selectors: [HAND_FULL], body: "transform: translateY(var(--c-deck-seat-in));" },
   ]);
   for (const r of [...moving, ...starting]) {
-    for (const s of r.selectors) assert.ok(s.startsWith(".v3[data-deck]") && s.includes('[data-moves="on"]') && [" .v3-main", " .v3-hand", " .v3-hand-backdrop"].some((tail) => s.endsWith(tail)), s);
+    for (const s of r.selectors) assert.ok(s.startsWith(".v3[data-deck]") && s.includes('[data-moves="on"]') && [" .v3-main", " .v3-pin[data-new]", " .v3-hand", " .v3-hand-backdrop"].some((tail) => s.endsWith(tail)), s);
   }
   const src = stripCssComments(read("shell.css"));
   assert.doesNotMatch(src, /@keyframes|will-change|(?:^|[\s;{])animation(?:-[a-z-]+)?\s*:|transition(?:-property)?\s*:[^;]*\ball\b/);
-  // 動く値は opacity と transform だけ（@starting-style の中の決めた 4 つの規則のほかに opacity・transform を書かない）
-  const ALLOWED = [[SEAT], [HAND], [BACK], [HAND_FULL]].map((selectors) => JSON.stringify([["@starting-style"], selectors]));
+  // 動く値は opacity と transform だけ（@starting-style の中の決めた 5 つの規則のほかに opacity・transform を書かない）
+  const ALLOWED = [[SEAT], [PIN], [HAND], [BACK], [HAND_FULL]].map((selectors) => JSON.stringify([["@starting-style"], selectors]));
   for (const r of rules) {
     if (r.body.split(";").some((d) => /^\s*(?:opacity|transform)\s*:/.test(d))) assert.ok(ALLOWED.includes(JSON.stringify([r.at, r.selectors])), `${r.at.join(" ")} ${r.selectors.join(",")}`);
   }
   // ずれのトークンは tokens.css に在り、shell.css だけが使う
   assert.match(read("tokens.css"), /--c-deck-seat-in: 16px;/);
-  assert.equal((src.match(/var\(--c-deck-seat-in\)/g) ?? []).length, 3);
+  assert.equal((src.match(/var\(--c-deck-seat-in\)/g) ?? []).length, 4);
 });
 
 test("web components: 下のバーの自前のボタンは当たりの下限を持つ", () => {
@@ -5844,7 +5847,7 @@ test("web components: 入口の下のバーの 3 つの口（drawBar・page・fo
   const guard = app.lastIndexOf("if (footRoot) {", at);
   assert.ok(guard > 0 && app.slice(guard, at).split("{").length === app.slice(guard, at).split("}").length + 1, "口を足すのが if (footRoot) の中でない");
   assert.equal([...app.matchAll(/window\.SA\.deck = /g)].length, 1);
-  assert.match(app, /window\.SA\.deck = \{ draw: drawDeck, drawBand, fit: deckFit, focusItem, focusBand, drawOrb, focusOrb \};/);
+  assert.match(app, /window\.SA\.deck = \{ draw: drawDeck, drawBand, fit: deckFit, focusItem, focusBand, focusCol, drawOrb, focusOrb \};/);
   assert.equal([...app.matchAll(/addEventListener\("scroll"/g)].length, 1);
   assert.match(app.slice(guard, at), /deckRoot\.addEventListener\("scroll", onScroll, \{ capture: true, passive: true \}\);/);
   // 下のバーは deck の形で、列の名前は列のモデルから（入口に列の名前を書かない）
@@ -5860,7 +5863,9 @@ test("web components: 入口の流れの列の焦点は、タスクの列だけ�
   assert.match(app, /const kind = col === "tasks" && holder \? holder\.dataset\.kind : undefined;/);
   assert.match(app, /const keysBefore = colKeys\(col, kind\);/);
   assert.match(app, /const keysAfter = colKeys\(col, kind\);/);
-  assert.equal([...app.matchAll(/colKeys\(col\)/g)].length, 0);
+  // 種類なしで数えるのは帯の「あなたの番 n」の焦点（focusCol。#507）だけ
+  assert.equal([...app.matchAll(/colKeys\(col\)/g)].length, 1);
+  assert.match(app, /const focusCol = \(col\) => \{\n\s*const keys = colKeys\(col\);/);
   // 項目の種類を entries に入れて pressableKeys の第 2 引数へ
   assert.match(app, /key: n\.dataset\.key, kind: n\.dataset\.kind, pressable:/);
   assert.match(app, /^\s*kind,\n\s*\);/m);
@@ -5868,4 +5873,37 @@ test("web components: 入口の流れの列の焦点は、タスクの列だけ�
   assert.match(app, /item\.dataset\.kind === "reminder" \? item\.querySelector\("\.c-item-ops button:last-child"\) : item\.querySelector\("button, a\[href\]"\)/);
   // 焦点のあった物が残っているのに焦点だけ外れたら（並び替えで節が動いた。moveBefore の無いブラウザ）、同じ物へ戻す（消えた物の道の else）
   assert.match(app, /if \(!moved\) focusBand\("find"\);\n\s*\} else if \(inside && document\.activeElement !== before\) \{\n(?:\s*\/\/.*\n)*\s*before\.focus\(\);\n\s*\}/);
+});
+
+test("web components: 入口の上の帯の「あなたの番 n」（#507 の P5）: drawBand は state.turnAway の間だけ、最後に描けた列の番の数（1 以上）を turn に渡し（ほかは渡さない = 今の描き出し）、drawDeck は turnAway の間に番の数が変われば帯を描き直す。focusCol は列の最初の押せる項目へ", () => {
+  const app = stripJsComments(read("c-app.js"));
+  assert.match(app, /title=\$\{bandTitle\(state\)\} turn=\$\{bandTurn\(state\)\} on=\$\{state\.on\} \/>/);
+  // bandTurn を取り出して、作り物の turnCount で動かす
+  const at = app.indexOf("  function bandTurn(state) {");
+  assert.ok(at > 0, "bandTurn が無い");
+  const src = app.slice(at, app.indexOf("\n  }\n", at) + 4);
+  let count: number | null = null;
+  const bandTurn = new Function("turnCount", `${src}\nreturn bandTurn;`)(() => count) as (state: Record<string, unknown>) => unknown;
+  const cases: Array<[Record<string, unknown>, number | null, unknown]> = [
+    [{ turnAway: true }, 3, { count: 3 }],
+    [{ turnAway: true }, 1, { count: 1 }],
+    [{ turnAway: true }, 0, undefined],
+    [{ turnAway: true }, null, undefined],
+    [{ turnAway: false }, 3, undefined],
+    [{}, 3, undefined],
+    [{ turnAway: "true" }, 3, undefined],
+  ];
+  for (const [state, n, want] of cases) {
+    count = n;
+    assert.deepEqual(bandTurn(state), want, JSON.stringify([state, n]));
+  }
+  // 渡さない時（undefined）の DeckBand は turn を渡さないのと同じ
+  const on = { status() {}, find() {}, hand() {}, start() {}, more() {}, turn() {} };
+  assert.deepEqual(shapeOf(expand(html`<${deck.DeckBand} conn=${null} hand=${null} turn=${undefined} on=${on} />`)), shapeOf(expand(html`<${deck.DeckBand} conn=${null} hand=${null} on=${on} />`)));
+  // 列を描き直して番の数が変わったら（turnAway の間だけ）、スマホの題と同じ道で帯を描き直す
+  assert.match(app, /const turnsBefore = turnCount\(\);/);
+  assert.match(app, /if \(lastBand !== null && \(bandTitleKey\(\) !== titleBefore \|\| \(lastBand\.turnAway === true && turnCount\(\) !== turnsBefore\)\)\) drawBand\(lastBand\);/);
+  assert.equal([...app.matchAll(/drawBand\(lastBand\)/g)].length, 1);
+  // 番の列への焦点: 列の押せる項目の先頭の、最初の押せる物
+  assert.match(app, /const focusCol = \(col\) => \{\n\s*const keys = colKeys\(col\);\n\s*return keys\.length > 0 && focusFirstIn\(keys\[0\]\);\n\s*\};/);
 });

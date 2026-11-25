@@ -5621,10 +5621,11 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
               store: { isUnread: (c: { id: string; last: unknown }) => boolean; markSeen: (id: string, n: number) => boolean };
               app: { shownChannelIds: () => string[]; readingChannelIds: () => string[] };
               deck: { stripFit: (w: number, open: boolean) => { show: boolean; room: number; colW: number; convW: number } };
-              pins: { seen: () => string[] };
+              pins: { seen: () => string[]; measure: () => void };
             };
             __pinEnds?: number;
             __pinMarks?: string[];
+            __pinNew?: Array<{ id: string; on: boolean; seen: string[] }>;
           };
           /** 今の帯と列の形（ブラウザの中で測る） */
           type Strip = {
@@ -5773,6 +5774,15 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
             });
             await settled(page);
           };
+          /** 上の帯の「あなたの番 n」（#507 の P5）: ボタンの数と、番の列の見出しの数（無ければ null） */
+          const bandTurn = (): Promise<{ button: string | null; col: string | null }> =>
+            page.evaluate((sel: string) => {
+              const b = document.querySelector('#c-band-root [data-act="turn"]');
+              return {
+                button: b === null ? null : (b.querySelector(".c-badge")?.textContent ?? ""),
+                col: document.querySelector(`${sel} .c-col-head .c-badge, ${sel} .c-col-head .c-col-count`)?.textContent ?? null,
+              };
+            }, TURN);
           /** #v3 の属性（data-moves は最初の操作で付くので、操作の後に比べる）と格子 */
           const shellForm = (): Promise<string> =>
             page.evaluate(() => {
@@ -5803,6 +5813,20 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           if (picks.length < 2) throw new Error(`留められる既読の話題が ${picks.length} 個（2 個要る）`);
           const [a, b] = picks as [{ key: string; id: string; title: string }, { key: string; id: string; title: string }];
           const pinned: string[] = [];
+          // 列が出る動き（#507 の P5）: 留めた列の data-new が付いた・外れた時を覚える（外れた時の見えている列も。動きの間の数え直しは offsetLeft で、transform に動かされない）
+          await page.evaluate(() => {
+            const w = window as unknown as Win;
+            w.__pinNew = [];
+            const note = (el: HTMLElement): void => void w.__pinNew!.push({ id: el.getAttribute("data-pin") ?? "", on: el.hasAttribute("data-new"), seen: w.SA.pins.seen() });
+            new MutationObserver((records) => {
+              for (const r of records) {
+                // 印は列を #v3-pins に入れる前に付くので、足された列は入った時の印を覚える
+                if (r.type === "childList") {
+                  for (const n of r.addedNodes) if (n instanceof HTMLElement && n.matches("section.v3-pin") && n.hasAttribute("data-new")) note(n);
+                } else if (r.attributeName === "data-new" && (r.target as HTMLElement).matches("section.v3-pin")) note(r.target as HTMLElement);
+              }
+            }).observe(document.querySelector("#v3-pins")!, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-new"] });
+          });
           try {
             // 1 つ目: 列の項目から席に開き、席の見出しのピンのボタン
             const openSeat = async (key: string): Promise<void> => {
@@ -5819,6 +5843,13 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
             await settled(page);
             pinned.push(a.id);
             let s = await strip();
+            // 新しく留めた列は data-new が付いて動きの後に外れ、外れた時の見えている列は止まった後と同じ
+            const moves = await page.evaluate(() => ((window as unknown as Win).__pinNew ?? []).slice());
+            const onAt = moves.findIndex((m) => m.id === a.id && m.on);
+            const off = moves.find((m, i) => i > onAt && m.id === a.id && !m.on);
+            if (onAt < 0) say("1 本目を留めた列に data-new が付かない（列が出る動き）");
+            else if (off === undefined) say("1 本目を留めた列の data-new が外れない");
+            else if (JSON.stringify(off.seen) !== JSON.stringify(s.seen)) say(`動きの終わりの見えている列が「${off.seen.join("・")}」（止まった後の「${s.seen.join("・")}」と同じはず）`);
             if (s.view !== "list") say(`席のピンのボタンの後の data-view が ${String(s.view)}（list のはず。席を閉じる）`);
             if (s.focus !== `${a.id}:pin`) say(`席のピンのボタンの後の焦点が ${s.focus}（留めた列のピンのボタンのはず）`);
             const pressed = await page.locator(`#v3-pins > section.v3-pin[data-pin="${a.id}"] [data-act="pin"] button`).getAttribute("aria-pressed");
@@ -5850,6 +5881,10 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
             if (s.left !== 0) say(`読み込んだ時の帯の位置 ${s.left}（0 のはず）`);
             stripLines(s, "左端", 2);
             if (s.geo.includes(b.id)) say("左端で 2 本目の列が端まで見えている（1440 では右の外のはず）");
+            // 読み込みで出た列は動かさない
+            if ((await page.locator("#v3-pins > section.v3-pin[data-new]").count()) > 0) say("読み込みで出た列に data-new が付いている");
+            // 番の列が見えている間は上の帯に「あなたの番 n」を出さない
+            if ((await bandTurn()).button !== null) say("左端（番の列が見えている）で上の帯に「あなたの番 n」が出ている");
             // 見えない列には既読を付けに行かない（描き直しても）・見えるようになった列には付けに行く（store.markSeen を呼んだチャンネルを覚える）
             await page.evaluate(() => {
               const w = window as unknown as Win;
@@ -5875,8 +5910,41 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
             if (!s.geo.includes(b.id)) say("右端で 2 本目の列が端まで見えていない");
             const marked = await page.evaluate(() => (window as unknown as Win).__pinMarks ?? []);
             if (!marked.includes(b.id)) say("送って見えるようになった 2 本目の列に既読を付けに行かない");
+            // 番の列が見えない間は上の帯に「あなたの番 n」（数は番の列の見出しと同じ）
+            const turnEnd = await bandTurn();
+            if (turnEnd.button === null) say("右端（番の列が見えない）で上の帯に「あなたの番 n」が無い");
+            else if (turnEnd.button !== turnEnd.col) say(`上の帯の「あなたの番」の数 ${turnEnd.button}（番の列の見出しの ${String(turnEnd.col)} のはず）`);
             await page.mouse.move(1, 1);
             await shot(page, `${p}-a-deck-pins-wide-end`);
+
+            // 列が出る動きの初めの形（右へ --c-deck-seat-in ずらす）を右端の 2 本目に当てても、数え直した見えている列は変わらない（位置は offsetLeft で測る）。
+            // ずらす間は帯の送れる幅が増え、ブラウザが止まる位置を合わせ直して帯を送る（scroll が出る）ので、戻した後は止まるのを待つ
+            const shifted = await page.evaluate((id: string) => {
+              const w = window as unknown as Win;
+              const col = document.querySelector<HTMLElement>(`#v3-pins > section.v3-pin[data-pin="${id}"]`)!;
+              const before = w.SA.pins.seen();
+              col.style.transform = "translateX(var(--c-deck-seat-in))";
+              w.SA.pins.measure();
+              const moved = w.SA.pins.seen();
+              col.style.removeProperty("transform");
+              if (col.style.length === 0) col.removeAttribute("style");
+              w.SA.pins.measure();
+              return { before, moved };
+            }, b.id);
+            if (JSON.stringify(shifted.moved) !== JSON.stringify(shifted.before)) say(`列をずらした間の見えている列が「${shifted.moved.join("・")}」（ずらす前の「${shifted.before.join("・")}」のはず）`);
+            await settled(page);
+
+            // 「あなたの番 n」を押す: 帯はすぐ左端へ、焦点は番の列の中、ボタンは消える
+            if (turnEnd.button !== null) {
+              await page.locator('#c-band-root [data-act="turn"]').click();
+              await settled(page);
+              s = await strip();
+              if (s.left !== 0) say(`「あなたの番 n」を押した後の帯の位置 ${s.left}（0 のはず）`);
+              const inTurn = await page.evaluate((sel: string) => (document.activeElement?.closest(sel) ?? null) !== null, TURN);
+              if (!inTurn) say(`「あなたの番 n」を押した後の焦点が ${s.focus}（番の列の中のはず）`);
+              if ((await bandTurn()).button !== null) say("「あなたの番 n」を押した後も上の帯に残っている");
+              stripLines(s, "「あなたの番 n」を押した後", 2);
+            }
 
             // 途中まで送って止めると列の左端で止まる
             await scrollBand(s.max / 2);
