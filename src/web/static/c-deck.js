@@ -1,6 +1,7 @@
 // 流れの列（docs/plan/web-ui-deck.md §4 の D1）: Deck・DeckBand と、そのモデルの関数（幅の計算・3 つの列の項目）。
 // hook を使わない（Node から関数として呼べる）。状態は持たず、入口が deckModel(state) の結果を押し込む。クラスは固定の文字列、状態は data-* と aria-*
 // あなたの番の列の「動いている」の下に、既読で動いていない話題の節「待機」（新しい順に IDLE_MAX 件。残りは「ほか n 件」で on.more。#505）
+// 番の下に、留めた話題（番の無い物）の節「ピン留め」（留めた順。その話題は「動いている」「待機」に出さない。#507）
 import { html } from "./c-lib.js";
 import { Badge, Button, Empty, IconButton, Loading, Mark } from "./c-atoms.js";
 import { rowModel, turnWord } from "./c-list.js";
@@ -52,6 +53,12 @@ export function itemWord(kind, src, state) {
   switch (kind) {
     case "running":
       return "動いている";
+    case "pin": {
+      // 留めた話題: 作業中 → 未読 → 待機の語（順番待ち・上限で停止など）
+      if (src && src.mark === "running") return "作業中";
+      const unread = typeof state.isUnread === "function" && src && typeof src.id === "string" && state.isUnread(src.id.slice(3), src.last);
+      return unread ? "未読" : itemWord("idle", src, state);
+    }
     case "idle": {
       const row = src ? rowModel(src, IDLE_CTX) : null;
       return row && row.state ? row.state.text : "待機";
@@ -98,6 +105,10 @@ function flowItem(state, o) {
 }
 
 const topicsOf = (state) => (state.topics && Array.isArray(state.topics.topics) ? state.topics.topics : []);
+/** 留めた話題の channelId（留めた順。ch: は付かない。文字列でない物は捨てる。#507） */
+const pinIds = (state) => (state.topics && Array.isArray(state.topics.pins) ? state.topics.pins.filter((id) => typeof id === "string") : []);
+/** 留めた話題か（ch: の話題だけ） */
+const isPinned = (state, t) => typeof t.id === "string" && t.id.startsWith("ch:") && pinIds(state).includes(t.id.slice(3));
 const groupName = (state, key) => {
   const groups = state.topics && Array.isArray(state.topics.groups) ? state.topics.groups : [];
   const g = groups.find((x) => x.key === key);
@@ -160,10 +171,37 @@ export const ACT_REASON = Object.freeze({
   off: "Claude Code の連携が無効です（設定で有効にできます）",
 });
 
-/** 動いている話題（あなたの番の無い物）。activityAt の新しい順 */
+/**
+ * 留めた話題（pins の順のまま。並べ替えない）。完了・番の在る話題（番の項目だけに出す）・話題に無い ID は出さない。
+ * 印は 作業中 = running、未読 = unread、ほかは none（#507）
+ */
+export function pinItems(state) {
+  const unread = typeof state.isUnread === "function" ? state.isUnread : () => false;
+  const out = [];
+  for (const channelId of pinIds(state)) {
+    const t = topicsOf(state).find((x) => x.id === "ch:" + channelId);
+    if (!t || t.state === "done" || t.mark === "turn" || t.turn) continue;
+    out.push(
+      flowItem(state, {
+        key: "pin:" + t.id,
+        kind: "pin",
+        word: itemWord("pin", t, state),
+        place: groupName(state, t.group),
+        time: t.activityAt ? state.time(t.activityAt) : "",
+        at: t.activityAt,
+        title: t.title,
+        mark: t.mark === "running" ? "running" : unread(channelId, t.last) ? "unread" : "none",
+        target: t.id,
+      }),
+    );
+  }
+  return out;
+}
+
+/** 動いている話題（あなたの番の無い物・留めていない物）。activityAt の新しい順 */
 export function runningItems(state) {
   return topicsOf(state)
-    .filter((t) => t.mark === "running" && !t.turn && t.state !== "done")
+    .filter((t) => t.mark === "running" && !t.turn && t.state !== "done" && !isPinned(state, t))
     .map((t) =>
       flowItem(state, {
         key: "run:" + t.id,
@@ -184,12 +222,13 @@ export function runningItems(state) {
 export const IDLE_MAX = 8;
 
 /**
- * 待機: 印の無い・完了でない ch: の話題で、入口（pinned）でなく未読でない物（未読は通知の列。1 つの話題は 1 か所）。activityAt の新しい順で全部（切るのは deckModel。#505）
+ * 待機: 印の無い・完了でない ch: の話題で、入口（pinned）でなく未読でない物（未読は通知の列。1 つの話題は 1 か所）。activityAt の新しい順で全部（切るのは deckModel。#505）。
+ * 留めた話題（pins）は除く（節「ピン留め」に出す。#507）
  */
 export function idleItems(state) {
   const unread = typeof state.isUnread === "function" ? state.isUnread : () => false;
   return topicsOf(state)
-    .filter((t) => t.mark === null && t.state !== "done" && typeof t.id === "string" && t.id.startsWith("ch:") && t.pinned !== true && !unread(t.id.slice(3), t.last))
+    .filter((t) => t.mark === null && t.state !== "done" && typeof t.id === "string" && t.id.startsWith("ch:") && t.pinned !== true && !unread(t.id.slice(3), t.last) && !isPinned(state, t))
     .map((t) =>
       flowItem(state, {
         key: "idle:" + t.id,
@@ -377,7 +416,8 @@ export function focusAfter(before, after, key) {
 
 /**
  * 3 つの列のモデル。cols は見える列の数（0〜3。既定 3）。paged（スマホの 1 列ずつの横送り。D2）は true のときだけ。空の節は出さない。
- * あなたの番の列の節は 番・動いている・待機 の順。待機は IDLE_MAX 件までで、残りがあれば more: { count, label }（列の数は番だけ。#505）
+ * あなたの番の列の節は 番・動いている・待機 の順。待機は IDLE_MAX 件までで、残りがあれば more: { count, label }（列の数は番だけ。#505）。
+ * 番の次に留めた話題の節「ピン留め」（pinItems。留めた物が無ければ出ないので、pins の無い state の結果は前と同じ。#507）
  */
 export function deckModel(state) {
   const cols = typeof state.cols === "number" && Number.isFinite(state.cols) ? Math.max(0, Math.min(3, Math.floor(state.cols))) : 3;
@@ -400,6 +440,7 @@ export function deckModel(state) {
         sections: state.topics
           ? sections([
               { label: null, items: turns },
+              { label: "ピン留め", items: pinItems(state) },
               { label: "動いている", items: runningItems(state) },
               { label: "待機", items: idle.slice(0, IDLE_MAX), more: idleRest > 0 ? { count: idleRest, label: "ほか " + idleRest + " 件" } : null },
             ])
