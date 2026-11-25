@@ -102,6 +102,11 @@
   overscroll-behavior-y: contain;
 }
 
+/* 右腕の行（#514。docs/plan/web-ui-hand-row.md §4.3）: 見出しと本体の間の、送られない兄弟。下は本体の項目の間と同じ余白 */
+.c-col-top {
+  padding-bottom: var(--space-1);
+}
+
 .c-col-label {
   margin: var(--space-2) 0 0;
   padding: 0 var(--c-gutter);

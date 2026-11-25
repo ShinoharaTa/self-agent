@@ -2,9 +2,10 @@
 // hook を使わない（Node から関数として呼べる）。状態は持たず、入口が deckModel(state) の結果を押し込む。クラスは固定の文字列、状態は data-* と aria-*
 // あなたの番の列の「動いている」の下に、既読で動いていない話題の節「待機」（新しい順に IDLE_MAX 件。残りは「ほか n 件」で on.more。#505）
 // 番の下に、留めた話題（番の無い物）の節「ピン留め」（留めた順。その話題は「動いている」「待機」に出さない。#507）
+// state.handRow の間だけ、あなたの番の列の見出しの下に右腕の行（handItem。送られない）を出し、右腕の番は番の項目にしない（docs/plan/web-ui-hand-row.md の R1。#514）
 import { html } from "./c-lib.js";
 import { Badge, Button, Empty, IconButton, Loading, Mark } from "./c-atoms.js";
-import { rowModel, turnWord } from "./c-list.js";
+import { HAND_NONE, rowModel, turnWord } from "./c-list.js";
 
 /** 幅の計算の数（設計書 §3。列の 300・席の幅は溝を含む目安）。数は全部ここ */
 /** 会話の列の幅 CONV・列の間 GAP・帯の右の丸の通り道 LANE・留められる数 PIN_MAX は、留めた話題の会話の列の物（docs/plan/web-ui-pins.md §4.2。#507） */
@@ -147,36 +148,85 @@ const groupName = (state, key) => {
   return g ? g.name : "";
 };
 
-/** あなたの番（turnIds の順。話題か右腕。引けない id は捨てる。c-list.js の turnItem と同じ引き方） */
+/** 番の種類・語・待ち始めからの時間・要約（src は turn の在る話題か右腕。turnItems と handItem で同じ） */
+function turnParts(src, state) {
+  const kind = typeof src.turn.kind === "string" ? src.turn.kind : "";
+  return { kind, word: itemWord(kind, src, state), time: src.turn.since ? state.ago(src.turn.since) : "", at: src.turn.since, summary: src.turn.summary };
+}
+
+/** 右腕の行に出す右腕（rightHands[0]。無ければ null。サーバーが複数でも選ぶ口は作らない） */
+const rowHand = (state) => (state.topics && Array.isArray(state.topics.rightHands) && state.topics.rightHands.length > 0 ? state.topics.rightHands[0] : null);
+
+/** あなたの番（turnIds の順。話題か右腕。引けない id は捨てる。c-list.js の turnItem と同じ引き方）。handRow の間は右腕の行の右腕の番を項目にしない（#514） */
 export function turnItems(state) {
+  return turnList(state).items;
+}
+
+/** turnItems の中身と、右腕の行に回したので項目にしなかった番の数 held（列の数はそれも数える。#514） */
+function turnList(state) {
   const data = state.topics;
-  if (!data) return [];
+  if (!data) return { items: [], held: 0 };
   const ids = Array.isArray(data.turnIds) ? [...new Set(data.turnIds)] : [];
   const hands = Array.isArray(data.rightHands) ? data.rightHands : [];
+  const row = state.handRow === true ? rowHand(state) : null;
   const out = [];
+  let held = 0;
   for (const id of ids) {
     const topic = topicsOf(state).find((t) => t.id === id && t.turn);
     const hand = topic ? null : hands.find((h) => h.id === id && h.turn);
     const src = topic || hand;
     if (!src) continue;
-    const kind = typeof src.turn.kind === "string" ? src.turn.kind : "";
+    if (hand && hand === row) {
+      held += 1;
+      continue;
+    }
+    const t = turnParts(src, state);
     out.push(
       flowItem(state, {
         key: "turn:" + id,
-        kind,
-        word: itemWord(kind, src, state),
+        kind: t.kind,
+        word: t.word,
         place: topic ? groupName(state, topic.group) : "",
-        time: src.turn.since ? state.ago(src.turn.since) : "",
-        at: src.turn.since,
+        time: t.time,
+        at: t.at,
         title: topic ? topic.title : "右腕",
-        summary: src.turn.summary,
+        summary: t.summary,
         mark: "turn",
         turn: true,
         target: id,
       }),
     );
   }
-  return out;
+  return { items: out, held };
+}
+
+/**
+ * 右腕の行の項目（#514。docs/plan/web-ui-hand-row.md §4.2）。話題のデータをまだ読めていなければ null。key は hand:<id>、kind は hand、題は「右腕」。
+ * 番なら番の項目と同じ語・時間・要約で mark turn。番でなければ語は 作業中 → 未読 → 待機（節「ピン留め」と同じ itemWord）、要約なし。
+ * 印は 未読 → 作業中 の順で、見えている間（current か seen に在る）は出さない。作業中は state.isRunning(チャンネル) が在る時だけ訊く。
+ * 右腕がまだ無ければ key hand:none・押せない（target null）・要約は HAND_NONE
+ */
+export function handItem(state) {
+  if (!state.topics) return null;
+  const hand = rowHand(state);
+  if (!hand || !filled(hand.id)) return flowItem(state, { key: "hand:none", kind: "hand", word: "", title: "右腕", summary: HAND_NONE, mark: "none", target: null });
+  const id = hand.id;
+  if (hand.turn) {
+    const t = turnParts(hand, state);
+    return flowItem(state, { key: "hand:" + id, kind: "hand", word: t.word, time: t.time, at: t.at, title: "右腕", summary: t.summary, mark: "turn", turn: true, target: id });
+  }
+  const seen = state.current === id || seenIds(state).includes(id);
+  const channelId = id.startsWith("ch:") ? id.slice(3) : null;
+  const unread = channelId !== null && typeof state.isUnread === "function" && state.isUnread(channelId, hand.last) === true;
+  const running = channelId !== null && typeof state.isRunning === "function" && state.isRunning(channelId) === true;
+  return flowItem(state, {
+    key: "hand:" + id,
+    kind: "hand",
+    word: itemWord("pin", { id, last: hand.last, mark: running ? "running" : null }, state),
+    title: "右腕",
+    mark: seen ? "none" : unread ? "unread" : running ? "running" : "none",
+    target: id,
+  });
 }
 
 const atMs = (at) => {
@@ -450,12 +500,14 @@ export function focusAfter(before, after, key) {
  * 3 つの列のモデル。cols は見える列の数（0〜3。既定 3）。paged（スマホの 1 列ずつの横送り。D2）は true のときだけ。空の節は出さない。
  * あなたの番の列の節は 番・動いている・待機 の順。待機は IDLE_MAX 件までで、残りがあれば more: { count, label }（列の数は番だけ。#505）。
  * 番の次に留めた話題の節「ピン留め」（pinItems。留めた物が無ければ出ないので、pins の無い state の結果は前と同じ。#507）。
- * strip（帯の中の流れの列）は true のときだけ鍵 strip を足し、seen（見えている留めた列のタブの ID）の話題の項目にも current を付ける（#507）
+ * strip（帯の中の流れの列）は true のときだけ鍵 strip を足し、seen（見えている留めた列のタブの ID）の話題の項目にも current を付ける（#507）。
+ * handRow が true のときだけ、あなたの番の列に鍵 top（handItem）を足し、右腕の番を節に出さない。列の数は右腕の番も数える（#514）
  */
 export function deckModel(state) {
   const cols = typeof state.cols === "number" && Number.isFinite(state.cols) ? Math.max(0, Math.min(3, Math.floor(state.cols))) : 3;
   const sections = (list) => list.filter((s) => s.items.length > 0);
-  const turns = state.topics ? turnItems(state) : [];
+  const turnsAt = state.topics ? turnList(state) : { items: [], held: 0 };
+  const turns = turnsAt.items;
   const idle = state.topics ? idleItems(state) : [];
   const idleRest = idle.length - IDLE_MAX;
   const tasks = taskItems(state);
@@ -468,10 +520,12 @@ export function deckModel(state) {
       {
         id: "turn",
         name: "あなたの番",
-        count: turns.length,
+        count: turns.length + turnsAt.held,
         tone: "warning",
         phase: state.topics ? "ready" : "loading",
         empty: "今は待たせている事がありません",
+        // 右腕の行（#514）。渡さない今の呼び出しの結果は前と同じ
+        ...(state.handRow === true ? { top: handItem(state) } : {}),
         sections: state.topics
           ? sections([
               { label: null, items: turns },
@@ -518,7 +572,10 @@ function countLabel(name, count) {
   return { counted, label: counted ? name + " " + count + " 件" : name };
 }
 
-/** 1 本の列。見出し（名前と数）と、縦に送る本体（同じ要素を使い回すので縦の位置が残る）。節に more があれば項目の後ろに［ほか n 件］（on.more(列の id)。list の子なので listitem で包み、key は節の語（ほかの節が出入りしても作り直さない）。#505） */
+/**
+ * 1 本の列。見出し（名前と数）と、縦に送る本体（同じ要素を使い回すので縦の位置が残る）。節に more があれば項目の後ろに［ほか n 件］（on.more(列の id)。list の子なので listitem で包み、key は節の語（ほかの節が出入りしても作り直さない）。#505）。
+ * col.top（右腕の行。#514）が在れば、見出しと本体の間に送られない .c-col-top を置き、中に Item を 1 つ
+ */
 export function Column({ col, on }) {
   const { counted, label } = countLabel(col.name, col.count);
   let body;
@@ -534,12 +591,20 @@ export function Column({ col, on }) {
           </div>`
         : null,
     ]);
+  const head = html`<header class="c-col-head">
+    <h2 class="c-col-name">${col.name}</h2>
+    ${counted ? (col.tone === "warning" ? html`<${Badge} count=${col.count} tone="warning" />` : html`<span class="c-col-count">${col.count}</span>`) : null}
+  </header>`;
+  const main = html`<div class="c-col-body" role="list">${body}</div>`;
+  if (col.top)
+    return html`<section class="c-col" data-col=${col.id} aria-label=${label}>
+      ${head}
+      <div class="c-col-top" role="list"><${Item} key=${col.top.key} item=${col.top} on=${on} /></div>
+      ${main}
+    </section>`;
   return html`<section class="c-col" data-col=${col.id} aria-label=${label}>
-    <header class="c-col-head">
-      <h2 class="c-col-name">${col.name}</h2>
-      ${counted ? (col.tone === "warning" ? html`<${Badge} count=${col.count} tone="warning" />` : html`<span class="c-col-count">${col.count}</span>`) : null}
-    </header>
-    <div class="c-col-body" role="list">${body}</div>
+    ${head}
+    ${main}
   </section>`;
 }
 

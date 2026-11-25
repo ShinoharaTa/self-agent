@@ -36,6 +36,22 @@
   font-weight: var(--weight-semibold);
 }
 
+/* ===== 右腕の行（#514。一覧の一番上。行は話題の行と同じ .c-row。右腕がまだ無ければ押せない行と文） ===== */
+.c-list-hand {
+  padding-top: var(--space-1);
+}
+
+.c-list-hand[data-none="true"] > .c-row {
+  cursor: default;
+}
+
+.c-list-hand-note {
+  margin: 0;
+  padding: 0 var(--c-gutter) var(--space-2) var(--c-row-indent);
+  color: var(--text-muted);
+  font-size: var(--font-xs);
+}
+
 /* ===== あなたの番 ===== */
 .c-turns-head {
   display: flex;
@@ -335,6 +351,17 @@
   .c-fold-head:not([aria-disabled="true"]):hover,
   .c-turns-jump:hover {
     background: var(--muted);
+  }
+}
+
+/* 右腕がまだ無い時の行は押せないので、押した・乗った地を出さない */
+.c-list-hand[data-none="true"] > .c-row:active {
+  background: transparent;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .c-list-hand[data-none="true"] > .c-row:hover {
+    background: transparent;
   }
 }
 
