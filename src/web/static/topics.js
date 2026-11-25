@@ -248,5 +248,25 @@
     if (current !== null) turnFrom = current;
   }
 
-  SA.topics = { load, schedule, render, find, data: () => data, counts, setFilter, setCurrent };
+  // ===== ピン留め（#507。GET /api/topics の pins・pinMax） =====
+  /** 留めた話題の channelId（留めた順。ch: は付かない）。形が違えば空 */
+  function pins() {
+    return data && Array.isArray(data.pins) ? data.pins.filter((id) => typeof id === "string") : [];
+  }
+
+  /** 留められる数（0 = ピン留めの口が無い） */
+  function pinMax() {
+    return data && Number.isInteger(data.pinMax) && data.pinMax >= 1 ? data.pinMax : 0;
+  }
+
+  /** POST …/pin の応答（{ pins, pinMax }）を取り込んで描き直す（load の後と同じ道）。形が違う・まだ読めていなければ何もしない */
+  function setPins(res) {
+    if (!data || !res || !Array.isArray(res.pins) || typeof res.pinMax !== "number") return;
+    data.pins = res.pins;
+    data.pinMax = res.pinMax;
+    render();
+    SA.app.refreshTabs();
+  }
+
+  SA.topics = { load, schedule, render, find, data: () => data, counts, setFilter, setCurrent, pins, pinMax, setPins };
 })();

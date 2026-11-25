@@ -4334,6 +4334,7 @@ const deck = (await import(deckUrl)) as Record<string, Fn> & {
   turnItems: (state: Obj) => FlowItem[];
   runningItems: (state: Obj) => FlowItem[];
   idleItems: (state: Obj) => FlowItem[];
+  pinItems: (state: Obj) => FlowItem[];
   taskItems: (state: Obj) => FlowItem[];
   reminderItems: (state: Obj) => FlowItem[];
   feedItems: (state: Obj) => FlowItem[];
@@ -4649,6 +4650,94 @@ test("web components: 1 つの話題は 1 か所: 同じ state で idleItems と
   const state = flowOf({ topics, isUnread: (_ch: string, last: unknown) => last !== null });
   const lists = [deck.idleItems(state), deck.feedItems(state), deck.runningItems(state), deck.turnItems(state)].map((l) => l.map((i) => i.target));
   assert.deepEqual(lists, [["ch:6", "ch:4"], ["ch:5", "ch:3"], ["ch:2"], ["ch:1", "hand:1"]]);
+  const all = lists.flat();
+  assert.equal(new Set(all).size, all.length);
+});
+
+test("web components: pinItems は pins の順のまま（activityAt で並べ替えない）。語と印は 作業中 = running・未読 = unread・ほかは待機の語で none。番の在る・done・話題に無い ID は出さない（#507）", () => {
+  const topics = {
+    turnIds: ["ch:4"],
+    groups: [{ key: "p:a", name: "A" }],
+    pins: ["3", "1", "missing", "4", "5", "2", "6"],
+    topics: [
+      idleTopic("ch:1", 9, { mark: "running" }),
+      idleTopic("ch:2", 1, { queued: true }),
+      idleTopic("ch:3", 2, { last: { id: 1 } }),
+      idleTopic("ch:4", 3, { mark: "turn", turn: { kind: "permission", since: "s" } }),
+      idleTopic("ch:5", 4, { state: "done" }),
+      idleTopic("ch:6", 5, { mark: "turn" }),
+      idleTopic("ch:7", 6),
+    ],
+    rightHands: [],
+  };
+  const asked: unknown[][] = [];
+  const state = flowOf({ topics, isUnread: (ch: string, last: unknown) => (asked.push([ch, last]), ch === "3"), current: "ch:1" });
+  const items = deck.pinItems(state);
+  assert.deepEqual(items.map((i) => [i.key, i.kind, i.word, i.place, i.time, i.title, i.mark, i.turn, i.target, i.href, i.current]), [
+    ["pin:ch:3", "pin", "未読", "A", "t:2026-01-01T02:00:00Z", "題 ch:3", "unread", false, "ch:3", null, false],
+    ["pin:ch:1", "pin", "作業中", "A", "t:2026-01-01T09:00:00Z", "題 ch:1", "running", false, "ch:1", null, true],
+    ["pin:ch:2", "pin", "順番待ち", "A", "t:2026-01-01T01:00:00Z", "題 ch:2", "none", false, "ch:2", null, false],
+  ]);
+  assert.ok(items.every((i) => i.ops.length === 0 && i.summary === ""));
+  assert.ok(asked.some(([ch, last]) => ch === "3" && (last as { id: number }).id === 1));
+  // 待機の語（一覧の行の状態の語か「待機」）
+  const plain = deck.pinItems(flowOf({ topics: { ...topics, pins: ["7"] } }));
+  assert.deepEqual(plain.map((i) => [i.word, i.mark]), [["待機", "none"]]);
+  // isUnread が関数でなければ未読でない扱い
+  assert.deepEqual(deck.pinItems(flowOf({ topics, isUnread: null })).map((i) => i.mark), ["none", "running", "none"]);
+  // pins が無い・配列でない・文字列でない要素は捨てる
+  for (const pins of [undefined, null, "1", 1, {}]) assert.deepEqual(deck.pinItems(flowOf({ topics: { ...topics, pins } })), [], String(pins));
+  assert.deepEqual(deck.pinItems(flowOf({ topics: { ...topics, pins: [1, null, "2", { id: "3" }] } })).map((i) => i.target), ["ch:2"]);
+  assert.deepEqual(deck.pinItems(flowOf({ topics: null })), []);
+  assert.equal(deck.itemWord("pin", idleTopic("ch:1", 1, { stopped: true, ended: "max_turns" }), flowOf()), "上限で停止");
+});
+
+test("web components: deckModel のあなたの番の列は 番・ピン留め・動いている・待機 の節。留めた話題は「動いている」「待機」に出ず、番が在れば番だけ、未読なら通知の列にも出る。留めた物が 0 なら前と同じ（#507）", () => {
+  const base = [
+    idleTopic("ch:1", 1, { mark: "turn", turn: { kind: "permission", since: "s" } }),
+    idleTopic("ch:2", 2, { mark: "running" }),
+    idleTopic("ch:3", 3, { mark: "running" }),
+    idleTopic("ch:4", 4),
+    idleTopic("ch:5", 5),
+    idleTopic("ch:6", 6, { last: { id: 1 } }),
+  ];
+  const model = (pins?: unknown) =>
+    deck.deckModel(flowOf({ topics: { turnIds: ["ch:1"], groups: [], topics: base, rightHands: [], ...(pins === undefined ? {} : { pins }) }, isUnread: (ch: string) => ch === "6" }));
+  const col = model(["4", "1", "6", "2"]).columns[0]!;
+  assert.deepEqual(col.sections.map((s) => [s.label, s.items.map((i) => i.key)]), [
+    [null, ["turn:ch:1"]],
+    ["ピン留め", ["pin:ch:4", "pin:ch:6", "pin:ch:2"]],
+    ["動いている", ["run:ch:3"]],
+    ["待機", ["idle:ch:5"]],
+  ]);
+  // 列の数は番だけ
+  assert.equal(col.count, 1);
+  // 留めた未読の話題は節「ピン留め」と通知の列の両方
+  assert.deepEqual(model(["4", "1", "6", "2"]).columns[2]!.sections[0]!.items.map((i) => i.target), ["ch:6"]);
+  // 留めた物が 0（pins が空・無い・生きている物が無い）なら節「ピン留め」が無く、pins を渡さない時と同じ
+  for (const pins of [[], ["missing"], ["1"], null]) assert.deepEqual(model(pins), model(), JSON.stringify(pins));
+  assert.ok(!model().columns[0]!.sections.some((s) => s.label === "ピン留め"));
+});
+
+test("web components: 1 つの話題は あなたの番 の列の中で 1 か所: turnItems・pinItems・runningItems・idleItems の target が重ならない（#507）", () => {
+  const topics = {
+    turnIds: ["ch:1", "ch:7"],
+    groups: [],
+    pins: ["1", "2", "4", "5", "7"],
+    topics: [
+      idleTopic("ch:1", 1, { mark: "turn", turn: { kind: "question", since: "s" } }),
+      idleTopic("ch:2", 2, { mark: "running" }),
+      idleTopic("ch:3", 3, { mark: "running" }),
+      idleTopic("ch:4", 4),
+      idleTopic("ch:5", 5, { last: { id: 2 } }),
+      idleTopic("ch:6", 6),
+      idleTopic("ch:7", 7, { mark: "turn", turn: { kind: "failed", since: "s" } }),
+    ],
+    rightHands: [],
+  };
+  const state = flowOf({ topics, isUnread: (_ch: string, last: unknown) => last !== null });
+  const lists = [deck.turnItems(state), deck.pinItems(state), deck.runningItems(state), deck.idleItems(state)].map((l) => l.map((i) => i.target));
+  assert.deepEqual(lists, [["ch:1", "ch:7"], ["ch:2", "ch:4", "ch:5"], ["ch:3"], ["ch:6"]]);
   const all = lists.flat();
   assert.equal(new Set(all).size, all.length);
 });

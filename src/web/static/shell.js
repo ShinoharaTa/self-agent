@@ -317,7 +317,7 @@
       views: paneSession() !== null ? { value: S.view2 } : null,
       hand: handMark(),
       compact: S.topCompact,
-      menu: t !== null && (topNarrow() || takeSession() !== null || (head !== null && head.menu.length > 0)),
+      menu: t !== null && (topNarrow() || takeSession() !== null || (head !== null && head.menu.length > 0) || pinRow(t) !== null),
       mode: head && head.mode ? { value: head.mode, disabled: modeBusy(t), reason: modeBusy(t) ? MODE_BUSY : null } : null,
       close: deckOn() && !phone(),
       // スマホの流れの列の［‹］は列へ戻る（落ち先は「一覧へ」のまま）
@@ -384,9 +384,24 @@
     }
     const takeId = takeSession();
     if (takeId !== null) items.push({ icon: "play", label: "取り込む", run: () => open("cc:" + takeId) });
+    const pin = pinRow(t);
+    if (pin) items.push(pin);
     if (head) items.push(...head.menu);
     if (items.length === 0) return;
     openSheet(topState().title + " の操作", items, opener);
+  }
+
+  /**
+   * 「…」の板の「ピン留めする／ピン留めを外す」の行（#507）。ピン留めの口が在り、完了でない ch: の話題で、右腕でないときだけ。出さなければ null。
+   * 上限の時、留めていない話題の行は押せず理由の文
+   */
+  function pinRow(t) {
+    const max = SA.topics.pinMax();
+    if (max <= 0 || !t || typeof t.id !== "string" || !t.id.startsWith("ch:") || t.state === "done" || t.id === handTab()) return null;
+    const pins = SA.topics.pins();
+    if (pins.includes(t.id.slice(3))) return { icon: "pin", label: "ピン留めを外す", run: () => setPin(t.id, false) };
+    const full = pins.length >= max;
+    return { icon: "pin", label: "ピン留めする", run: full ? null : () => setPin(t.id, true), why: full ? "ピン留めは " + max + " つまで" : "" };
   }
 
   /** 話題の「場所」の文字（帯と札で同じ決め方）。群 general は General のセッションなら「General」、場所の無い軽いセッションは「なし」 */
@@ -1703,6 +1718,26 @@
     renderBar();
   }
 
+  /** 留める・外す（#507）。id（ch:<channelId>）は encode しない。成功したら pins を取り込み、知らせて見出し（「…」の行の語）を描き直し、一覧を読み直す */
+  async function setPin(id, on) {
+    let res;
+    try {
+      res = await SA.api.post("/api/topics/" + id + "/pin", { on }, { quiet: true });
+    } catch (err) {
+      const code = err && err.status === 409 ? err.code : null;
+      if (code === "pin_limit") {
+        const max = err.data && typeof err.data.max === "number" ? err.data.max : SA.topics.pinMax();
+        SA.ui.toast("ピン留めは " + max + " つまで", null, { level: "error" });
+      } else if (err && err.status === 404) SA.ui.toast("この話題はピン留めできません", null, { level: "error" });
+      else SA.ui.toast(err && typeof err.toast === "string" ? err.toast : "サーバーにつながりません", null, { level: "error", retry: () => setPin(id, on) });
+      return;
+    }
+    SA.topics.setPins(res);
+    SA.ui.toast(on ? "ピン留めした" : "ピン留めを外した");
+    renderBar();
+    SA.topics.load();
+  }
+
   // ===== 下のバー（描くのは入口 c-app.js）と「ほか」の板 =====
   /** 「ほか」に並べる画面の順（引けるものだけ。GitHub は有効のとき・会話ログは dev のとき。スマホはタスク・リマインドを先頭に） */
   const MORE_TABS = ["knowledge", "memories", "github", "usage", "devlog", "notices", "status", "settings"];
@@ -2100,7 +2135,7 @@
     if (!SA.deck) return;
     if (from && typeof from.key === "string" && SA.deck.focusItem(from.key)) return;
     if (S.active) {
-      for (const prefix of ["turn:", "run:", "topic:"]) if (SA.deck.focusItem(prefix + S.active)) return;
+      for (const prefix of ["turn:", "run:", "pin:", "topic:"]) if (SA.deck.focusItem(prefix + S.active)) return;
     }
     SA.deck.focusBand("find");
   }

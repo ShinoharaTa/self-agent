@@ -2922,7 +2922,15 @@ type ShellApp = {
   setDraft: (channelId: string, value: string) => void;
   pruneDrafts: (channelIds: unknown[]) => void;
 };
-type Topics = { load: () => Promise<void>; schedule: () => void; render: () => void; counts: () => { turns: number; running: number } };
+type Topics = {
+  load: () => Promise<void>;
+  schedule: () => void;
+  render: () => void;
+  counts: () => { turns: number; running: number };
+  pins: () => string[];
+  pinMax: () => number;
+  setPins: (res: unknown) => void;
+};
 type HandFrame = {
   title: string;
   placeholder: string;
@@ -10545,6 +10553,184 @@ test("web static: v3 の許可のモード: スマホの「…」の板に「許
   assert.equal(sheetRows(h).some((r) => r.label === "許可のモードを変える"), false);
 });
 
+// ===== ピン留め（#507 の P2）: SA.topics の pins・pinMax・setPins、「…」の板の「ピン留めする／ピン留めを外す」、POST /api/topics/ch:<id>/pin =====
+/** 場所の殻に pins・pinMax（応答に足す物。state を書き換えると次の読み直しから効く）を足した一覧を読ませ、端末の行 cc:s1 も足す。トーストは level と［もう一度］の有り無しも覚える */
+async function loadPin(opts: Parameters<typeof loadShell>[0] = {}, pins: unknown = [], pinMax: unknown = 4) {
+  const h = await loadPlace(opts);
+  h.topicList = [...h.topicList, v3Topic("cc:s1", { origin: "cc", sessionId: "s1", title: "端末の題" })];
+  const state: Record<string, unknown> = { pins, pinMax };
+  h.api.reply = () => Promise.resolve(v3Result(h.topicList, { groups: startGroups(), ...state }));
+  await h.topics.load();
+  const toasts: ModeToast[] = [];
+  h.ui.toast = (text: string, _action: unknown, o?: { level?: string; retry?: () => unknown }) =>
+    void toasts.push({ text, error: !!o && o.level === "error", retry: o && typeof o.retry === "function" ? o.retry : null });
+  return { h, toasts, state };
+}
+const pinRowOf = (h: PlaceShell) => sheetRows(h).find((r) => r.label === "ピン留めする" || r.label === "ピン留めを外す") ?? null;
+/** 開いている話題の「…」を押し、ピン留めの行を返して板を閉じる（板が開かなければ null） */
+const pinMenu = (h: PlaceShell) => {
+  h.lastTop().on.menu(h.nodes.topButtons.menu);
+  const open = h.nodes.sheet.getAttribute("open") !== null;
+  const row = open ? pinRowOf(h) : null;
+  h.nodes.sheet.removeAttribute("open");
+  return row;
+};
+
+test("web static: SA.topics.pins・pinMax は応答の形が違えば [] と 0（文字列でない要素は捨てる）。setPins は形の違う物を無視し、正しい物は取り込んで描き直す（#507）", async () => {
+  const cases: Array<[unknown, unknown, string[], number]> = [
+    [["3", "1"], 4, ["3", "1"], 4],
+    [["3", 1, null, "2"], 2, ["3", "2"], 2],
+    [undefined, undefined, [], 0],
+    ["3", "4", [], 0],
+    [{}, 0, [], 0],
+    [[], -1, [], 0],
+    [[], 2.5, [], 0],
+    [[], Number.NaN, [], 0],
+  ];
+  for (const [pins, pinMax, wantPins, wantMax] of cases) {
+    const { h, state } = await loadPin({}, pins, pinMax);
+    if (pins === undefined) {
+      // 応答に pins・pinMax が無い（古いサーバー）
+      delete state.pins;
+      delete state.pinMax;
+      await h.topics.load();
+    }
+    assert.deepEqual([[...h.topics.pins()], h.topics.pinMax()], [wantPins, wantMax], JSON.stringify([pins, pinMax]));
+  }
+  // まだ読めていなければ [] と 0、setPins は何もしない
+  const bare = loadShell();
+  bare.topics.setPins({ pins: ["1"], pinMax: 4 });
+  assert.deepEqual([[...bare.topics.pins()], bare.topics.pinMax()], [[], 0]);
+  const { h } = await loadPin({}, [], 4);
+  const drawn = h.top.draws.length;
+  for (const bad of [null, undefined, "x", { pins: "1", pinMax: 4 }, { pins: ["1"] }, { pins: ["1"], pinMax: "4" }]) h.topics.setPins(bad);
+  assert.deepEqual([[...h.topics.pins()], h.topics.pinMax()], [[], 4]);
+  assert.equal(h.top.draws.length, drawn, "形の違う物では描き直さない");
+  h.topics.setPins({ pins: ["2", "1"], pinMax: 3 });
+  assert.deepEqual([[...h.topics.pins()], h.topics.pinMax()], [["2", "1"], 3]);
+  assert.ok(h.top.draws.length > drawn, "取り込んだら描き直す（refreshTabs）");
+  // load の形の確かめは pins を見ない（pins の無い古いサーバーでも一覧を描く）
+  assert.match(fnSource(read("topics.js"), "load"), /Array\.isArray\(next\.groups\) && Array\.isArray\(next\.topics\) && Array\.isArray\(next\.turnIds\) && Array\.isArray\(next\.rightHands\)\)/);
+});
+
+test("web static: 「…」の板のピン留めの行: 留めていない話題に「ピン留めする」・留めた話題に「ピン留めを外す」（絵 pin）。pinMax 0・完了・端末の行（cc:）・ページ・右腕では出ない。上限では押せず理由（#507）", async () => {
+  for (const phone of [false, true]) {
+    const { h } = await loadPin({ phone }, ["3"], 4);
+    h.app.open("ch:1");
+    assert.deepEqual(pinMenu(h), { label: "ピン留めする", why: null, disabled: false, icon: "pin" }, String(phone));
+    h.app.open("ch:3");
+    assert.deepEqual(pinMenu(h), { label: "ピン留めを外す", why: null, disabled: false, icon: "pin" }, String(phone));
+    // 完了の話題・端末の行には出ない
+    h.app.open("ch:5");
+    assert.equal(pinMenu(h), null, "done " + phone);
+    h.app.open("cc:s1");
+    assert.equal(pinMenu(h), null, "cc " + phone);
+    // ページ（タスク）では「…」が無い
+    h.app.open("tasks");
+    assert.equal(h.lastTop().menu, false);
+    assert.equal(pinMenu(h), null, "page " + phone);
+  }
+  // pinMax 0 なら出ない
+  const zero = (await loadPin({ phone: true }, [], 0)).h;
+  zero.app.open("ch:1");
+  assert.equal(pinMenu(zero), null);
+  // 上限: 留めていない話題は押せず理由。留めた話題は外せる
+  const full = (await loadPin({}, ["1", "2"], 2)).h;
+  full.app.open("ch:3");
+  assert.deepEqual(pinMenu(full), { label: "ピン留めする", why: "ピン留めは 2 つまで", disabled: true, icon: "pin" });
+  full.app.open("ch:2");
+  assert.deepEqual(pinMenu(full), { label: "ピン留めを外す", why: null, disabled: false, icon: "pin" });
+  assert.equal(full.api.posts.length, 0);
+});
+
+test("web static: 広い幅で head.menu も取り込みも無い話題でも、ピン留めの行が出るときは見出しの menu が true（pinMax 0 なら false のまま。#507）", async () => {
+  const { h } = await loadPin({}, [], 4);
+  h.app.open("ch:1");
+  assert.equal(h.lastTop().menu, true);
+  h.lastTop().on.menu(h.nodes.topButtons.menu);
+  assert.deepEqual(sheetRows(h).map((r) => r.label), ["ピン留めする"]);
+  h.nodes.sheet.removeAttribute("open");
+  h.app.open("ch:5");
+  assert.equal(h.lastTop().menu, false);
+  const zero = (await loadPin({}, [], 0)).h;
+  zero.app.open("ch:1");
+  assert.equal(zero.lastTop().menu, false);
+});
+
+test("web static: 右腕の「…」の板（枠）にはピン留めの行が出ない（#507）", async () => {
+  const h = await loadHand({ hand: {} }, [v3Topic("ch:11")], { pins: [], pinMax: 4 });
+  h.chatHeads["900"] = { title: "inbox", status: null, note: null, menu: [{ icon: "rotate-ccw", label: "会話を新しくする", run: () => undefined }] };
+  h.app.refresh("ch:900");
+  h.handHead.draws.at(-1)!.on.menu(h.handButtons.menu);
+  assert.equal(h.nodes.sheet.getAttribute("aria-label"), "右腕 の操作");
+  assert.deepEqual(h.nodes.sheet.querySelectorAll("button.more-row").map((r) => textOf(r.querySelector("span.sb-label")!)), ["会話を新しくする"]);
+});
+
+test("web static: ピン留めの行を押すと POST /api/topics/ch:<id>/pin に { on } を 1 回（: を % にしない）。成功で応答を取り込み、知らせ「ピン留めした」「ピン留めを外した」、見出しを描き直して一覧を読み直す（#507）", async () => {
+  const { h, toasts } = await loadPin({}, [], 4);
+  h.app.open("ch:1");
+  h.lastTop().on.menu(h.nodes.topButtons.menu);
+  // 読み直しは返らない形にして、POST の応答を取り込んだ物（setPins）だけで描き直るのを見る
+  h.api.reply = () => new Promise(() => undefined);
+  h.api.postReply = () => Promise.resolve({ pins: ["1"], pinMax: 4 });
+  const reads = h.api.paths.length;
+  pickPlace(h, "ピン留めする");
+  await h.flush();
+  assert.deepEqual(h.api.posts, [{ path: "/api/topics/ch:1/pin", body: { on: true }, opts: { quiet: true } }]);
+  assert.deepEqual([...h.topics.pins()], ["1"]);
+  assert.deepEqual(toasts.map((t) => [t.text, t.error]), [["ピン留めした", false]]);
+  assert.equal(topicReads(h, reads), 1);
+  // 見出しの「…」の行の語が替わる（次の読み直しを待たない）
+  h.lastTop().on.menu(h.nodes.topButtons.menu);
+  assert.equal(pinRowOf(h)!.label, "ピン留めを外す");
+  h.api.postReply = () => Promise.resolve({ pins: [], pinMax: 4 });
+  pickPlace(h, "ピン留めを外す");
+  await h.flush();
+  assert.deepEqual(h.api.posts.at(-1), { path: "/api/topics/ch:1/pin", body: { on: false }, opts: { quiet: true } });
+  assert.deepEqual(toasts.map((t) => t.text), ["ピン留めした", "ピン留めを外した"]);
+  assert.deepEqual([...h.topics.pins()], []);
+});
+
+test("web static: ピン留めの失敗: 409 pin_limit は「ピン留めは n つまで」（n は応答の max、無ければ pinMax）、404 は「この話題はピン留めできません」（どれも［もう一度］なし）。ほかは［もう一度］付きで同じ値を送り直す。失敗では読み直さない（#507）", async () => {
+  const { h, toasts } = await loadPin({}, [], 4);
+  h.app.open("ch:1");
+  const send = async (err: Error) => {
+    h.api.postReply = () => Promise.reject(err);
+    h.lastTop().on.menu(h.nodes.topButtons.menu);
+    pickPlace(h, "ピン留めする");
+    await h.flush();
+  };
+  const reads = h.api.paths.length;
+  await send(apiError(409, "pin_limit", { error: "pin_limit", max: 3 }));
+  await send(apiError(409, "pin_limit"));
+  await send(apiError(404, "not_found"));
+  assert.deepEqual(
+    toasts.map((t) => [t.text, t.error, t.retry !== null]),
+    [
+      ["ピン留めは 3 つまで", true, false],
+      ["ピン留めは 4 つまで", true, false],
+      ["この話題はピン留めできません", true, false],
+    ],
+  );
+  toasts.length = 0;
+  await send(Object.assign(apiError(500, "internal"), { toast: "サーバーの処理に失敗しました" }));
+  await send(apiError(0, null));
+  assert.deepEqual(
+    toasts.map((t) => [t.text, t.error, t.retry !== null]),
+    [
+      ["サーバーの処理に失敗しました", true, true],
+      ["サーバーにつながりません", true, true],
+    ],
+  );
+  assert.equal(topicReads(h, reads), 0);
+  assert.deepEqual([...h.topics.pins()], []);
+  h.api.postReply = () => Promise.resolve({ pins: ["1"], pinMax: 4 });
+  const before = h.api.posts.length;
+  toasts[0]!.retry!();
+  await h.flush();
+  assert.deepEqual(h.api.posts.slice(before), [{ path: "/api/topics/ch:1/pin", body: { on: true }, opts: { quiet: true } }]);
+});
+
 // ===== 端末のセッションの札（docs/plan/terminal-handover.md の H3。shell.js の分岐と takeover.js のつなぎ） =====
 const termTopic = (sessionId: string, o: Record<string, unknown> = {}) => v3Topic("cc:" + sessionId, { origin: "cc", sessionId, title: "端末の題", ...o });
 
@@ -11515,7 +11701,7 @@ test("web static: 流れの列: 席は［閉じる］・Esc・戻るの 3 通り
   // 開いた元の項目が無ければ、席の話題の項目 → 帯の［探す］
   h.deck.items.clear();
   h.lastTop().on.close!();
-  assert.deepEqual(h.deck.focusItems.slice(-4), ["turn:ch:1", "turn:ch:1", "run:ch:1", "topic:ch:1"]);
+  assert.deepEqual(h.deck.focusItems.slice(-5), ["turn:ch:1", "turn:ch:1", "run:ch:1", "pin:ch:1", "topic:ch:1"]);
   assert.equal(h.deck.focusBands.at(-1), "find");
   assert.equal(h.document.activeElement, h.nodes.bandButtons.find);
 });
