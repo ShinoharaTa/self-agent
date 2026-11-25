@@ -1,6 +1,6 @@
 # 話題をピン留めして、会話ごとの列として並べる（#507）
 
-- 今の状態: 段 P0〜P5。今は P0（この文）まで。
+- 今の状態: 段 P0〜P5。今は P1 まで（サーバー: DB の `topic_pins`（v48）・`GET /api/topics` の `pins`・`pinMax`・`POST /api/topics/ch:<id>/pin`。画面はまだ）。
 - 書いた日: 2026-11-26。main `d6809c5` を読んだ
 - 何のために: 動いている話題をいくつか同時に見ながら進めたい。今は会話を出せる所が席 1 つ（と右腕）だけで、話題を替えるたびに前の会話が見えなくなる。留めた話題を「会話ごとの列」として並べ、読む・送る・許可に答えるを列の中で済ませられるようにする。
 - 事実 = main d6809c5 のコードで確かめた事（`file:line`）。推測・見込みと書いた所は確かめていない
@@ -86,9 +86,9 @@
 | チャンネルの無い端末のセッションは `cc:<sessionId>` の行 | `web/routes/topics.ts:440–445` |
 | 既読の口: `POST /api/topics/ch:<id>/read`（引けなければ 404）。任意の配線 `reads?` | `web/routes/topics.ts:106, 517–530` |
 | 既読の表 `topic_reads`（v44）と小さいストア | `store/topic-reads.ts` |
-| 移行は配列の末尾に足すだけ。番号 = 並びの位置。今の最後は v47 | `store/db.ts:25, 883–893` |
+| 移行は配列の末尾に足すだけ。番号 = 並びの位置。P1 の前の最後は v47 | `store/db.ts:25, 883–893` |
 | DB がコードより新しいと起動で止まる（入れて再起動した移行は戻せない） | `store/db.ts:902–917` |
-| lead の L4 も v48（`history.via`）を予定 | `docs/plan/lead.md:81, 115` |
+| lead の L4（`history.via`）は v48 を予定していた（P1 で「次に空いている版」に直した） | `docs/plan/lead.md` |
 | `deckFit` の値は単体テストが数字で固定している | `test/web-components.test.ts:4356–4375` |
 | ピンの絵は 2 つのスプライトのどちらにも無い | `c-atoms.js:6–9`、`icons-app.svg` |
 | 決まりの文: 「列は 3 本で固定」「席は 1 つ」「CSS の幅の段は 639 と 1340 だけ」 | `docs/design/WEB-UI-GUIDELINES.md:133–164` |
@@ -427,7 +427,7 @@ CREATE TABLE topic_pins (
 
 ### 4.12 DB の版
 
-- `topic_pins` の移行は v48（今 main は v47）。#483 の S1 と lead の L4 はこの後ろに並ぶ。
+- `topic_pins` の移行は v48（P1 の前の main は v47）。#483 の S1 と lead の L4 はこの後ろに並ぶ。
 - 入れて再起動したら戻せない（`store/db.ts:902–917`）。P1 は revert しない前提でレビューする。
 - 再起動を減らす: #483 の S1 と同じ時期なら、2 つを main に入れてから再起動 1 回にまとめる（決めるのはオーナー）。
 
@@ -467,7 +467,7 @@ CREATE TABLE topic_pins (
 - §6 の決まった事を決定として書く。残る問い（丸の通り道）は既定 a と書き、未決として残す。
 
 **P1**
-- 表 `topic_pins`（`channel_id` 主キー・`position`・`created_at`）。移行は `MIGRATIONS` の末尾に 1 つで v48（今 main は v47。#483 の S1 と lead の L4 はこの後ろに並ぶ）。前の要素を書き換えない。
+- 表 `topic_pins`（`channel_id` 主キー・`position`・`created_at`）。移行は `MIGRATIONS` の末尾に 1 つで v48（P1 の前の main は v47。#483 の S1 と lead の L4 はこの後ろに並ぶ）。前の要素を書き換えない。
 - ストア `src/store/topic-pins.ts`: `all()`・`has()`・`add()`・`remove()`・定数 `TOPIC_PIN_MAX = 4`。`add` は無ければ `max(position) + 1` で足し、在れば何もしない。`remove` は無くても成功。`all` は position 順の channelId の配列。
 - `GET /api/topics` に `pins: string[]`（生きている留めた話題 = 一覧に在って完了でない物。position 順）と `pinMax: number`（配線が無ければ `pins` は `[]`・`pinMax` は 0。画面は 0 の時ピン留めの操作を出さない）。`Topic` の項目は増えていない（`pinned` の意味も今のまま）。
 - `POST /api/topics/ch:<id>/pin` 本文 `{ on }` → 200 `{ pins, pinMax }`／400（`on` が真偽値でない・右腕）／404（引けない・一覧に無い・完了。`on: true` の時だけ）／409 `{ error: "pin_limit", max }`（生きている物が上限以上）。`on: false` はいつも成功。同じ状態への要求は 200。
