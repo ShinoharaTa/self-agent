@@ -420,7 +420,7 @@ CREATE TABLE topic_pins (
 - ストア `src/store/topic-pins.ts`（`store/topic-reads.ts` と同じ形）: `all()`（position 順）・`has(channelId)`・`add(channelId)`・`remove(channelId)`・定数 `TOPIC_PIN_MAX = 4`。
 - API:
   - `GET /api/topics` の返事の最上位に `pins: string[]` と `pinMax: number`。`pins` は生きている留めた話題（一覧に在って完了でない物）の channelId（`ch:` を付けない。position 順）。`Topic` の形と `pinned` は変えない。
-  - `POST /api/topics/ch:<id>/pin` 本文 `{ "on": true | false }` → 200 `{ pins, pinMax }`。400 = `on` が真偽値でない・右腕。404 = 引けない・一覧に無い・完了（`on: true` の時だけ）。409 `{ error: "pin_limit", max }` = 生きている物が上限以上（`web/routes/topics.ts:517–530` の `/read` と同じ守り）。`on: false` はいつも成功。同じ状態への要求は成功（冪等）。
+  - `POST /api/topics/ch:<id>/pin` 本文 `{ "on": true | false }` → 200 `{ pins, pinMax }`。400 = `on` が真偽値でない・右腕（右腕は `on: true` の時だけ）。404 = 引けない・一覧に無い・完了（`on: true` の時だけ）。409 `{ error: "pin_limit", max }` = 生きている物が上限以上（`web/routes/topics.ts:517–530` の `/read` と同じ守り）。`on: false` はいつも成功。同じ状態への要求は成功（冪等）。
   - 完了・削除でストアの行は消さない（`pins` に出ないだけ。完了から戻ると留めたまま戻る）。上限を越えて生きている物が在っても、切らずに返す。
 - 配線は任意（`pins?`。`reads?` と同じ: `web/routes/topics.ts:106`）。無ければ `pins: []`・`pinMax: 0` で、画面は `pinMax` が 0 の時ピン留めの操作を出さない。
 - 軽いモードのキャッシュ: 触らない。確かめ方 = PR の差分に `src/agent/` と `topicListRows`（`app/topics.ts:383–410`）が無い事。`Topic` に項目を足さない（右腕のツール `topic_list` の行と同じ作りを通るため）。
@@ -449,8 +449,8 @@ CREATE TABLE topic_pins (
 
 | 段 | 何が変わって見えるか | 触るファイル | サーバー | 再起動 | 画面写しで見る物 | 大きさ |
 |---|---|---|---|---|---|---|
-| P0 | 何も変わらない（設計の文） | `docs/plan/web-ui-pins.md`（新。この文）・`docs/design/WEB-UI-GUIDELINES.md` §4・§5 の「使わないもの」・§7・`docs/plan/web-ui-deck.md` §6.3 と §7 の 5・`CLAUDE.md` の 1 行 | 無 | 無 | 無 | 小 |
-| P1 | 何も変わらない（留めた印を覚える口が出来る） | `src/store/db.ts`（移行を末尾に）・`src/store/topic-pins.ts`（新）・`src/web/routes/topics.ts`・`src/main.ts`（`reads` の配線の隣: :1362）・`test/topic-pins-store.test.ts`（新）・`test/web-topics.test.ts`・`test/db.test.ts`・`docs/directory-structure.md` | 有 | **1 回** | 無 | 中 |
+| P0 | 何も変わらない（設計の文） | `docs/plan/web-ui-pins.md`（新。この文）・`docs/design/WEB-UI-GUIDELINES.md` §4・§5 の「使わないもの」・§7・`docs/plan/web-ui-deck.md` の冒頭・§3・§7 の 5（§6.3 の行は P1 で直す）・`CLAUDE.md` の 1 行 | 無 | 無 | 無 | 小 |
+| P1 | 何も変わらない（留めた印を覚える口が出来る） | `src/store/db.ts`（移行を末尾に）・`src/store/topic-pins.ts`（新）・`src/web/routes/topics.ts`・`src/main.ts`（`reads` の配線の隣: :1362）・`test/topic-pins-store.test.ts`（新）・`test/web-topics.test.ts`（移行は `test/topic-pins-store.test.ts` で見る）・`docs/directory-structure.md`・`docs/plan/web-ui-deck.md` §6.3・`docs/plan/lead.md`（v48 の言い換え） | 有 | **1 回** | 無 | 中 |
 | P2 | 会話の「…」の板に「ピン留めする / ピン留めを外す」。あなたの番の列に節「ピン留め」（スマホも PC も）。押すと今までどおり席（スマホは全面）に開く。**ここでスマホの形は出来上がり** | `api.js` か `topics.js`（`pins` を持つ・`POST …/pin`）・`shell.js` の `openTopMenu`・`c-deck.js` の `deckModel`・`flows.js`・`test/web-components.test.ts`・`scripts/ui-shots.ts` と作り物のデータ | 無 | 無 | スマホのあなたの番の列（節が在る）1 枚 | 中 |
 | P3 | 何も変わらない（部品と算数だけ） | `c-deck.js`（`DECK` の 4 つの値・`stripFit`・`stripSeen`・`Deck` の `strip`・`deckModel` の `seen`・`DeckBand` の `turn`）・`c-deck.css`・`tokens.css`・`c-shell.js`（`topModel`・`TopBar` のピンのボタン）・`icons-app.svg`（`pin`）・`c-app.js`（口 `SA.pin`・`SA.deck.stripFit`・`stripSeen`）・`gallery` の今ある節・`test/web-components.test.ts` | 無 | 無 | 無（単体だけ） | 中 |
 | P4 | 640px 以上で、留めた話題（4 本まで全部）が帯の中の会話の列になる。帯ごと横に送れる。列の中で読める・送れる・許可に答えられる。見えている列だけ既読。節の行などを押すとその列へ送る。席と列の見出しにピンのボタン。右端に丸の通り道 | `index.html`（`#v3-pins`）・`pins.js`（新）・`shell.css`・`shell.js`（§4.1 の 5 つ）・`flows.js`・`test/web-static.test.ts`・`scripts/ui-shots.ts` | 無 | 無 | 1440 で留めた 2 本の左端 1 枚・右端まで送った 1 枚（ほかは DOM の確かめ） | 大 |
@@ -479,6 +479,7 @@ CREATE TABLE topic_pins (
 - `deckModel`: あなたの番の列の節が 番 → 「ピン留め」→「動いている」→「待機」の順。留めた話題は、番が在れば番の項目だけ、無ければ節「ピン留め」だけに出る（「動いている」「待機」に出ない）。語は 作業中・待機・未読。順は `pins` の順。留めた話題が 0 なら節を描かない。
 - 通知の列・タスクの列・下のバーの数は変わらない。
 - 行を押すと、スマホは全面で、PC は席に会話が開く（今の `open` のまま。PC は P4 で「その列へ送る」に替わる）。
+- 絵 `pin` を `icons-app.svg` に足す（今ある絵と同じ格子・線の太さ。板の行に使う）。上限の時、留めていない話題の行は押せず、理由は「ピン留めは 4 つまで」。
 
 **P3**
 - `deckFit` と今ある `DECK` の値・今あるテストは変えない。`DECK` に `CONV: 420`・`GAP: 8`・`LANE: 80`・`PIN_MAX: 4` を足す。`stripFit`・`stripSeen` は §4.2 の表の値をテストで固定する。
@@ -487,7 +488,6 @@ CREATE TABLE topic_pins (
 - `deckModel(state)`: `state.strip` を model に通す。`state.seen`（タブの ID の配列。無ければ空）に在る話題の項目にも、開いている印（`current`）を付ける。`strip`・`seen` を渡さない今の呼び出しの結果は 1 字も変わらない。
 - `DeckBand`: 広い幅で `turn`（`{ count }`）が在る時だけ、名前「self-agent」の所をボタン（`data-act="turn"`・字「あなたの番」+ 番の Badge・読み上げ「あなたの番 n 件」・`on.turn(opener)`）にする。渡さない時の描き出しは変わらない。
 - `topModel` に `pin`（`null` / `{ on: boolean, disabled: boolean, why: string | null }`）を足し、`TopBar` は `pin` が在る時だけボタンを描く（`data-act="pin"`・`aria-label`「ピン留めする」/「ピン留めを外す」・`aria-pressed`・当たり 44px・× の左）。`pin` を渡さない今の呼び出しの描き出しは変わらない。
-- 絵 `pin` を `icons-app.svg` に足す（今ある絵と同じ格子・線の太さ）。
 - 口: `SA.pin.drawHead(root, state)`（根ごとに `TopBar` を描く。`SA.top` の `lastTop` を使わない）・`SA.pin.clear(root)`・`SA.deck.stripFit`・`SA.deck.stripSeen`。
 - 本番の画面は変わらない（今ある ui-shots が全部通る）。
 
