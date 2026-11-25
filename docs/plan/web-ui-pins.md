@@ -421,7 +421,7 @@ CREATE TABLE topic_pins (
 - API:
   - `GET /api/topics` の返事の最上位に `pins: string[]` と `pinMax: number`。`pins` は生きている留めた話題（一覧に在って完了でない物）の channelId（`ch:` を付けない。position 順）。`Topic` の形と `pinned` は変えない。
   - `POST /api/topics/ch:<id>/pin` 本文 `{ "on": true | false }` → 200 `{ pins, pinMax }`。400 = `on` が真偽値でない・右腕（右腕は `on: true` の時だけ）。404 = 引けない・一覧に無い・完了（`on: true` の時だけ）。409 `{ error: "pin_limit", max }` = 生きている物が上限以上（`web/routes/topics.ts:517–530` の `/read` と同じ守り）。`on: false` はいつも成功。同じ状態への要求は成功（冪等）。
-  - 完了・削除でストアの行は消さない（`pins` に出ないだけ。完了から戻ると留めたまま戻る）。上限を越えて生きている物が在っても、切らずに返す。
+  - 完了・削除でストアの行は消さない（`pins` に出ないだけ。完了から戻ると留めたまま戻る）。留めた話題は、一覧の件数の上限（進行中 25・待ち 25）の外に落ちても話題に入れる（留めたまま黙って消えない。上限 4 の数にも入る）。上限を越えて生きている物が在っても、切らずに返す。
 - 配線は任意（`pins?`。`reads?` と同じ: `web/routes/topics.ts:106`）。無ければ `pins: []`・`pinMax: 0` で、画面は `pinMax` が 0 の時ピン留めの操作を出さない。
 - 軽いモードのキャッシュ: 触らない。確かめ方 = PR の差分に `src/agent/` と `topicListRows`（`app/topics.ts:383–410`）が無い事。`Topic` に項目を足さない（右腕のツール `topic_list` の行と同じ作りを通るため）。
 
