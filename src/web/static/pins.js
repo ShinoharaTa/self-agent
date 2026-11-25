@@ -15,6 +15,8 @@
   const cols = new Map();
   /** 最後に数えた、端まで見えている留めた列の channelId（DOM の順） */
   let seenIds = [];
+  /** 帯を送っている途中か（shell.js の moved で立て、settle で下ろす）。立っている間は見えている列を減らすだけ（docs/plan/web-ui-pins.md §4.6 の「迷う時は見えていないに倒す」） */
+  let moving = false;
   /** shell.js から渡された押した先: { seen(), menu(channelId, opener), pin(channelId, opener) } */
   let hooks = null;
 
@@ -145,6 +147,8 @@
       draw(c);
       SA.store.load.turns(c.id);
     }
+    // 列が無ければ送りの途中の旗を下ろす（立ったまま残さない）
+    if (want.length === 0) moving = false;
     // 消えた列は見えている物から外す（帯が出ている間は呼ぶ側が続けて measure で数え直す）
     if (keepSeen() && hooks && hooks.seen) hooks.seen();
   }
@@ -178,13 +182,31 @@
   /** 列の帯の中の位置と幅（帯が offsetParent。shell.css の data-pins の間の .v3-deck は position: relative） */
   const boxOf = (id, node) => ({ id, x: node.offsetLeft, w: node.offsetWidth });
 
+  /** 今の帯の位置で端まで見えている列: 帯が在り・ページが見えていて、列の左右の端が帯の見える範囲の内（1px の遊び）。判定は c-deck.js の stripSeen だけ */
+  function inView() {
+    const v = cols.size > 0 && document.visibilityState === "visible" ? viewOf() : null;
+    return v === null ? [] : SA.deck.stripSeen(v.view, ids().map((id) => boxOf(id, cols.get(id).section)));
+  }
+
+  /** 見えている列を、今も端まで見えている物だけに減らす（足さない・読まない・描かない・既読を付け直さない）。減った時だけ shell.js の seen を呼ぶ */
+  function shrink() {
+    const now = inView();
+    const next = seenIds.filter((id) => now.includes(id));
+    if (next.length === seenIds.length) return;
+    seenIds = next;
+    if (hooks && hooks.seen) hooks.seen();
+  }
+
   /**
-   * 見えている列を数え直す: 帯が在り・ページが見えていて、列の左右の端が帯の見える範囲の内（1px の遊び）。判定は c-deck.js の stripSeen だけ。
-   * 結果が前と変わった時だけ、新しく見えた列を 1 回読んで描き直して既読を付け直し（SA.chat.markSeenShown）、shell.js の seen を呼ぶ。送りが止まった後に呼ぶ
+   * 見えている列を数え直す（inView）。結果が前と変わった時だけ、新しく見えた列を 1 回読んで描き直して既読を付け直し（SA.chat.markSeenShown）、shell.js の seen を呼ぶ。
+   * 送りの途中（moving）は減らすだけ（shrink。旗は変えない）。足すのは止まってから（settle）
    */
   function measure() {
-    const v = cols.size > 0 && document.visibilityState === "visible" ? viewOf() : null;
-    const next = v === null ? [] : SA.deck.stripSeen(v.view, ids().map((id) => boxOf(id, cols.get(id).section)));
+    if (moving) {
+      shrink();
+      return;
+    }
+    const next = inView();
     if (next.length === seenIds.length && next.every((id, i) => id === seenIds[i])) return;
     const fresh = next.filter((id) => !seenIds.includes(id));
     seenIds = next;
@@ -194,6 +216,18 @@
     }
     SA.chat.markSeenShown();
     if (hooks && hooks.seen) hooks.seen();
+  }
+
+  /** 帯の scroll のたび（shell.js）: 送りの途中にして、見えている列を減らすだけ */
+  function moved() {
+    moving = true;
+    shrink();
+  }
+
+  /** 帯の送りが止まった時（shell.js。scrollend か最後の scroll から 150ms）: 送りの途中をやめて数え直す */
+  function settle() {
+    moving = false;
+    measure();
   }
 
   /** 最後に数えた、見えている留めた列の channelId */
@@ -249,5 +283,5 @@
     return true;
   }
 
-  SA.pins = { sync, has, refresh, measure, seen, turnSeen, jump, ids };
+  SA.pins = { sync, has, refresh, measure, moved, settle, seen, turnSeen, jump, ids };
 })();

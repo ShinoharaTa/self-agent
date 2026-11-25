@@ -436,15 +436,15 @@
     writeHash();
   }
 
-  /** 最後に fitDeck に渡した留めた話題（#507。","で繋いだ channelId。0 個は ""） */
+  /** 最後に fitDeck が済んだ留めた話題（#507。","で繋いだ channelId。0 個は ""。fitDeck が投げたら書かず、次の refreshTabs でやり直す） */
   let pinSig = "";
 
   /** 一覧を読み直した後: 留めた話題が変わったら帯の列を合わせ（#507）、帯を描き、[端末] を出せなくなって出す物が変わったら描き直す */
   function refreshTabs() {
     const sig = SA.topics.pins().join(",");
     if (sig !== pinSig) {
-      pinSig = sig;
       fitDeck();
+      pinSig = sig;
     }
     renderBar();
     const shown = shownTabId();
@@ -1788,11 +1788,10 @@
       } else SA.ui.toast(err && typeof err.toast === "string" ? err.toast : "サーバーにつながりません", null, { level: "error", retry: () => setPin(id, on) });
       return false;
     }
+    // 帯の列は setPins の refreshTabs が合わせる（pins が変わった時に fitDeck を通る。同じ値なら合わせる物が無い）
     SA.topics.setPins(res);
     SA.ui.toast(on ? "ピン留めした" : "ピン留めを外した");
     SA.topics.load();
-    // 帯の列を合わせる（setPins の refreshTabs が pins の変わった時に済ませている。同じ値なら何も変わらない）
-    fitDeck();
     return true;
   }
 
@@ -2010,8 +2009,14 @@
     }
     // 幅の判定は phone() だけ（スマホは deckFit を使わず 1 列）
     const full = phone();
-    // 留めた話題が席に開いたまま帯が出るなら、列を描く前に席を閉じる（#507。同じチャンネルを 2 か所に描かない）
-    if (!full && pinnedSeat()) leavePinnedSeat();
+    // 留めた話題が席に開いたまま帯が出るなら、列を描く前に席を閉じる（#507。同じチャンネルを 2 か所に描かない）。
+    // 焦点が席の中に在れば（ほかの端末で留められた時など）、列を描いた後にその列の入力欄へ移す（席のピンのボタンから留めた時は pinSeat がピンのボタンへ移すので移さない）
+    let refocus = null;
+    if (!full && pinnedSeat()) {
+      const main = $("v3-main");
+      if (!seatPinning && main && main.contains(document.activeElement)) refocus = S.active.slice(3);
+      leavePinnedSeat();
+    }
     const fit = full ? { cols: 1, side: false } : SA.deck.fit(v3.clientWidth, S.view === "body");
     const seat = full ? "full" : fit.side ? "side" : "fold";
     const current = S.view === "body" ? S.active : null;
@@ -2030,6 +2035,7 @@
     if (!changed) {
       applyPins(pins);
       measurePins();
+      if (refocus !== null) SA.pins.jump(refocus, "composer");
       return;
     }
     S.deckCols = fit.cols;
@@ -2049,6 +2055,7 @@
     // 列を描き直した後に今の列へ送る（列の入れ物が幅 0 の間は入口が何もしない）
     if (full) SA.deck.page(S.deckPage);
     measurePins();
+    if (refocus !== null) SA.pins.jump(refocus, "composer");
   }
 
   /** 列を今の値で描き直す（流れの列の間だけ） */
@@ -2074,26 +2081,47 @@
     openSheet(title + " の操作", items, opener);
   }
 
-  /** 席の話題を留める: 成功したら席を閉じて（fitDeck の守り）帯の末尾の列にし、その列へ送ってピンのボタンに焦点。帯が出ない幅では留めるだけ */
-  async function pinSeat(id) {
-    if (!(await setPin(id, true))) return;
-    fitDeck();
-    const channelId = id.slice(3);
-    if (pinsShown() && SA.pins.has(channelId)) SA.pins.jump(channelId, "pin");
+  /** 席の話題を留めている間（応答を待つ間。fitDeck が席を閉じても入力欄へ焦点を移さない。焦点は pinSeat がピンのボタンへ） */
+  let seatPinning = false;
+
+  /**
+   * 留める・外すの応答の後に焦点を移してよいか: 焦点が無い・body・文書の外・操作を始めた入れ物（box）の中の時だけ。
+   * 待つ間にほかの入力欄などへ移っていたら奪わない（移った先のピンのボタンで Space・Enter が効かないように）
+   */
+  function focusFree(box) {
+    const a = document.activeElement;
+    return !a || a === document.body || a.isConnected === false || (!!box && box.contains(a));
   }
 
-  /** 列のピンのボタン・「…」の「ピン留めを外す」: 成功したら列を片付け（fitDeck）、焦点は 右隣の列のピンのボタン → 左隣 → 上の帯の［探す］ */
+  /** 席の話題を留める: 成功したら席を閉じて（fitDeck の守り）帯の末尾の列にし、その列へ送ってピンのボタンに焦点（焦点が席の中・どこにも無い時だけ）。帯が出ない幅では留めるだけ */
+  async function pinSeat(id) {
+    const box = $("v3-main");
+    seatPinning = true;
+    let ok;
+    try {
+      ok = await setPin(id, true);
+    } finally {
+      seatPinning = false;
+    }
+    if (!ok) return;
+    const channelId = id.slice(3);
+    if (pinsShown() && SA.pins.has(channelId)) SA.pins.jump(channelId, focusFree(box) ? "pin" : null);
+  }
+
+  /** 列のピンのボタン・「…」の「ピン留めを外す」: 成功したら列を片付け（setPins の fitDeck）、焦点は 右隣の列のピンのボタン → 左隣 → 上の帯の［探す］（焦点がその列の中・どこにも無い時だけ） */
   async function unpinColumn(channelId) {
     const before = SA.pins ? SA.pins.ids() : [];
     const at = before.indexOf(channelId);
+    const pinsBox = $("v3-pins");
+    const box = pinsBox ? [...pinsBox.children].find((n) => n.getAttribute("data-pin") === channelId) || null : null;
     if (!(await setPin("ch:" + channelId, false))) return;
-    fitDeck();
+    const free = focusFree(box);
     const now = pinsShown() ? SA.pins.ids() : [];
     const right = at < 0 ? undefined : before.slice(at + 1).find((id) => now.includes(id));
     const left = at < 0 ? undefined : before.slice(0, at).reverse().find((id) => now.includes(id));
     const next = right !== undefined ? right : left;
-    if (next !== undefined && SA.pins.jump(next, "pin")) return;
-    if (SA.deck) SA.deck.focusBand("find");
+    if (next !== undefined && SA.pins.jump(next, free ? "pin" : null)) return;
+    if (free && SA.deck) SA.deck.focusBand("find");
   }
 
   /** 帯が出ているか（#v3 の data-pins） */
@@ -2172,24 +2200,32 @@
     if (S.deckPins && SA.pins) SA.pins.measure();
   }
 
-  /** 送り（帯の横の送り）が止まったら・ページが見えるようになったら、見えている列を数え直す（#507）。wheel は取らない。scrollend が無ければ最後の scroll から PINS_SCROLL_MS */
+  /**
+   * 帯の横の送り（#507）: scroll のたびに見えている列を減らすだけ（SA.pins.moved）、止まったら（scrollend か、来なければ最後の scroll から PINS_SCROLL_MS）数え直す（SA.pins.settle）。
+   * ページが見えるようになったら数え直す。wheel は取らない
+   */
   const PINS_SCROLL_MS = 150;
 
   function bindPins() {
     const band = $("v3-deck");
     if (!band || !SA.pins) return;
-    if ("onscrollend" in window) band.addEventListener("scrollend", () => SA.pins.measure());
-    else {
-      let timer = null;
-      band.addEventListener(
-        "scroll",
-        () => {
-          clearTimeout(timer);
-          timer = setTimeout(() => SA.pins.measure(), PINS_SCROLL_MS);
-        },
-        { passive: true },
-      );
-    }
+    let timer = null;
+    const settle = () => {
+      clearTimeout(timer);
+      timer = null;
+      SA.pins.settle();
+    };
+    band.addEventListener(
+      "scroll",
+      () => {
+        SA.pins.moved();
+        clearTimeout(timer);
+        timer = setTimeout(settle, PINS_SCROLL_MS);
+      },
+      { passive: true },
+    );
+    // scrollend の無いブラウザでは来ない（150ms の方で止まったとみなす）
+    band.addEventListener("scrollend", settle);
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible") SA.pins.measure();
     });
