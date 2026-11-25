@@ -16,7 +16,7 @@ const C_TOKENS = [
   "tap", "bar-h", "bottom-h", "row-h", "gutter", "list-w", "card-r", "btn-sm-h", "round-r",
   "icon", "icon-sm", "mark", "mark-ring", "badge-h", "badge-pad", "seg-h", "seg-pad", "toast-w", "spin", "font-body", "row-indent", "list-gap",
   "top-full-min", "top-place-min", "talk-max", "bubble-pad-y", "bubble-pad-x", "card-max", "check", "deck-band-h", "deck-col-max", "deck-line",
-  "deck-seat-in", "orb", "gallery-pane-w",
+  "deck-seat-in", "gallery-pane-w",
 ].map((n) => `--c-${n}`);
 
 /** c-*.css が var() で使ってよい --c-* 以外の変数（base.css の目盛り・tokens.css の色・動き・重なり・字）。--bubble-* は古い殻（app.css）だけの色で、部品は使わない */
@@ -4308,7 +4308,7 @@ function flowOf(o: Obj = {}): Obj {
 }
 
 test("web components: deckFit は設計書の幅の計算（列・席・並ぶか畳むか）で、数でない幅は既定", () => {
-  assert.deepEqual({ ...deck.DECK }, { COL_MIN: 300, COL_MAX: 420, SIDE_MIN: 1340, SIDE_REST: 900, SIDE_MAX: 720, FOLD_RATE: 0.48, FOLD_MIN: 440, FOLD_MAX: 600, CONV: 420, GAP: 8, LANE: 80, PIN_MAX: 4 });
+  assert.deepEqual({ ...deck.DECK }, { COL_MIN: 300, COL_MAX: 420, SIDE_MIN: 1340, SIDE_REST: 900, SIDE_MAX: 720, FOLD_RATE: 0.48, FOLD_MIN: 440, FOLD_MAX: 600, CONV: 420, GAP: 8, PIN_MAX: 4 });
   assert.ok(Object.isFrozen(deck.DECK));
   const fit = (w: number, open: boolean) => deck.deckFit(w, open);
   assert.deepEqual(fit(1440, true), { cols: 3, side: true, seat: 540, colW: 300 });
@@ -4326,25 +4326,21 @@ test("web components: deckFit は設計書の幅の計算（列・席・並ぶ�
   for (const w of [Number.NaN, 0, -5, "1440", null, undefined, Number.POSITIVE_INFINITY]) assert.deepEqual(deck.deckFit(w, true), { cols: 1, side: false, seat: 0, colW: 0 }, String(w));
 });
 
-test("web components: stripFit は帯の見える幅（幅 − 席 − 席との間 8 − 丸の通り道 80）と流れの列・会話の列の幅。席だけの幅・数でない幅は show: false（docs/plan/web-ui-pins.md §4.2。#507）", () => {
+test("web components: stripFit は帯の見える幅（幅 − 席 − 席との間 8）と流れの列・会話の列の幅。席だけの幅・数でない幅は show: false（docs/plan/web-ui-pins.md §4.2。#507）", () => {
   const table: Array<[number, boolean, boolean, number, number, number, number]> = [
-    [1440, false, true, 0, 1360, 300, 420],
-    [1440, true, true, 540, 812, 300, 420],
-    [1920, false, true, 0, 1840, 300, 420],
-    [1920, true, true, 720, 1112, 300, 420],
-    [820, false, true, 0, 740, 300, 420],
-    [820, true, true, 440, 292, 292, 292],
-    [640, false, true, 0, 560, 300, 420],
+    [1440, false, true, 0, 1440, 300, 420],
+    [1440, true, true, 540, 892, 300, 420],
+    [1920, false, true, 0, 1920, 300, 420],
+    [1920, true, true, 720, 1192, 300, 420],
+    [820, false, true, 0, 820, 300, 420],
+    [820, true, true, 440, 372, 300, 372],
+    [640, false, true, 0, 640, 300, 420],
     [640, true, false, 440, 0, 0, 0],
   ];
   for (const [width, open, show, seat, room, colW, convW] of table) assert.deepEqual(deck.stripFit(width, open), { show, seat, room, colW, convW }, `${width} ${open ? "開" : "閉"}`);
   for (const w of [Number.NaN, 0, -5, "1440", null, undefined, Number.POSITIVE_INFINITY]) {
     for (const open of [true, false]) assert.deepEqual(deck.stripFit(w, open), { show: false, seat: 0, room: 0, colW: 0, convW: 0 }, `${String(w)} ${open}`);
   }
-  // 見える幅が 0 以下なら出さない（席が閉じていて丸の通り道より狭い）
-  assert.deepEqual(deck.stripFit(80, false), { show: false, seat: 0, room: 0, colW: 0, convW: 0 });
-  assert.deepEqual(deck.stripFit(50, false), { show: false, seat: 0, room: 0, colW: 0, convW: 0 });
-  assert.deepEqual(deck.stripFit(81, false), { show: true, seat: 0, room: 1, colW: 1, convW: 1 });
 });
 
 test("web components: stripSeen は帯の中で端まで見えている列の id（cols の順。slack は既定 1）。壊れた入力は []（#507）", () => {
@@ -4355,9 +4351,9 @@ test("web components: stripSeen は帯の中で端まで見えている列の id
     { id: "A", x: 924, w: 420 },
     { id: "B", x: 1352, w: 420 },
   ];
-  assert.deepEqual(deck.stripSeen({ left: 0, width: 1360 }, cols), ["turn", "tasks", "feed", "A"]);
-  assert.deepEqual(deck.stripSeen({ left: 412, width: 1360 }, cols), ["feed", "A", "B"]);
-  assert.deepEqual(deck.stripSeen({ left: 200, width: 1360 }, cols), ["tasks", "feed", "A"]);
+  assert.deepEqual(deck.stripSeen({ left: 0, width: 1440 }, cols), ["turn", "tasks", "feed", "A"]);
+  assert.deepEqual(deck.stripSeen({ left: 332, width: 1440 }, cols), ["feed", "A", "B"]);
+  assert.deepEqual(deck.stripSeen({ left: 200, width: 1440 }, cols), ["tasks", "feed", "A"]);
   // 境い目: 1px はみ出しは入る・2px は入らない（左端も右端も）
   const one1 = [{ id: "a", x: 99, w: 100 }];
   assert.deepEqual(deck.stripSeen({ left: 100, width: 100 }, one1), ["a"]);
@@ -5137,7 +5133,7 @@ test("web components: DeckBand は点・名前・探す・始める・ほかの�
   assert.ok(!calls.some((c) => c[0] === "hand"));
 });
 
-test("web components: 流れの列の本体（.c-col-body）の下の余白は var(--c-deck-tail)（tokens.css の既定は var(--space-2) = 今の 8。丸の出る広い幅は shell.css が上書き。D6）", () => {
+test("web components: 流れの列の本体（.c-col-body）の下の余白は var(--c-deck-tail)（tokens.css の既定は var(--space-2) = 今の 8。D6 の丸の分の上書きは #514 の R4 で外した）", () => {
   assert.match(read("tokens.css"), /\n {2}--c-deck-tail: var\(--space-2\);\n/);
   const body = parseCss(read("c-deck.css")).filter((r) => r.selectors.includes(".c-col-body") && r.at.length === 0);
   assert.equal(body.length, 1);
@@ -5145,6 +5141,8 @@ test("web components: 流れの列の本体（.c-col-body）の下の余白は v
   assert.deepEqual(pads, ["padding-bottom: var(--c-deck-tail)"]);
   // 上書きは c-deck.css の中に無い（スマホ・落ち先・見本は既定のまま）
   assert.equal((stripCssComments(read("c-deck.css")).match(/--c-deck-tail/g) ?? []).length, 1);
+  // shell.css も上書きしない（広い幅も既定のまま）
+  assert.doesNotMatch(stripCssComments(read("shell.css")), /--c-deck-tail/);
 });
 
 test("web components: c-deck.css は区切りの線（左の線と 0 の外し・角丸のほかの border）・gradient・半透明・影・動きを書かない（帯の［右腕］とその作業中の輪は #514 の R3b で消した）", () => {
@@ -5429,7 +5427,7 @@ test("web components: Deck は model.strip が true のときだけ data-strip=\
   // data-cols の規則の後ろ（同じ詳しさの規則を上書きする）
   const src = stripCssComments(read("c-deck.css"));
   assert.ok(src.indexOf('.c-deck[data-strip="true"] {') > src.indexOf('.c-deck[data-cols="3"] {'));
-  for (const [name, value] of [["--c-deck-col-w", "300px"], ["--c-deck-conv-w", "420px"], ["--c-deck-lane", "80px"]] as const) assert.match(read("tokens.css"), new RegExp(`\\n {2}${name}: ${value};\\n`), name);
+  for (const [name, value] of [["--c-deck-col-w", "300px"], ["--c-deck-conv-w", "420px"]] as const) assert.match(read("tokens.css"), new RegExp(`\\n {2}${name}: ${value};\\n`), name);
   // あなたの番のボタン: 素のボタンの見た目を消し、当たりは --c-tap、地・線は付けない
   const turn = body(".c-band-turn");
   for (const decl of ["gap: var(--space-2)", "min-height: var(--c-tap)", "border: 0", "background: transparent", "font: inherit", "cursor: pointer"]) assert.ok(turn.includes(decl), decl);

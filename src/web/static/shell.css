@@ -285,7 +285,7 @@
 
 /*
  * 留めた話題の会話の列（docs/plan/web-ui-pins.md §4.2）: 留めた数が 1 以上で帯が出る幅の間だけ、shell.js が data-pins と列の幅（--c-deck-col-w・--c-deck-conv-w）を書く。
- * 帯（.v3-deck）が流れの 3 列（.c-deck[data-strip]）と会話の列を 1 本に並べて横に送り、列の左端で止まる（末尾は右端）。右に丸の通り道（--c-deck-lane）を空ける。
+ * 帯（.v3-deck）が流れの 3 列（.c-deck[data-strip]）と会話の列を 1 本に並べて横に送り、列の左端で止まる（末尾は右端）。右は空けない（席が開いていれば席との間、閉じていれば画面の右端まで）。
  * 帯は列の位置（offsetLeft）の基準（pins.js が見えている列を数える）。ホイールは取らない（縦はポインタの下の列の縦送り、横は Shift + ホイール・トラックパッド・送りのバー・指）
  */
 .v3[data-deck]:not([data-pins="true"]) .v3-pins {
@@ -296,7 +296,6 @@
   position: relative;
   display: flex;
   gap: var(--space-2);
-  margin-right: var(--c-deck-lane);
   overflow-x: auto;
   overflow-y: hidden;
   overscroll-behavior-x: contain;
@@ -329,12 +328,6 @@
 /* 列の会話の端で、帯や画面へ縦の送りを伝えない */
 .v3[data-deck][data-pins="true"] .v3-pin .ed-scroll {
   overscroll-behavior-y: contain;
-}
-
-/* 広い幅（side・fold）では、列の本体の下に消した右腕の丸の分（--c-orb + 上下の余白 + 下の safe-area）の余白が残る（スマホ・落ち先は tokens.css の既定のまま）。この余白と帯の右の通り道は R4 で外す */
-.v3[data-deck][data-seat="side"] .v3-deck,
-.v3[data-deck][data-seat="fold"] .v3-deck {
-  --c-deck-tail: calc(var(--c-orb) + var(--space-4) + var(--space-4) + env(safe-area-inset-bottom, 0px));
 }
 
 .v3[data-deck] .v3-main {
