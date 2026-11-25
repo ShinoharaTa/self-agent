@@ -19,7 +19,7 @@ type Viewport = "phone" | "pc" | "tablet";
 /** /api/topics の応答のうち、検査で書き換える所 */
 /** /api/channels/<id>/turns の応答（段 r が channel を書き換える） */
 type TurnsJson = { turns: unknown[]; channel: Record<string, unknown> | null };
-type TopicsJson = { topics: Array<{ id?: unknown; state?: unknown; mark?: unknown; turn?: unknown; title?: unknown; movable?: unknown }>; turns: number; turnIds: unknown[]; rightHands: Array<{ turn?: unknown }> };
+type TopicsJson = { topics: Array<{ id?: unknown; state?: unknown; mark?: unknown; turn?: unknown; title?: unknown; movable?: unknown }>; turns: number; turnIds: unknown[]; rightHands: Array<{ id?: unknown; turn?: unknown; last?: unknown }> };
 type Theme = "dark" | "light";
 
 const VIEWPORTS: Record<Viewport, { viewport: { width: number; height: number }; deviceScaleFactor: number; isMobile?: boolean; hasTouch?: boolean }> = {
@@ -199,7 +199,7 @@ function newShellNames(vp: Viewport, theme: Theme, full: boolean): string[] {
     // 知らせと確認（段 u。ダークのスマホと PC）
     ...(theme === "dark" && vp !== "tablet" ? ["u-notice", "u-notice-error", "u-confirm"] : []),
     ...(full
-      ? ["b-chat-permission", "b-chat-question", "d-composer-3lines", "c-hand-over", ...(vp === "phone" ? [] : ["c-hand-with-chat"]), "e-start-dialog", "f-settings", "f-knowledge-list", "f-knowledge-detail"]
+      ? ["b-chat-permission", "b-chat-question", "d-composer-3lines", ...(vp === "phone" ? [] : ["c-hand-over", "c-hand-with-chat"]), "e-start-dialog", "f-settings", "f-knowledge-list", "f-knowledge-detail"]
       : []),
   ].map((n) => `${vp}-${theme}-${n}`);
 }
@@ -334,7 +334,7 @@ const ACCENT_BIG_MAX = 1;
 /**
  * accent の塗りの量（ブラウザの中で動く。page.evaluate に渡すので外の変数を使わない）。見えている要素（上に重なった物の下は除く）のうち、
  * 地（background-color）が --accent の物の画面の中の面積の和が areaMax 以下、44px 角以上の物が bigMax 以下。足りない物の文を返す。
- * 測り方の空振りの守り: 見えている未読の点・accent の数の印・下のバーの右腕・右腕の丸の accent の顔は塗りとして数えられている。min 個以上を数えている
+ * 測り方の空振りの守り: 見えている未読の点・accent の数の印・右腕の丸の accent の顔は塗りとして数えられている。min 個以上を数えている
  */
 function accentProblems({ label, areaMax, bigMax, min = 0 }: { label: string; areaMax: number; bigMax: number; min?: number }): string[] {
   const out: string[] = [];
@@ -375,7 +375,7 @@ function accentProblems({ label, areaMax, bigMax, min = 0 }: { label: string; ar
   if (share > areaMax) out.push(`accent の塗り（${label}）: 面積が画面の ${(share * 100).toFixed(2)}%（${(areaMax * 100).toFixed(0)}% 以下のはず）`);
   if (big.length > bigMax) out.push(`accent の塗り（${label}）: 44px 角以上が ${big.length} 個（${bigMax} 個以下のはず）: ${big.join("・")}`);
   // 空振りの守り: accent で塗ると決まっている物が見えていれば、上の数え方で拾えている
-  for (const el of document.querySelectorAll<HTMLElement>('.c-mark[data-state="unread"], .c-badge[data-tone="accent"], .c-bottom-hand, .c-orb[data-tone="accent"]')) {
+  for (const el of document.querySelectorAll<HTMLElement>('.c-mark[data-state="unread"], .c-badge[data-tone="accent"], .c-orb[data-tone="accent"]')) {
     if (seen(el) !== null && !counted.has(el)) out.push(`accent の塗り（${label}）: ${el.tagName.toLowerCase()}.${String(el.className).trim().split(/\s+/)[0] ?? ""} が塗りとして数えられていない（地 ${getComputedStyle(el).backgroundColor}。--accent ${accent} のはず）`);
   }
   if (counted.size < min) out.push(`accent の塗り（${label}）: 数えた塗りが ${counted.size} 個（${min} 個以上のはず。測り方が空振りしている）`);
@@ -790,7 +790,7 @@ function topProblems({ height, titleMin, placeMin, boxes, demos, label }: { heig
       prevRight = Math.max(prevRight, c.right);
     }
     // 題・補足・状態・場所の語は 1 行（帯の高さの中で 2 行に折れても、上の検査には掛からない）
-    for (const el of top.querySelectorAll(".c-top-title, .c-top-sub, .c-top > .c-top-status, .c-top > .c-top-rest, .c-top-place-text, .c-top-hand-label")) {
+    for (const el of top.querySelectorAll(".c-top-title, .c-top-sub, .c-top > .c-top-status, .c-top > .c-top-rest, .c-top-place-text")) {
       const lh = parseFloat(getComputedStyle(el).lineHeight);
       const h = el.getBoundingClientRect().height;
       if (!(lh > 0) || h > lh * 1.5) lines.push(`見出し: ${demo} の ${el.classList[0] ?? el.tagName} が 1 行でない（高さ ${h.toFixed(1)}・行 ${getComputedStyle(el).lineHeight}。${label}）`);
@@ -1252,7 +1252,7 @@ function liveTopProblems({ height, label, ed }: { height: number; label: string;
     if (c.left < prevRight - 0.5) lines.push(`本番の見出し: ${child.classList[0] ?? child.tagName} が前の子に重なっている（${label}）`);
     prevRight = Math.max(prevRight, c.right);
   }
-  for (const el of top.querySelectorAll(".c-top-title, .c-top-sub, .c-top > .c-top-status, .c-top > .c-top-rest, .c-top-place-text, .c-top-hand-label")) {
+  for (const el of top.querySelectorAll(".c-top-title, .c-top-sub, .c-top > .c-top-status, .c-top > .c-top-rest, .c-top-place-text")) {
     const lh = parseFloat(getComputedStyle(el).lineHeight);
     const h = el.getBoundingClientRect().height;
     if (!(lh > 0) || h > lh * 1.5) lines.push(`本番の見出し: ${el.classList[0] ?? el.tagName} が 1 行でない（高さ ${h.toFixed(1)}。${label}）`);
@@ -1275,7 +1275,7 @@ function liveTopProblems({ height, label, ed }: { height: number; label: string;
 
 /** 本番の見出しで古い CSS の漏れを比べる要素（見本の同じ形の物と。スマホ・PC は会話の形、タブレットは compact） */
 const LEAK_TOP: Record<Viewport, { demo: string; sels: string[] }> = {
-  phone: { demo: "top-phone-talk", sels: [".c-top", ".c-top-title", ".c-top-sub", ".c-top-hand", ".c-top-act > .c-iconbtn"] },
+  phone: { demo: "top-phone-talk", sels: [".c-top", ".c-top-title", ".c-top-sub", ".c-top-act > .c-iconbtn"] },
   pc: { demo: "top-wide-talk", sels: [".c-top", ".c-top-title", ".c-top-place", ".c-top-act > .c-iconbtn"] },
   tablet: { demo: "top-compact-cc", sels: [".c-top", ".c-top-title", ".c-top-rest"] },
 };
@@ -1286,9 +1286,9 @@ const LEAK_SELECTORS = ['.c-row[data-mark="none"]', '.c-row[data-mark="none"] .c
 const LEAK_SELECTORS_PHONE = [".c-turn", ".c-turn-title", ".c-turn-sub"];
 const LEAK_SELECTORS_PC = [".c-turns-jump"];
 /** 下のバーで比べる要素（スマホの形・広い幅の形） */
-const LEAK_BOTTOM_PHONE = [".c-bottom", ".c-bottom-btn", ".c-bottom-btn-label", ".c-bottom-hand", ".c-bottom-hand-label", ".c-bottom > .c-btn"];
+const LEAK_BOTTOM_PHONE = [".c-bottom", ".c-bottom-btn", ".c-bottom-btn-label", ".c-bottom > .c-btn"];
 /** スマホの流れの列の下のバー（D2。#c-foot-root と見本 bottom-deck） */
-const LEAK_BOTTOM_DECK = [".c-bottom", ".c-bottom-page", ".c-bottom-page-label", ".c-bottom-hand", ".c-bottom-hand-label"];
+const LEAK_BOTTOM_DECK = [".c-bottom", ".c-bottom-page", ".c-bottom-page-label"];
 const LEAK_BOTTOM_WIDE = [".c-bottom", ".c-bottom > .c-btn", ".c-bottom > .c-btn .c-btn-label"];
 const LEAK_PROPS = [
   "font-size", "font-weight", "line-height", "letter-spacing", "color", "background-color", "text-align",
@@ -1457,22 +1457,20 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     await (which === "first" ? rows.first() : rows.last()).click();
   }
 
-  /** スマホの下のバーの右腕のボタン（流れの列は列の下のバー #c-foot-root。D2） */
-  const BAR_HAND = '#c-foot-root button[data-act="hand"]';
   /** 広い幅の流れの列の右下の右腕の丸（D6） */
   const ORB = '#c-orb-root button.c-orb[data-act="hand"]';
   /** あなたの番の列の一番上の右腕の行の押すボタン（#514 の R2。列の見出しと本体の間の .c-col-top） */
   const HAND_ROW = '#c-deck-root .c-col[data-col="turn"] > .c-col-top .c-item[data-kind="hand"] > button.c-item-main';
 
-  /** 右腕を開くボタン（スマホの流れの列は下のバーの右腕、広い幅の流れの列は右下の丸（席だけの幅で丸が無ければ帯の［右腕］。D6）、ほかは畳んだ帯の #v3-hand-show） */
-  const handShow = async (page: Page): Promise<string> =>
-    (await deckOn(page))
-      ? (await page.$('#v3[data-seat="full"]')) !== null
-        ? BAR_HAND
-        : (await page.$(ORB)) !== null
-          ? ORB
-          : bandButton("hand")
-      : "#v3-hand-show";
+  /**
+   * 右腕の枠を開くボタン（広い幅の流れの列は右下の丸（席だけの幅で丸が無ければ帯の［右腕］。D6）、ほかは畳んだ帯の #v3-hand-show）。
+   * スマホの流れの列には枠を開く口が無い（#514 の R3a。右腕は あなたの番 の列の一番上の行から全画面の会話に開く）ので、呼ぶと投げる
+   */
+  const handShow = async (page: Page): Promise<string> => {
+    if (!(await deckOn(page))) return "#v3-hand-show";
+    if ((await page.$('#v3[data-seat="full"]')) !== null) throw new Error("スマホの流れの列には右腕の枠を開く口が無い（#514 の R3a）");
+    return (await page.$(ORB)) !== null ? ORB : bandButton("hand");
+  };
 
   /** 一覧を読み直し、流れの列なら「探す」の板を開いた形にする（一覧の検査は板の中で走らせる） */
   async function loadList(page: Page): Promise<void> {
@@ -1771,7 +1769,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         }
       }
       // R2 省かれない字（右端は親の button か見出しの中）
-      for (const sel of [".c-row-state", ".c-row-time", ".c-turn-meta", ".c-group-note", ".c-turns-jump-label", ".c-bottom-btn-label", ".c-bottom-hand-label", ".c-bottom-page-label", ".c-bottom .c-btn-label"]) {
+      for (const sel of [".c-row-state", ".c-row-time", ".c-turn-meta", ".c-group-note", ".c-turns-jump-label", ".c-bottom-btn-label", ".c-bottom-page-label", ".c-bottom .c-btn-label"]) {
         for (const el of shown(sel)) {
           if (el.scrollWidth > el.clientWidth) out.push(`${label} R2: ${sel}「${name(el)}」が省かれる 幅 ${el.clientWidth} 要る幅 ${el.scrollWidth}`);
           const box = el.closest("button, .c-group-head");
@@ -1881,7 +1879,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     if (form.variant !== (phone ? "phone" : "wide")) lines.push(`バー: data-variant が ${String(form.variant)}`);
     if (form.ids !== 0) lines.push(`バー: 中に id の付いた要素が ${form.ids} 個`);
     if (phone) {
-      if (form.acts.length !== 3 || form.acts[0] !== "list" || form.acts[1] !== "hand" || form.texts[2] !== "ほか") lines.push(`バー: スマホのボタンが 一覧・右腕・ほか でない（${form.texts.join("・")}）`);
+      // 右腕のボタンは無い（#514 の R3a）
+      if (form.acts.length !== 2 || form.acts[0] !== "list" || form.texts[1] !== "ほか") lines.push(`バー: スマホのボタンが 一覧・ほか でない（${form.texts.join("・")}）`);
     } else if (JSON.stringify(form.texts) !== JSON.stringify(["タスク", "リマインド", "ほか"])) {
       lines.push(`バー: 広い幅のボタンが タスク・リマインド・ほか でない（${form.texts.join("・")}）`);
     }
@@ -1922,11 +1921,11 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       await settled(page);
       const top = await page.evaluate(() => document.querySelector(".c-list")?.scrollTop ?? -1);
       if (top !== 0) lines.push(`バー: 「一覧」を押しても先頭に戻らない（${top}）`);
-      // 同じ要素: 右腕のボタンと「ほか」に印を付け、右腕を「あなたの番」にして描き直させる
+      // 同じ要素: 「一覧」と「ほか」に印を付け、右腕を「あなたの番」にして描き直させる（右腕のボタンは #514 の R3a で無くなった）
       await page.evaluate(() => {
-        const hand = document.querySelector('#c-bottom-root [data-act="hand"]');
         const buttons = document.querySelectorAll(".c-bottom button");
-        if (hand !== null) (hand as unknown as { __k: number }).__k = 1;
+        const list = document.querySelector('#c-bottom-root [data-act="list"]');
+        if (list !== null) (list as unknown as { __k: number }).__k = 1;
         const more = buttons[buttons.length - 1];
         if (more !== undefined) (more as unknown as { __k: number }).__k = 2;
       });
@@ -1939,29 +1938,18 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       if (!hands) lines.push("バー: 作り物のデータに右腕が無い");
       else {
         const same = await page.evaluate(() => {
-          const hand = document.querySelector('#c-bottom-root [data-act="hand"]');
+          const list = document.querySelector('#c-bottom-root [data-act="list"]');
           const buttons = document.querySelectorAll(".c-bottom button");
           const more = buttons[buttons.length - 1];
           return {
-            hand: hand !== null && (hand as unknown as { __k?: number }).__k === 1,
-            turn: hand !== null && hand.querySelector('[data-state="turn"]') !== null,
-            label: hand === null ? null : hand.getAttribute("aria-label"),
+            list: list !== null && (list as unknown as { __k?: number }).__k === 1,
+            hand: document.querySelector('#c-bottom-root [data-act="hand"]') !== null,
             more: more !== undefined && (more as unknown as { __k?: number }).__k === 2,
           };
         });
-        if (!same.hand) lines.push("バー: 描き直した後の右腕のボタンが同じ要素でない");
-        if (!same.turn) lines.push("バー: 右腕のボタンに「あなたの番」の印が無い");
-        if (same.label !== "右腕に頼む・訊く（あなたの番）") lines.push(`バー: 右腕のボタンの名前が ${String(same.label)}`);
+        if (!same.list) lines.push("バー: 描き直した後の「一覧」が同じ要素でない");
+        if (same.hand) lines.push("バー: 右腕のボタンが在る（#514 の R3a で外したはず）");
         if (!same.more) lines.push("バー: 描き直した後の「ほか」が同じ要素でない");
-        // フォーカスの戻り: 開いている間に描き直されても、閉じたら右腕のボタンへ
-        await page.click('#c-bottom-root [data-act="hand"]');
-        await page.waitForSelector('#v3[data-hand="open"]', { timeout: 5000 });
-        await loadEdited(page, () => undefined);
-        await page.evaluate(() => history.back());
-        await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
-        await settled(page);
-        const back = await page.evaluate(() => (document.activeElement as unknown as { __k?: number } | null)?.__k === 1);
-        if (!back) lines.push("バー: 右腕を閉じた後の焦点が右腕のボタンに戻らない");
       }
       // 幅をまたぐ: 640 を越えると広い幅の形、戻すとスマホの形に描き直す
       const formAt = (): Promise<{ variant: string | null; acts: Array<string | null>; texts: string[] }> =>
@@ -1984,7 +1972,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         await settled(page);
       }
       const narrow = await formAt();
-      if (narrow.variant !== "phone" || narrow.acts[0] !== "list" || narrow.acts[1] !== "hand" || narrow.texts[2] !== "ほか") lines.push(`バー: 390 に戻してもスマホの形にならない（${String(narrow.variant)}・${narrow.texts.join("・")}）`);
+      if (narrow.variant !== "phone" || narrow.acts.length !== 2 || narrow.acts[0] !== "list" || narrow.texts[1] !== "ほか") lines.push(`バー: 390 に戻してもスマホの形にならない（${String(narrow.variant)}・${narrow.texts.join("・")}）`);
       // 800 の間はバーを描かないので、戻した後のバーは新しい要素。「ほか」の焦点の検査のために印を付け直す
       await page.evaluate(() => {
         const buttons = document.querySelectorAll(".c-bottom button");
@@ -2040,20 +2028,19 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       const drawn = await page.evaluate(() => {
         const list = (window as unknown as { SA: { list: { drawBar: (bar: unknown) => boolean } } }).SA.list;
         const noop = (): void => undefined;
-        const on = { list: noop, hand: noop, tab: noop, more: noop };
+        const on = { list: noop, tab: noop, more: noop };
         const first = list.drawBar({
           turns: 1,
-          hand: null,
           get tabs(): unknown {
             throw new Error("x");
           },
           on,
         });
-        const second = list.drawBar({ turns: 0, hand: null, tabs: [], on });
-        return { first, second, hand: document.querySelector('#c-bottom-root [data-act="hand"]') !== null };
+        const second = list.drawBar({ turns: 0, tabs: [], on });
+        return { first, second, list: document.querySelector('#c-bottom-root [data-act="list"]') !== null };
       });
       await settled(page);
-      if (drawn.first !== false || drawn.second !== true || !drawn.hand) lines.push(`バー: 描けなかったときの形が違う（1 回目 ${drawn.first}・2 回目 ${drawn.second}・右腕 ${drawn.hand}）`);
+      if (drawn.first !== false || drawn.second !== true || !drawn.list) lines.push(`バー: 描けなかったときの形が違う（1 回目 ${drawn.first}・2 回目 ${drawn.second}・一覧 ${drawn.list}）`);
       const removed = dropExpected(from, ["[web] bar draw failed"]);
       if (removed.length !== 1) lines.push(removed.length === 0 ? "バー: 失敗が console に出ていない" : `バー: 失敗の行が ${removed.length} 行`);
     }
@@ -2079,7 +2066,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         states: document.querySelectorAll("#c-bottom-root [data-state]").length,
       }));
       if (!first.loading) lines.push("バー: 最初の応答の前に一覧が読み込み中でない");
-      if (first.buttons !== 3) lines.push(`バー: 最初の応答の前のボタンが ${first.buttons} 個`);
+      if (first.buttons !== (phone ? 2 : 3)) lines.push(`バー: 最初の応答の前のボタンが ${first.buttons} 個（${phone ? 2 : 3} 個のはず）`);
       if (phone && (/\d/.test(first.listText) || first.states !== 0)) lines.push("バー: 最初の応答の前に件数か印が出ている");
     } finally {
       release();
@@ -2094,13 +2081,13 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
   /**
    * スマホの流れの列の下のバー（#c-foot-root。D2）の検査（ダークのスマホ。checkBarDeck から）: 形・数は あなたの番 だけで列の見出しと同じ・高さと下端と最後の項目・
    * バーで送る（余分な描き直しが無く印が 1 回で移る・今の列をもう一度押しても変わらない・焦点はバーに残る）・scrollLeft を書くと印が付いてくる・
-   * 右腕のボタンの同じ要素と印と名前と閉じた後の焦点・幅をまたぐ（広い幅で列を送っても下のバーが出ない）・開いたボタンの無い戻り。最後は あなたの番 の列に戻す
+   * ［あなたの番］の同じ要素と右腕の番の数・右腕が未読の間の［あなたの番］の未読の点（#514 の R3a）・幅をまたぐ（広い幅で列を送っても下のバーが出ない）・開いたボタンの無い戻り。最後は あなたの番 の列に戻す
    */
   async function checkFootBar(page: Page): Promise<string[]> {
     const lines: string[] = [];
     const say = (text: string): void => void lines.push(`バー: ${text}`);
     const PAGE = (id: string): string => `#c-foot-root button[data-act="page"][data-page="${id}"]`;
-    // 形（2）・数は あなたの番 だけ（入口の口の 6）
+    // 形（2）・数は あなたの番 だけ（入口の口の 6）。右腕のボタンは無い（#514 の R3a。右腕は あなたの番 の列の一番上の行）
     const form = await page.evaluate(() => {
       const root = document.querySelector("#c-foot-root");
       const bar = root === null ? null : root.firstElementChild;
@@ -2109,14 +2096,16 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         kids: root === null ? -1 : root.children.length,
         isBar: bar !== null && bar.matches('.c-bottom[data-variant="deck"]'),
         ids: root === null ? 0 : root.querySelectorAll("[id]").length,
-        texts: buttons.map((b) => (b.querySelector(".c-bottom-page-label, .c-bottom-hand-label")?.textContent ?? "").trim()),
+        acts: [...document.querySelectorAll("#v3-foot button")].map((b) => b.getAttribute("data-act")),
+        texts: buttons.map((b) => (b.querySelector(".c-bottom-page-label")?.textContent ?? "").trim()),
         badges: buttons.map((b) => b.querySelector(".c-badge") !== null),
       };
     });
     if (form.kids !== 1 || !form.isBar) say(`#c-foot-root の子が .c-bottom[data-variant="deck"] 1 つでない（子 ${form.kids}）`);
-    if (JSON.stringify(form.texts) !== JSON.stringify(["あなたの番", "タスク", "通知", "右腕"])) say(`下のバーが あなたの番・タスク・通知・右腕 でない（${form.texts.join("・")}）`);
+    if (JSON.stringify(form.texts) !== JSON.stringify(["あなたの番", "タスク", "通知"])) say(`下のバーが あなたの番・タスク・通知 でない（${form.texts.join("・")}）`);
+    if (JSON.stringify(form.acts) !== JSON.stringify(["page", "page", "page"])) say(`#v3-foot のボタンが data-act="page" の 3 つでない（${form.acts.join("・")}。data-act="hand" は無いはず）`);
     if (form.ids !== 0) say(`下のバーの中に id の付いた要素が ${form.ids} 個`);
-    if (form.badges.slice(1).some(Boolean)) say("タスク・通知・右腕に数の印が在る（あなたの番 だけのはず）");
+    if (form.badges.slice(1).some(Boolean)) say("タスク・通知に数の印が在る（あなたの番 だけのはず）");
     // 数は上の帯の題と同じ（入口の口の 5。スマホは列の見出しを出さず、今の列の名前と数は帯の題。番の数を作り物で替える手段が無いので、右腕を番にした前後で帯と同じかを見る）
     const counts = (): Promise<{ head: string; bar: string; title: string }> =>
       page.evaluate(() => ({
@@ -2225,10 +2214,19 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     // あなたの番 に戻す
     await page.click(PAGE("turn"));
     await settled(page);
-    // 右腕のボタン（5）: 同じ要素・番の印・名前。右腕を あなたの番 にして描き直させる
+    // ［あなたの番］（5）: 同じ要素・右腕の番の数。右腕を あなたの番 にして描き直させる（番の間は未読の点を出さない。#514 の R3a）
+    const turnPage = (): Promise<{ same: boolean; marks: number; label: string | null }> =>
+      page.evaluate(() => {
+        const b = document.querySelector('#c-foot-root button[data-page="turn"]');
+        return {
+          same: b !== null && (b as unknown as { __k?: number }).__k === 1,
+          marks: b === null ? -1 : b.querySelectorAll('.c-bottom-page-in > .c-mark[data-state="unread"]').length,
+          label: b === null ? null : b.getAttribute("aria-label"),
+        };
+      });
     await page.evaluate(() => {
-      const hand = document.querySelector('#c-foot-root [data-act="hand"]');
-      if (hand !== null) (hand as unknown as { __k: number }).__k = 1;
+      const b = document.querySelector('#c-foot-root button[data-page="turn"]');
+      if (b !== null) (b as unknown as { __k: number }).__k = 1;
     });
     let hands = true;
     await loadEdited(page, (json) => {
@@ -2238,29 +2236,47 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     });
     if (!hands) say("作り物のデータに右腕が無い");
     else {
-      const same = await page.evaluate(() => {
-        const hand = document.querySelector('#c-foot-root [data-act="hand"]');
-        return {
-          hand: hand !== null && (hand as unknown as { __k?: number }).__k === 1,
-          turn: hand !== null && hand.querySelector('[data-state="turn"]') !== null,
-          label: hand === null ? null : hand.getAttribute("aria-label"),
-        };
-      });
-      if (!same.hand) say("描き直した後の右腕のボタンが同じ要素でない");
-      if (!same.turn) say("右腕のボタンに「あなたの番」の印が無い");
-      if (same.label !== "右腕に頼む・訊く（あなたの番）") say(`右腕のボタンの名前が ${String(same.label)}`);
+      const t = await turnPage();
+      if (!t.same) say("描き直した後の［あなたの番］のボタンが同じ要素でない");
+      if (t.marks !== 0) say(`右腕が番の間に［あなたの番］に未読の点が ${t.marks} 個（0 のはず）`);
       const c1 = await counts();
       if (c1.head !== c1.bar) say(`右腕を番にした後の あなたの番 の数が 帯の題「${c1.head}」・下のバー「${c1.bar}」`);
-      // 閉じた後の焦点: 開いている間に描き直されても、閉じたら右腕のボタンへ
-      await page.click(BAR_HAND);
-      await page.waitForSelector('#v3[data-hand="open"]', { timeout: 5000 });
-      await loadEdited(page, () => undefined);
-      await page.evaluate(() => history.back());
-      await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
+      // 右腕の未読（番でない・見えていない）: ［あなたの番］に未読の点が 1 つ・名前に「未読」。行から右腕を開くと消える。
+      // 作り物のデータの右腕の最後の発言を Bot の新しい物にする（読み直しの間ずっと。開いた後の読み直しで元に戻らないように）
+      const pattern = "**/api/topics*";
+      await page.route(pattern, async (route) => {
+        const response = await route.fetch();
+        const json = (await response.json()) as TopicsJson;
+        const hand = json.rightHands[0];
+        if (hand !== undefined) {
+          hand.turn = null;
+          hand.last = { id: 2_000_000_000, at: "2026-01-01T00:00:00.000Z", kind: "agent" };
+          json.turnIds = json.turnIds.filter((id) => id !== hand.id);
+        }
+        await route.fulfill({ response, json });
+      });
+      try {
+        await page.evaluate(() => (window as unknown as { SA: { topics: { load: () => Promise<void> } } }).SA.topics.load());
+        await settled(page);
+        const u = await turnPage();
+        if (u.marks !== 1) say(`右腕が未読の間の［あなたの番］の未読の点が ${u.marks} 個（1 つのはず）`);
+        if (u.label === null || !u.label.includes("未読")) say(`右腕が未読の間の［あなたの番］の名前が ${String(u.label)}（「未読」が入るはず）`);
+        await page.click(HAND_ROW);
+        await page.waitForSelector('#v3[data-view="body"] #ed textarea', { timeout: 5000 });
+        await settled(page);
+        const o = await turnPage();
+        if (o.marks !== 0) say(`右腕を開いた後の［あなたの番］の未読の点が ${o.marks} 個（0 のはず）`);
+        if (o.label !== null && o.label.includes("未読")) say(`右腕を開いた後の［あなたの番］の名前が ${o.label}（「未読」は入らないはず）`);
+        await page.evaluate(() => history.back());
+        await page.waitForSelector('#v3[data-view="list"]', { timeout: 5000 });
+        await settled(page);
+      } finally {
+        await page.unroute(pattern);
+      }
+      await page.click(PAGE("turn"));
       await settled(page);
-      if (!(await page.evaluate(() => (document.activeElement as unknown as { __k?: number } | null)?.__k === 1))) say("右腕を閉じた後の焦点が右腕のボタンに戻らない");
     }
-    // 幅をまたぐ（6）: 800 は広い幅の流れの列で下のバーは空・帯のボタン 3 つと右腕の丸（D6）。列を横に送っても下のバーは出ない（入口の口の 3）。390 に戻すと下のバー 4 つ・帯 3 つ
+    // 幅をまたぐ（6）: 800 は広い幅の流れの列で下のバーは空・帯のボタン 3 つと右腕の丸（D6）。列を横に送っても下のバーは出ない（入口の口の 3）。390 に戻すと下のバー 3 つ・帯 3 つ
     const pagedBefore = (await seen()).paged.length;
     try {
       await page.setViewportSize({ width: 800, height: VIEWPORTS.phone.viewport.height });
@@ -2301,7 +2317,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       band: [...document.querySelectorAll<HTMLElement>("#c-band-root .c-band-ops [data-act]")].filter((el) => el.getClientRects().length > 0).map((el) => el.getAttribute("data-act")),
       current: document.querySelector('#c-foot-root [aria-current="true"]')?.getAttribute("data-page") ?? null,
     }));
-    if (narrow.foot !== 4 || JSON.stringify(narrow.band) !== JSON.stringify(["find", "start", "more"]) || narrow.current !== "turn") say(`390 に戻しても下のバー 4 つ・帯 3 つ・今の列 あなたの番 にならない（${narrow.foot}・${narrow.band.join("・")}・${String(narrow.current)}）`);
+    if (narrow.foot !== 3 || JSON.stringify(narrow.band) !== JSON.stringify(["find", "start", "more"]) || narrow.current !== "turn") say(`390 に戻しても下のバー 3 つ・帯 3 つ・今の列 あなたの番 にならない（${narrow.foot}・${narrow.band.join("・")}・${String(narrow.current)}）`);
     for (const line of bandTitleProblems(await page.evaluate(bandTitleState), "390 に戻した後の帯")) say(line);
     // 開いたボタンの無い戻り（7）: 焦点の無いまま右腕のチャンネルを開く。#514 の R2 から右腕は枠でなく全画面の会話（席）に開く（枠は閉じたまま・#v3-hand-ed は空）。
     // 戻ると列で、焦点は開いた項目の無い時の決まりの先（上の帯の［探す］。ほかの話題を同じ道で開いて閉じた時と同じ）
@@ -2334,7 +2350,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
    */
   async function checkBarDeck(page: Page, vp: Viewport, p: string): Promise<string[]> {
     const lines: string[] = [];
-    // スマホ（D2）の帯は［右腕］を出さない（口は下のバー）。広い幅も列だけの間は出さない（口は右下の丸。D6）
+    // スマホ（D2）の帯は［右腕］を出さない（右腕は あなたの番 の列の一番上の行。#514）。広い幅も列だけの間は出さない（口は右下の丸。D6）
     const phone = vp === "phone";
     const bandActs = ["find", "start", "more"];
     const form = await page.evaluate((orbSel: string) => {
@@ -2429,8 +2445,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       if (!first.loading) lines.push("バー: 最初の応答の前に一覧が読み込み中でない");
       if (first.buttons !== bandActs.length) lines.push(`バー: 最初の応答の前の帯のボタンが ${first.buttons} 個`);
       if (first.kids !== 0) lines.push(`バー: 最初の応答の前に一覧の下のバーが在る（子 ${first.kids}）`);
-      // スマホは列の下のバー 4 つが数・印なしで出ている。広い幅は無い
-      if (phone ? first.foot !== 4 || first.footMarks !== 0 : first.foot !== 0) lines.push(`バー: 最初の応答の前の列の下のバーのボタンが ${first.foot} 個・数か印が ${first.footMarks} 個`);
+      // スマホは列の下のバー 3 つ（右腕は #514 の R3a で外した）が数・印なしで出ている。広い幅は無い
+      if (phone ? first.foot !== 3 || first.footMarks !== 0 : first.foot !== 0) lines.push(`バー: 最初の応答の前の列の下のバーのボタンが ${first.foot} 個・数か印が ${first.footMarks} 個`);
     } finally {
       release();
       await wait(100);
@@ -2638,7 +2654,6 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     });
   const TOP_MENU = '#c-top-root [data-act="menu"] button';
   const TOP_BACK = '#c-top-root [data-act="back"] button';
-  const TOP_HAND = '#c-top-root button[data-act="hand"]';
   /** 右腕の見出しの［畳む］（入口 c-app.js の HandHead） */
   const HAND_CLOSE = '#c-hand-root [data-act="close"] button';
   const TOP_PLACE = "#c-top-root button.c-top-place";
@@ -2717,26 +2732,11 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
   const LEAD_REF_TITLES = ["記事の下書き", "ファームウェアの更新手順を README に書く。古い手順は消して、写真も撮り直す前提で"];
 
   /**
-   * 段 c: 開いた右腕の中が部品（見出し・会話・札・入力欄）で描かれている。phone ならスマホで下のバーから開いた後（畳んで開き直し、焦点が入力欄に在るかも見る）。
+   * 段 c: 開いた右腕の中が部品（見出し・会話・札・入力欄）で描かれている（広い幅だけ。スマホで枠を開く口は #514 の R3a で無くなった。開き直した直後の焦点は段 c の丸の 2 回目で見る）。
    * 絵を撮った後に呼ぶ。まとめの知らせの札の［開く］を押して右腕を開き直した後、最後に返事の札の［開く］を押すので、呼んだ後は列 2 にその話題が開いている。足りない物の文を返す
    */
-  async function handPartsLines(page: Page, vp: Viewport, phone: boolean): Promise<string[]> {
+  async function handPartsLines(page: Page, vp: Viewport): Promise<string[]> {
     const lines: string[] = [];
-    // 6. スマホで下のバーから開いた直後の焦点。初めて開いたときは読み込み中で入力欄が無いので、読み込んだ後に畳んで開き直してから見る
-    if (phone) {
-      await page.click(HAND_CLOSE);
-      await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
-      await settled(page);
-      await page.click(BAR_HAND);
-      await settled(page);
-      if (!(await activeIs(page, "#v3-hand-ed textarea.c-composer-input"))) {
-        const at = await page.evaluate(() => {
-          const a = document.activeElement;
-          return a === null ? "null" : `${a.tagName.toLowerCase()}.${a.classList[0] ?? ""}`;
-        });
-        lines.push(`右腕: 読み込んだ後に下のバーから開き直した直後の焦点が入力欄に無い（${at}）`);
-      }
-    }
     lines.push(
       ...(await page.evaluate((want: string[]) => {
         const out: string[] = [];
@@ -2838,18 +2838,17 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       await settled(page);
       const now = await page.evaluate(() => (document.querySelector("#c-top-root .c-top-title")?.textContent ?? "").trim());
       if (now !== leadRef) lines.push(`右腕: まとめの知らせの札の［開く］の後の列 2 の題が「${now}」（「${leadRef}」のはず）`);
-      if ((vp === "phone" || (await deckOn(page))) && (await page.getAttribute("#v3", "data-hand")) !== "closed") lines.push("右腕: まとめの知らせの札の［開く］の後も右腕が開いている");
+      if ((await deckOn(page)) && (await page.getAttribute("#v3", "data-hand")) !== "closed") lines.push("右腕: まとめの知らせの札の［開く］の後も右腕が開いている");
       // 段 c の初めと同じ開き方で開き直す
       await load(page, "/");
-      if (phone) await page.click(BAR_HAND);
-      else {
+      {
         const show = await handShow(page);
         if ((await page.getAttribute(show, "aria-expanded")) !== "true") await page.click(show);
       }
       await page.waitForSelector("#v3-hand-ed .c-msg + .c-refs .c-ref", { timeout: 5000 }).catch(() => undefined);
       await settled(page);
     } else lines.push("右腕: まとめの知らせの札が無い（［開く］を押せない）");
-    // 8. 返事の札の［開く］で、列 2 にその話題が開く（スマホは右腕が閉じる）
+    // 8. 返事の札の［開く］で、列 2 にその話題が開く
     const ref = await page.evaluate(() => (document.querySelector("#v3-hand-ed .c-msg + .c-refs .c-ref .c-ref-title")?.textContent ?? "").trim());
     if (ref !== "") {
       await page.locator("#v3-hand-ed .c-msg + .c-refs .c-ref > button.c-btn").first().click();
@@ -2857,7 +2856,6 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       await settled(page);
       const now = await page.evaluate(() => (document.querySelector("#c-top-root .c-top-title")?.textContent ?? "").trim());
       if (now !== ref) lines.push(`右腕: 札の［開く］の後の列 2 の題が「${now}」（「${ref}」のはず）`);
-      if (vp === "phone" && (await page.getAttribute("#v3", "data-hand")) !== "closed") lines.push("右腕: スマホで札の［開く］の後も右腕が開いている");
     } else lines.push("右腕: 返事の札が無い（まとめの知らせの札の後に開き直した右腕で［開く］を押せない）");
     return lines;
   }
@@ -3096,26 +3094,14 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     await shot(page, `${p}-b-top-place`);
     await escSheet(page);
     if (!(await activeIs(page, vp === "pc" ? TOP_PLACE : TOP_MENU))) lines.push(`本番の見出し: 場所の板を閉じた後の焦点が${vp === "pc" ? "場所のボタン" : "「…」"}に無い`);
-    // 右腕（aria-controls の先・見出しの h2・閉じた後の焦点。タブレットは重ねて開いている間も compact のまま）
+    // 右腕（aria-controls の先・見出しの h2・閉じた後の焦点。タブレットは重ねて開いている間も compact のまま）。
+    // スマホの会話の見出しと下のバーには［右腕］が無い（#514 の R3a。右腕は あなたの番 の列の一番上の行から全画面の会話に開く。a-deck-hand の段）
     if (phone) {
-      const controls = await page.evaluate(() => {
-        const top = document.querySelector('#c-top-root button[data-act="hand"]');
-        const bottom = document.querySelector('#c-foot-root button[data-act="hand"]');
-        const a = top === null ? null : top.getAttribute("aria-controls");
-        const b = bottom === null ? null : bottom.getAttribute("aria-controls");
-        return { a, b, exists: a !== null && document.getElementById(a) !== null };
-      });
-      if (controls.a === null || controls.a !== controls.b || !controls.exists) lines.push(`本番の見出し: 右腕のボタンの aria-controls が合わない（見出し ${String(controls.a)}・下のバー ${String(controls.b)}・先 ${controls.exists}）`);
-      await page.click(TOP_HAND);
-      await page.waitForSelector('#v3[data-hand="open"]', { timeout: 5000 });
-      await settled(page);
-      const width = await page.evaluate((id: string | null) => (id === null ? 0 : (document.getElementById(id)?.getBoundingClientRect().width ?? 0)), controls.a);
-      if (!(width > 0)) lines.push("本番の見出し: aria-controls の先が開いた右腕の入れ物でない（幅 0）");
-      lines.push(...(await checkHandHeading(page, "右腕")), ...(await checkH1(page, "右腕")));
-      await page.click(HAND_CLOSE);
-      await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
-      await settled(page);
-      if (!(await activeIs(page, TOP_HAND))) lines.push("本番の見出し: 右腕を畳んだ後の焦点が見出しの [右腕] に無い");
+      const hands = await page.evaluate(() => ({
+        top: document.querySelectorAll('#c-top-root [data-act="hand"]').length,
+        foot: document.querySelectorAll('#v3-foot [data-act="hand"]').length,
+      }));
+      if (hands.top !== 0 || hands.foot !== 0) lines.push(`本番の見出し: スマホの会話の見出しに data-act="hand" が ${hands.top} 個・下のバーに ${hands.foot} 個（どちらも 0 のはず）`);
     } else {
       const showSel = await handShow(page);
       const show = await page.evaluate((sel: string) => {
@@ -5533,8 +5519,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           await page.waitForSelector("#v3[data-deck] #c-deck-root .c-deck .c-col", { timeout: 5000 });
           await settled(page);
           const problems: string[] = [...(await deckLines(page, vp, "列"))];
-          // スマホの列は下のバーの右腕、広い幅の列は右腕の丸（D6）が accent の塗り（1 つは数える）
-          problems.push(...(await page.evaluate(accentProblems, { label: "列", areaMax: ACCENT_AREA_MAX, bigMax: ACCENT_BIG_MAX, min: 1 })));
+          // 広い幅の列は右腕の丸（D6）が accent の塗り（1 つは数える）。スマホの列に決まった accent の塗りは無い（下のバーの右腕は #514 の R3a で外した）ので数を求めない
+          problems.push(...(await page.evaluate(accentProblems, { label: "列", areaMax: ACCENT_AREA_MAX, bigMax: ACCENT_BIG_MAX, min: vp === "phone" ? 0 : 1 })));
           // スマホの帯の題は今の列（あなたの番）の名前と数で、帯のボタンに重ならない
           if (vp === "phone") problems.push(...bandTitleProblems(await page.evaluate(bandTitleState), `スマホの帯（${theme}）`).map((l) => `流れの列: ${l}`));
           // あなたの番の列の待機の節（#505）
@@ -6362,12 +6348,13 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           } finally {
             await page.emulateMedia({ reducedMotion: null });
           }
-          // 右腕の枠と幕が出るときの動き（D6 の PR-4。同じ組）: 読み込み（右腕の hash）で開いた枠は動かない。最初の操作の後に口（PC は丸・スマホは下のバーの右腕）を押した直後、
+          // 右腕の枠と幕が出るときの動き（D6 の PR-4。同じ組）: 読み込み（右腕の hash）で開いた枠は動かない。最初の操作の後に口（PC の丸）を押した直後、
           // 枠（#v3-hand）は opacity と transform・幕（#v3-hand-backdrop）は opacity だけで、長さは席と同じ。丸は動かず、押した直後も終わった後も画面が横にずれない・送りの棒が出ない。
-          // 終わった後は不透明・ずれなしで PR-2 の形。Esc で閉じるのはすぐ。動きを減らす設定では動かない。終わりは枠を閉じた列だけの画面（後ろの段は読み直す）
+          // 終わった後は不透明・ずれなしで PR-2 の形。Esc で閉じるのはすぐ。動きを減らす設定では動かない。終わりは枠を閉じた列だけの画面（後ろの段は読み直す）。
+          // スマホは枠を開く口が無い（#514 の R3a）ので、読み込みの所だけ見る（待つ物は あなたの番 の列の右腕の行）
           {
             const sayHand = (text: string): void => void problems.push(`右腕の枠の動き: ${text}`);
-            const HAND_OPEN = vp === "phone" ? BAR_HAND : ORB;
+            const HAND_OPEN = vp === "phone" ? HAND_ROW : ORB;
             type HandStart = { moves: string | null; hand: string | null; frame: string[]; frameDur: number[]; frameEase: string[]; back: string[]; backDur: number[]; backEase: string[]; orb: number; shift: ShiftState; ease: string; from: { opacity: string; transform: string; backOpacity: string } };
             type ShiftState = { rootLeft: number; bodyLeft: number; v3Left: number; rootTop: number; bodyTop: number; v3Top: number; innerW: number; clientW: number; scrollW: number; innerH: number; clientH: number; scrollH: number };
             /** 画面が横にも縦にもずれていないか（ページ・body・#v3 の scrollLeft・scrollTop が 0、送りの棒が出ていない（innerWidth = clientWidth・innerHeight = clientHeight）。after では はみ出しも残らない） */
@@ -6382,8 +6369,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
                 const v3 = document.querySelector("#v3");
                 return { rootLeft: root.scrollLeft, bodyLeft: document.body.scrollLeft, v3Left: v3?.scrollLeft ?? -1, rootTop: root.scrollTop, bodyTop: document.body.scrollTop, v3Top: v3?.scrollTop ?? -1, innerW: window.innerWidth, clientW: root.clientWidth, scrollW: root.scrollWidth, innerH: window.innerHeight, clientH: root.clientHeight, scrollH: root.scrollHeight };
               });
-            /** 出始めの枠のずれ（広い幅は右から・スマホは下から --c-deck-seat-in） */
-            const FROM = vp === "phone" ? `matrix(1, 0, 0, 1, 0, ${seatIn})` : `matrix(1, 0, 0, 1, ${seatIn}, 0)`;
+            /** 出始めの枠のずれ（広い幅は右から --c-deck-seat-in） */
+            const FROM = `matrix(1, 0, 0, 1, ${seatIn}, 0)`;
             /** 口を押し、同じ処理の中で枠・幕・丸の動きと横のずれを読む（止めない） */
             const pressHand = (): Promise<HandStart | null> =>
               page.evaluate((sel: string) => {
@@ -6440,111 +6427,99 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
               };
             });
             if (loaded.hand !== "closed" || loaded.moves !== null || loaded.running !== 0 || loaded.duration !== "0s") sayHand(`読み込みで右腕を開いた所が ${JSON.stringify(loaded)}（枠は closed・印なし・動き 0・席の transition-duration 0s のはず）`);
-            // 最初の操作の後に口を押す
-            await load(page, "/");
-            await page.waitForSelector(HAND_OPEN, { timeout: 5000 });
-            await settled(page);
-            await pressBlank();
-            const started = await pressHand();
-            if (started === null) throw new Error("右腕の口か #v3-hand・#v3-hand-backdrop が無い");
-            if (started.moves !== "on" || started.hand !== "open") sayHand(`押した直後の data-moves・data-hand が ${String(started.moves)}・${String(started.hand)}（on・open のはず）`);
-            if (started.frame.length === 0) throw new Error("右腕の枠の動きが 0 個");
-            if (JSON.stringify(started.frame) !== JSON.stringify(["opacity", "transform"])) sayHand(`枠で動いている物が ${started.frame.join("・")}（opacity・transform のはず）`);
-            if (JSON.stringify(started.back) !== JSON.stringify(["opacity"])) sayHand(`幕で動いている物が ${started.back.join("・") || "無し"}（opacity だけのはず）`);
-            if ([...started.frameDur, ...started.backDur].some((d) => d !== want)) sayHand(`長さが 枠 ${started.frameDur.join("・")}・幕 ${started.backDur.join("・")}（${want} のはず）`);
-            if (tight(started.ease) === "" || [...started.frameEase, ...started.backEase].some((e) => tight(e) !== tight(started.ease))) sayHand(`曲線が ${[...started.frameEase, ...started.backEase].join("・")}（--ease-out の ${started.ease.trim()} のはず）`);
-            if (started.orb !== 0) sayHand(`開く間の丸の動きが ${started.orb} 個（0 のはず）`);
-            // 出始めの向きと量（広い幅は右へ・スマホは下へ --c-deck-seat-in、透明。幕は透明）
-            if (started.from.opacity !== "0" || started.from.transform !== FROM || started.from.backOpacity !== "0") sayHand(`出始めの枠・幕が ${JSON.stringify(started.from)}（透明・${FROM}・幕も透明のはず）`);
-            for (const line of shiftLines(started.shift, "押した直後", false)) sayHand(line);
-            await settled(page);
-            const end = await page.evaluate(() => {
-              const hand = document.querySelector<HTMLElement>("#v3-hand");
-              if (hand === null) return null;
-              const cs = getComputedStyle(hand);
-              return { opacity: cs.opacity, transform: cs.transform, running: hand.getAnimations().length, orb: document.querySelector<HTMLElement>("#v3-orb")?.getAnimations({ subtree: true }).length ?? 0 };
-            });
-            if (end === null) throw new Error("#v3-hand が無い");
-            if (end.opacity !== "1" || !(end.transform === "none" || end.transform === "matrix(1, 0, 0, 1, 0, 0)") || end.running !== 0) sayHand(`動きが終わった後の枠が ${JSON.stringify(end)}（不透明・transform なし・動き 0 のはず）`);
-            if (end.orb !== 0) sayHand(`開いた後の丸の動きが ${end.orb} 個（0 のはず）`);
-            for (const line of await handFrameLines(page, vp)) sayHand(line);
-            for (const line of shiftLines(await shiftNow(), "動きが終わった後", true)) sayHand(line);
-            // Esc で閉じるのはすぐ（スマホは履歴を戻して閉じるので、data-hand が closed になった所で同じ処理の中で読む）
-            await page.keyboard.press("Escape");
-            const closed = await page
-              .waitForFunction(
-                () => {
-                  if (document.querySelector('#v3[data-hand="closed"]') === null) return false;
-                  const hand = document.querySelector<HTMLElement>("#v3-hand");
-                  const back = document.querySelector<HTMLElement>("#v3-hand-backdrop");
-                  return {
-                    display: hand === null ? "" : getComputedStyle(hand).display,
-                    running: hand === null || back === null ? -1 : hand.getAnimations().length + back.getAnimations().length,
-                  };
-                },
-                undefined,
-                { timeout: 5000 },
-              )
-              .then((h) => h.jsonValue() as Promise<{ display: string; running: number }>, () => null);
-            if (closed === null || closed.display !== "none" || closed.running !== 0) sayHand(`Esc で閉じた直後が ${JSON.stringify(closed)}（closed・display none・動き 0 のはず）`);
-            await settled(page);
-            // 入力欄でなく［畳む］に焦点が行く道: 動きの間、［畳む］は画面の外へはみ出しているが、焦点で画面を送らない。
-            // #514 の R2 から右腕のタブ（あなたの番 の右腕の行・「探す」の行・hash）は席に開くので、スマホは話題を開いた見出しの［右腕］（R3a まで残る）で見る。
-            // 広い幅にこの道は無いので、右腕のタブを開くと枠は開かず席に開き、画面がずれない事を見る
-            const measureOpen = (how: { tab: string } | { button: string }) =>
-              page.evaluate((h: { tab: string } | { button: string }) => {
-                if ("tab" in h) (window as unknown as { SA: { app: { open: (id: string) => void } } }).SA.app.open(h.tab);
-                else document.querySelector<HTMLElement>(h.button)?.click();
-                const hand = document.querySelector<HTMLElement>("#v3-hand");
-                const root = document.documentElement;
-                const v3 = document.querySelector("#v3");
-                const active = document.activeElement;
-                return {
-                  hand: document.querySelector("#v3")?.getAttribute("data-hand") ?? null,
-                  view: document.querySelector("#v3")?.getAttribute("data-view") ?? null,
-                  running: hand === null ? 0 : hand.getAnimations().length,
-                  close: active !== null && active.closest('#v3-hand [data-act="close"]') !== null,
-                  shift: { rootLeft: root.scrollLeft, bodyLeft: document.body.scrollLeft, v3Left: v3?.scrollLeft ?? -1, rootTop: root.scrollTop, bodyTop: document.body.scrollTop, v3Top: v3?.scrollTop ?? -1, innerW: window.innerWidth, clientW: root.clientWidth, scrollW: root.scrollWidth, innerH: window.innerHeight, clientH: root.clientHeight, scrollH: root.scrollHeight },
-                };
-              }, how);
-            if (vp === "phone") {
-              // 話題を全画面に開いてから、見出しの［右腕］
-              await page.evaluate((tab: string) => (window as unknown as { SA: { app: { open: (id: string) => void } } }).SA.app.open(tab), `ch:${open}`);
-              await page.waitForSelector(`#v3[data-view="body"] ${TOP_HAND}`, { timeout: 5000 });
-              await settled(page);
-              const byTop = await measureOpen({ button: TOP_HAND });
-              if (byTop.hand !== "open" || byTop.running === 0 || !byTop.close) sayHand(`見出しの［右腕］を押した直後が ${JSON.stringify({ hand: byTop.hand, running: byTop.running, close: byTop.close })}（open・動きあり・焦点は［畳む］のはず）`);
-              for (const line of shiftLines(byTop.shift, "見出しの［右腕］を押した直後（焦点は［畳む］）", false)) sayHand(line);
-              await settled(page);
-              for (const line of shiftLines(await shiftNow(), "見出しの［右腕］を押して動きが終わった後", true)) sayHand(line);
-              await page.keyboard.press("Escape");
-              await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
-              await settled(page);
-            } else {
-              const byTab = await measureOpen({ tab: handTab });
-              if (byTab.hand !== "closed" || byTab.view !== "body") sayHand(`右腕のタブを開いた直後が ${JSON.stringify({ hand: byTab.hand, view: byTab.view })}（枠は closed・席が body のはず）`);
-              for (const line of shiftLines(byTab.shift, "右腕のタブを開いた直後（席）", false)) sayHand(line);
-              await settled(page);
-              for (const line of shiftLines(await shiftNow(), "右腕のタブを開いて席の動きが終わった後", true)) sayHand(line);
-              await page.click('#c-top-root [data-act="close"] button');
-              await page.waitForSelector('#v3[data-view="list"]', { timeout: 5000 });
-              await settled(page);
-            }
-            // 動きを減らす設定: 押しても枠と幕の動きが 0 個
-            await page.emulateMedia({ reducedMotion: "reduce" });
-            try {
+            // 最初の操作の後に口を押す（広い幅だけ）
+            if (vp !== "phone") {
               await load(page, "/");
               await page.waitForSelector(HAND_OPEN, { timeout: 5000 });
               await settled(page);
               await pressBlank();
-              const reduced = await pressHand();
-              if (reduced === null || reduced.moves !== "on" || reduced.hand !== "open" || reduced.frame.length + reduced.back.length !== 0) sayHand(`動きを減らす設定で押した直後が ${JSON.stringify(reduced)}（印 on・open・動き 0 のはず）`);
+              const started = await pressHand();
+              if (started === null) throw new Error("右腕の口か #v3-hand・#v3-hand-backdrop が無い");
+              if (started.moves !== "on" || started.hand !== "open") sayHand(`押した直後の data-moves・data-hand が ${String(started.moves)}・${String(started.hand)}（on・open のはず）`);
+              if (started.frame.length === 0) throw new Error("右腕の枠の動きが 0 個");
+              if (JSON.stringify(started.frame) !== JSON.stringify(["opacity", "transform"])) sayHand(`枠で動いている物が ${started.frame.join("・")}（opacity・transform のはず）`);
+              if (JSON.stringify(started.back) !== JSON.stringify(["opacity"])) sayHand(`幕で動いている物が ${started.back.join("・") || "無し"}（opacity だけのはず）`);
+              if ([...started.frameDur, ...started.backDur].some((d) => d !== want)) sayHand(`長さが 枠 ${started.frameDur.join("・")}・幕 ${started.backDur.join("・")}（${want} のはず）`);
+              if (tight(started.ease) === "" || [...started.frameEase, ...started.backEase].some((e) => tight(e) !== tight(started.ease))) sayHand(`曲線が ${[...started.frameEase, ...started.backEase].join("・")}（--ease-out の ${started.ease.trim()} のはず）`);
+              if (started.orb !== 0) sayHand(`開く間の丸の動きが ${started.orb} 個（0 のはず）`);
+              // 出始めの向きと量（広い幅は右へ・スマホは下へ --c-deck-seat-in、透明。幕は透明）
+              if (started.from.opacity !== "0" || started.from.transform !== FROM || started.from.backOpacity !== "0") sayHand(`出始めの枠・幕が ${JSON.stringify(started.from)}（透明・${FROM}・幕も透明のはず）`);
+              for (const line of shiftLines(started.shift, "押した直後", false)) sayHand(line);
               await settled(page);
+              const end = await page.evaluate(() => {
+                const hand = document.querySelector<HTMLElement>("#v3-hand");
+                if (hand === null) return null;
+                const cs = getComputedStyle(hand);
+                return { opacity: cs.opacity, transform: cs.transform, running: hand.getAnimations().length, orb: document.querySelector<HTMLElement>("#v3-orb")?.getAnimations({ subtree: true }).length ?? 0 };
+              });
+              if (end === null) throw new Error("#v3-hand が無い");
+              if (end.opacity !== "1" || !(end.transform === "none" || end.transform === "matrix(1, 0, 0, 1, 0, 0)") || end.running !== 0) sayHand(`動きが終わった後の枠が ${JSON.stringify(end)}（不透明・transform なし・動き 0 のはず）`);
+              if (end.orb !== 0) sayHand(`開いた後の丸の動きが ${end.orb} 個（0 のはず）`);
+              for (const line of await handFrameLines(page, vp)) sayHand(line);
+              for (const line of shiftLines(await shiftNow(), "動きが終わった後", true)) sayHand(line);
+              // Esc で閉じるのはすぐ（スマホは履歴を戻して閉じるので、data-hand が closed になった所で同じ処理の中で読む）
               await page.keyboard.press("Escape");
-              await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
+              const closed = await page
+                .waitForFunction(
+                  () => {
+                    if (document.querySelector('#v3[data-hand="closed"]') === null) return false;
+                    const hand = document.querySelector<HTMLElement>("#v3-hand");
+                    const back = document.querySelector<HTMLElement>("#v3-hand-backdrop");
+                    return {
+                      display: hand === null ? "" : getComputedStyle(hand).display,
+                      running: hand === null || back === null ? -1 : hand.getAnimations().length + back.getAnimations().length,
+                    };
+                  },
+                  undefined,
+                  { timeout: 5000 },
+                )
+                .then((h) => h.jsonValue() as Promise<{ display: string; running: number }>, () => null);
+              if (closed === null || closed.display !== "none" || closed.running !== 0) sayHand(`Esc で閉じた直後が ${JSON.stringify(closed)}（closed・display none・動き 0 のはず）`);
               await settled(page);
-            } finally {
-              await page.emulateMedia({ reducedMotion: null });
+              // 入力欄でなく［畳む］に焦点が行く道は #514 の R2 から無い（右腕のタブ（あなたの番 の右腕の行・「探す」の行・hash）は席に開く。R3a まではスマホの見出しの［右腕］で見ていた）。
+              // 右腕のタブを開くと枠は開かず席に開き、画面がずれない事を見る
+              const measureOpen = (how: { tab: string } | { button: string }) =>
+                page.evaluate((h: { tab: string } | { button: string }) => {
+                  if ("tab" in h) (window as unknown as { SA: { app: { open: (id: string) => void } } }).SA.app.open(h.tab);
+                  else document.querySelector<HTMLElement>(h.button)?.click();
+                  const hand = document.querySelector<HTMLElement>("#v3-hand");
+                  const root = document.documentElement;
+                  const v3 = document.querySelector("#v3");
+                  const active = document.activeElement;
+                  return {
+                    hand: document.querySelector("#v3")?.getAttribute("data-hand") ?? null,
+                    view: document.querySelector("#v3")?.getAttribute("data-view") ?? null,
+                    running: hand === null ? 0 : hand.getAnimations().length,
+                    close: active !== null && active.closest('#v3-hand [data-act="close"]') !== null,
+                    shift: { rootLeft: root.scrollLeft, bodyLeft: document.body.scrollLeft, v3Left: v3?.scrollLeft ?? -1, rootTop: root.scrollTop, bodyTop: document.body.scrollTop, v3Top: v3?.scrollTop ?? -1, innerW: window.innerWidth, clientW: root.clientWidth, scrollW: root.scrollWidth, innerH: window.innerHeight, clientH: root.clientHeight, scrollH: root.scrollHeight },
+                  };
+                }, how);
+              {
+                const byTab = await measureOpen({ tab: handTab });
+                if (byTab.hand !== "closed" || byTab.view !== "body") sayHand(`右腕のタブを開いた直後が ${JSON.stringify({ hand: byTab.hand, view: byTab.view })}（枠は closed・席が body のはず）`);
+                for (const line of shiftLines(byTab.shift, "右腕のタブを開いた直後（席）", false)) sayHand(line);
+                await settled(page);
+                for (const line of shiftLines(await shiftNow(), "右腕のタブを開いて席の動きが終わった後", true)) sayHand(line);
+                await page.click('#c-top-root [data-act="close"] button');
+                await page.waitForSelector('#v3[data-view="list"]', { timeout: 5000 });
+                await settled(page);
+              }
+              // 動きを減らす設定: 押しても枠と幕の動きが 0 個
+              await page.emulateMedia({ reducedMotion: "reduce" });
+              try {
+                await load(page, "/");
+                await page.waitForSelector(HAND_OPEN, { timeout: 5000 });
+                await settled(page);
+                await pressBlank();
+                const reduced = await pressHand();
+                if (reduced === null || reduced.moves !== "on" || reduced.hand !== "open" || reduced.frame.length + reduced.back.length !== 0) sayHand(`動きを減らす設定で押した直後が ${JSON.stringify(reduced)}（印 on・open・動き 0 のはず）`);
+                await settled(page);
+                await page.keyboard.press("Escape");
+                await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
+                await settled(page);
+              } finally {
+                await page.emulateMedia({ reducedMotion: null });
+              }
             }
           }
           for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
@@ -6822,13 +6797,12 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         await textarea.fill("README の手順を見直して\n古い写真は消して\nテストも走らせて");
         await shot(page, `${p}-d-composer-3lines`);
       });
+      // 右腕の枠（広い幅だけ。スマホで枠を開く口は #514 の R3a で無くなったので、スマホの c-hand-over は撮らない）
       const handName = `${p}-c-hand-over`;
-      await step(`${p} c`, vp === "phone" ? [handName] : [handName, `${p}-c-hand-with-chat`], async () => {
+      if (vp !== "phone") await step(`${p} c`, [handName, `${p}-c-hand-with-chat`], async () => {
         await load(page, "/");
         const orbLines: string[] = [];
-        if (vp === "phone") {
-          await page.click(BAR_HAND);
-        } else {
+        {
           const show = await handShow(page);
           // 広い幅の流れの列の口は右下の丸（D6）
           if ((await deckOn(page)) && show !== ORB) orbLines.push(`右腕の丸: 列だけの画面の右腕の口が ${show}（丸のはず）`);
@@ -6837,18 +6811,18 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         }
         await settled(page);
         // 丸で開いた枠の焦点は枠の中（最初に開いた枠は中身を読み込む前なので、入力欄か［畳む］。openHand の今の決まり。読み込んだ後に開いた入力欄は下の 2 回目で見る）
-        if (vp !== "phone" && (await deckOn(page)) && !(await activeIs(page, "#v3-hand *"))) orbLines.push(`右腕の丸: 丸で開いた枠の焦点が枠の中に無い（${await activeTag(page)}）`);
-        // 枠の見出しの［広げる］は広い幅の流れの列だけ（D6 の PR-6b）。スマホには無い
+        if ((await deckOn(page)) && !(await activeIs(page, "#v3-hand *"))) orbLines.push(`右腕の丸: 丸で開いた枠の焦点が枠の中に無い（${await activeTag(page)}）`);
+        // 枠の見出しの［広げる］は広い幅の流れの列だけ（D6 の PR-6b）
         {
           const seats = await page.evaluate((sel: string) => document.querySelectorAll(sel).length, HAND_SEAT);
-          const want = vp !== "phone" && (await deckOn(page)) ? 1 : 0;
+          const want = (await deckOn(page)) ? 1 : 0;
           if (seats !== want) orbLines.push(`右腕の［広げる］が ${seats} 個（${want} のはず）`);
         }
         // 流れの列の形の枠は 帯の下から・幅 420・線なし（D6 の PR-2。落ち先の形は見ない）
         if (await deckOn(page)) orbLines.push(...(await handFrameLines(page, vp)));
         await shot(page, handName);
         // 開いた右腕の中は部品（最後に札の［開く］を押す）
-        const problems = [...orbLines, ...(await handPartsLines(page, vp, vp === "phone"))];
+        const problems = [...orbLines, ...(await handPartsLines(page, vp))];
         // 右腕の中（#v3-hand-ed）の地は、流れの列の形では板（--surface。D3 の PR-1）、落ち先の形では --bg
         problems.push(
           ...(await page.evaluate(() => {
@@ -6866,7 +6840,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         );
         for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
         if (problems.length > 0) throw new Error(`右腕の段の検査で ${problems.length} 件`);
-        if (vp !== "phone") {
+        {
           await load(page, `/#/ch/${open}`);
           await page.waitForSelector('#ed .c-msg[data-who="agent"]', { timeout: 5000 });
           await settled(page);
@@ -7367,7 +7341,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
   }
 
   /**
-   * 見本の右腕の口の作業中の印（#463 の D6 の PR-5）: 丸の 2 つの顔・下のバーの 2 つ（phone・deck）・スマホの見出し・帯の作業中の見本で、
+   * 見本の右腕の口の作業中の印（#463 の D6 の PR-5）: 丸の 2 つの顔・帯の作業中の見本で（下のバーとスマホの見出しの［右腕］は #514 の R3a で無くなった）、
    * 印が 1 つ（data-state=running）・地が透明（塗らない）・輪の太さが --c-mark-ring で実線・輪の色が口ごとの決まり（accent の地の上は --primary-text、ほかは --accent）・
    * 外寸が K2 の Mark の running と同じ（同じページの静かな丸の Mark と比べる。base.css の border-box で輪は箱の内側なので --c-mark）で、隣の番の見本の点と同じ、名前が「（作業中）」で終わる事。
    * 足りない物は 1 行ずつ console.log に書き、1 つでもあれば投げて段を失敗にする
@@ -7380,9 +7354,6 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       const demos: ReadonlyArray<[string, string, string, string, string, string]> = [
         ["orb-accent-running", "button.c-orb", ".c-orb-dot", "--primary-text", HAND, "orb-accent-turn"],
         ["orb-quiet-running", "button.c-orb", ".c-mark", "--accent", HAND, "orb-quiet-turn"],
-        ["bottom-phone-running", ".c-bottom-hand", ".c-bottom-hand-mark", "--primary-text", HAND, "bottom-phone"],
-        ["bottom-deck-running", ".c-bottom-hand", ".c-bottom-hand-mark", "--primary-text", HAND, "bottom-deck"],
-        ["top-phone-running", ".c-top-hand", ".c-top-hand-mark", "--accent", HAND, "top-phone-talk"],
         ["band-running", ".c-band-hand", ".c-band-hand-mark", "--accent", "右腕（作業中）", "band"],
       ];
       const probeOf = (host: Element, css: Partial<CSSStyleDeclaration>): HTMLSpanElement => {
@@ -7462,7 +7433,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
   }
 
   /**
-   * スマホの流れの列の見本（D2）: 下のバーの deck の 3 つ（外側 390 の枠・列 3 つと右腕・今の列は 1 つ・数の Badge は番の列だけ・4 つの字が省かれない・id なし）、
+   * スマホの流れの列の見本（D2）: 下のバーの deck の 4 つ（外側 390 の枠・列 3 つ（右腕は #514 の R3a で外した）・今の列は 1 つ・数の Badge は番の列だけ・3 つの字が省かれない・id なし・
+   * 未読の点は bottom-deck-unread の あなたの番 だけに 1 つで、名前に「未読」）、
    * 帯の phone（点・探す・始める・ほかで右腕なし・「self-agent」が省かれない）、deck-paged（列 3 つが枠の幅で、1 列ずつ止まる横送り）、
    * deck-phone-ops（リマインドの操作の行が 1 行で項目の中）と当たり（PC でも 44）。
    * 足りない物は 1 行ずつ console.log に書き、1 つでもあれば投げて段を失敗にする
@@ -7473,6 +7445,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       const cut = (el: Element | null): boolean => el !== null && el.scrollWidth > el.clientWidth + 1;
       const bars: ReadonlyArray<[string, string, string]> = [
         ["bottom-deck", "turn", "12"],
+        ["bottom-deck-unread", "turn", "12"],
         ["bottom-deck-running", "turn", "12"],
         ["bottom-deck-quiet", "feed", ""],
       ];
@@ -7482,17 +7455,24 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           out.push(`${demo}: 下のバーが無い`);
           continue;
         }
-        // 外側 390 の枠（スマホの幅）の中で、4 つの字がどれも省かれない
+        // 外側 390 の枠（スマホの幅）の中で、3 つの字がどれも省かれない
         const frame = bar.closest(".c-gallery-phone")?.getBoundingClientRect().width ?? 0;
         if (Math.abs(frame - 390) > 0.5) out.push(`${demo}: 枠の幅 ${frame.toFixed(1)}（390 のはず）`);
         if (bar.getAttribute("data-variant") !== "deck") out.push(`${demo}: data-variant が ${bar.getAttribute("data-variant")}（deck のはず）`);
-        const texts = [...bar.querySelectorAll(":scope > button")].map((b) => (b.querySelector(".c-bottom-page-label, .c-bottom-hand-label")?.textContent ?? "").trim());
-        if (texts.join(",") !== "あなたの番,タスク,通知,右腕") out.push(`${demo}: ボタンの字 ${texts.join(",")}（あなたの番,タスク,通知,右腕 のはず）`);
+        const texts = [...bar.querySelectorAll(":scope > button")].map((b) => (b.querySelector(".c-bottom-page-label")?.textContent ?? "").trim());
+        if (texts.join(",") !== "あなたの番,タスク,通知") out.push(`${demo}: ボタンの字 ${texts.join(",")}（あなたの番,タスク,通知 のはず）`);
+        if (bar.querySelector('[data-act="hand"]') !== null) out.push(`${demo}: data-act="hand" が在る（#514 の R3a で外したはず）`);
+        // 未読の点（右腕の未読。#514 の R3a）: unread の見本だけ、あなたの番 の見える地の中に 1 つ・名前に「未読」
+        const marks = [...bar.querySelectorAll('.c-bottom-page-in > .c-mark[data-state="unread"]')].map((m) => m.closest("[data-page]")?.getAttribute("data-page") ?? "?");
+        const wantMarks = demo === "bottom-deck-unread" ? "turn" : "";
+        if (marks.join(",") !== wantMarks) out.push(`${demo}: 未読の点 ${marks.join(",") || "なし"}（${wantMarks || "なし"} のはず）`);
+        const turnName = bar.querySelector('[data-page="turn"]')?.getAttribute("aria-label") ?? "";
+        if (turnName.includes("未読") !== (demo === "bottom-deck-unread")) out.push(`${demo}: あなたの番 の名前が「${turnName}」`);
         const now = [...bar.querySelectorAll('[aria-current="true"]')].map((b) => b.getAttribute("data-page"));
         if (now.join(",") !== current) out.push(`${demo}: 今の列 ${now.join(",")}（${current} のはず）`);
         const badges = [...bar.querySelectorAll(".c-badge")].map((b) => `${b.closest("[data-page]")?.getAttribute("data-page") ?? "?"}:${(b.textContent ?? "").trim()}`);
         if (badges.join(",") !== (badge === "" ? "" : `turn:${badge}`)) out.push(`${demo}: 数の Badge ${badges.join(",") || "なし"}（${badge === "" ? "なし" : `turn:${badge}`} のはず）`);
-        for (const el of bar.querySelectorAll(".c-bottom-page-label, .c-bottom-hand-label")) if (cut(el)) out.push(`${demo}: 「${el.textContent}」が省かれている`);
+        for (const el of bar.querySelectorAll(".c-bottom-page-label")) if (cut(el)) out.push(`${demo}: 「${el.textContent}」が省かれている`);
         if (bar.querySelector("[id]") !== null) out.push(`${demo}: id の付いた要素が在る`);
         if (cut(bar)) out.push(`${demo}: バーが横にはみ出している（${bar.scrollWidth} > ${bar.clientWidth}）`);
       }
@@ -7598,7 +7578,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
       return out;
     });
     lines.push(
-      ...(await page.evaluate(hitProblems, { min: 44, scopes: '[data-demo="bottom-deck"], [data-demo="bottom-deck-running"], [data-demo="bottom-deck-quiet"], [data-demo="band-phone"], [data-demo="deck-paged"], [data-demo="deck-phone-ops"]', targets: "button, a[href]", toast: false })).map(
+      ...(await page.evaluate(hitProblems, { min: 44, scopes: '[data-demo="bottom-deck"], [data-demo="bottom-deck-unread"], [data-demo="bottom-deck-running"], [data-demo="bottom-deck-quiet"], [data-demo="band-phone"], [data-demo="deck-paged"], [data-demo="deck-phone-ops"]', targets: "button, a[href]", toast: false })).map(
         (line) => `スマホの流れの列: ${line}`,
       ),
     );
