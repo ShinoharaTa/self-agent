@@ -29,6 +29,17 @@
   grid-auto-columns: min(var(--c-deck-col-max), calc((100% - 2 * var(--space-2)) / 3));
 }
 
+/* 帯の中（#507。docs/plan/web-ui-pins.md §4.2）: 送るのは外の帯なので自分では送らず、幅は中身ぶん。3 列は --c-deck-col-w で並び、帯の送りは列の左端で止まる */
+.c-deck[data-strip="true"] {
+  width: max-content;
+  overflow: visible;
+  grid-auto-columns: var(--c-deck-col-w);
+}
+
+.c-deck[data-strip="true"] > .c-col {
+  scroll-snap-align: start;
+}
+
 /* スマホ（D2）: 1 列ずつ全幅で止まる横送り。指の動きはブラウザの物（送りの動きは D5）。位置は下のバーが示すので送りのバーは出さない */
 .c-deck[data-paged="true"] {
   grid-auto-columns: 100%;
@@ -351,6 +362,26 @@
 }
 
 .c-band-name[data-kind="page"] > :not(.c-band-title) {
+  flex: none;
+}
+
+/* 番の列が見えない間の「あなたの番 n」（#507）: 素のボタンの見た目を消し、字は帯の名前（.c-band-name）のまま。名前と数は横に並べ、名前は省き数は縮めない */
+.c-band-turn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--c-tap);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: var(--weight-semibold);
+  text-align: start;
+  cursor: pointer;
+}
+
+.c-band-turn > :not(.c-band-title) {
   flex: none;
 }
 

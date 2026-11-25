@@ -637,6 +637,14 @@ function find(tree: Tree | Tree[], cls: string): El[] {
 
 const textOf = (t: Tree | Tree[]): string => (Array.isArray(t) ? t.map(textOf).join("") : typeof t === "string" ? t : textOf(t.children));
 
+/** 描き出しの形（要素・属性・字。props の children（vnode の通し番号を含む）と関数は除く）。「今の描き出しと同じ」を比べる（#507） */
+const shapeOf = (t: Tree | Tree[]): unknown =>
+  Array.isArray(t)
+    ? t.map(shapeOf)
+    : typeof t === "string"
+      ? t
+      : [t.type, Object.fromEntries(Object.entries(t.props).filter(([k, v]) => k !== "children" && typeof v !== "function")), shapeOf(t.children)];
+
 /** onClick に渡す偽の event（preventDefault の回数を数える） */
 function fakeEvent(): { preventDefault: () => void; count: () => number; currentTarget: { scrollIntoView: () => void } } {
   let n = 0;
@@ -749,6 +757,18 @@ test("web components: iconButtonLabel と IconButton は名前を必須にし、
   assert.equal(calls.length, 0);
   assert.equal(e.count(), 1);
   assert.throws(() => expand(html`<${atoms.IconButton} icon="x" />`), TypeError);
+});
+
+test("web components: IconButton の pressed は true・false のときだけ aria-pressed（渡さなければ属性なしで今と同じ。#507）", () => {
+  assert.equal(one(html`<${atoms.IconButton} icon="pin" label="ピン留めを外す" pressed=${true} />`).props["aria-pressed"], "true");
+  assert.equal(one(html`<${atoms.IconButton} icon="pin" label="ピン留めする" pressed=${false} />`).props["aria-pressed"], "false");
+  for (const pressed of [undefined, null, "true", 1]) assert.equal(one(html`<${atoms.IconButton} icon="pin" label="ピン留めする" pressed=${pressed} />`).props["aria-pressed"], undefined, String(pressed));
+  // 渡さない描き出しは前と同じ（属性の鍵の値が undefined のまま）
+  const plain = one(html`<${atoms.IconButton} icon="x" label="閉じる" />`);
+  assert.ok(!("aria-pressed" in plain.props) || plain.props["aria-pressed"] === undefined);
+  // 押された形は絵の色だけ（地・線は足さない）
+  const rules = parseCss(read("c-atoms.css")).filter((r) => r.selectors.includes('.c-iconbtn[aria-pressed="true"]'));
+  assert.deepEqual(rules.map((r) => [r.at, r.body]), [[[], "color: var(--accent);"]]);
 });
 
 test("web components: badgeText と Badge（1 未満・数でない物は出さない、99+）", () => {
@@ -1688,6 +1708,7 @@ test("web components: topModel の phone・talk（戻る・右腕、場所と切
     menu: true,
     hand: { name: shell.handLabel("turn"), mark: "turn" },
     close: false,
+    pin: null,
   });
   assert.equal((shell.topModel(topProps({ variant: "tablet" })) as Obj).variant, "phone");
   assert.equal(shell.topModel(topProps({ note: "調べ物" }))?.rest, "場所: General ・ 調べ物");
@@ -1738,6 +1759,7 @@ test("web components: topModel の wide・compact（場所・切り替えは nul
     menu: true,
     hand: null,
     close: false,
+    pin: null,
   });
   assert.equal(shell.topModel({ ...props, note: null })?.rest, "場所: General");
   assert.equal(shell.topModel({ ...props, place: null })?.rest, "調べ物");
@@ -1755,10 +1777,10 @@ test("web components: topModel の wide・compact（場所・切り替えは nul
 test("web components: topModel の other（状態・補足・場所・切り替え・「…」なし。phone は戻ると右腕だけ残る）", () => {
   const props = topProps({ view: "other", title: "設定", note: "調べ物", views: { value: "talk" } });
   assert.deepEqual(shell.topModel(props), {
-    variant: "phone", view: "other", title: "設定", back: true, compact: false, status: null, rest: "", place: null, mode: null, views: null, menu: false, hand: { name: shell.handLabel("turn"), mark: "turn" }, close: false,
+    variant: "phone", view: "other", title: "設定", back: true, compact: false, status: null, rest: "", place: null, mode: null, views: null, menu: false, hand: { name: shell.handLabel("turn"), mark: "turn" }, close: false, pin: null,
   });
   assert.deepEqual(shell.topModel({ ...props, variant: "wide" }), {
-    variant: "wide", view: "other", title: "設定", back: false, compact: false, status: null, rest: "", place: null, mode: null, views: null, menu: false, hand: null, close: false,
+    variant: "wide", view: "other", title: "設定", back: false, compact: false, status: null, rest: "", place: null, mode: null, views: null, menu: false, hand: null, close: false, pin: null,
   });
 });
 
@@ -1879,6 +1901,60 @@ test("web components: TopBar の wide・compact（題・状態・補足・gap・
   assert.equal(one(html`<${shell.TopBar} ...${{ ...props, compact: false }} on=${on} />`).props["data-compact"], undefined);
   assert.equal(one(html`<${shell.TopBar} ...${topProps({ variant: "wide" })} on=${on} />`).props["data-compact"], undefined);
   assert.equal(one(html`<${shell.TopBar} ...${topProps({ compact: true })} on=${on} />`).props["data-compact"], undefined);
+});
+
+test("web components: topModel の pin は広い幅（compact も）の会話で物のときだけ { on, disabled, why }（why は押せないときだけ）。ほかは null（#507）", () => {
+  const wide = (pin: unknown, o: Obj = {}): unknown => shell.topModel(topProps({ variant: "wide", pin, ...o }))?.pin;
+  assert.deepEqual(wide({ on: false, disabled: false }), { on: false, disabled: false, why: null });
+  assert.deepEqual(wide({ on: true, disabled: false, why: "x" }), { on: true, disabled: false, why: null });
+  assert.deepEqual(wide({ on: false, disabled: true, why: "ピン留めは 4 つまで" }), { on: false, disabled: true, why: "ピン留めは 4 つまで" });
+  assert.deepEqual(wide({ on: false, disabled: true, why: "" }), { on: false, disabled: true, why: null });
+  assert.deepEqual(wide({ on: false, disabled: true }), { on: false, disabled: true, why: null });
+  // true のときだけ効く
+  assert.deepEqual(wide({ on: "true", disabled: 1 }), { on: false, disabled: false, why: null });
+  assert.deepEqual(wide({}), { on: false, disabled: false, why: null });
+  assert.deepEqual(wide({ on: true }, { compact: true }), { on: true, disabled: false, why: null });
+  // phone・view other・pin が物でない → null
+  assert.equal(shell.topModel(topProps({ pin: { on: true } }))?.pin, null);
+  assert.equal(shell.topModel(topProps({ variant: "tablet", pin: { on: true } }))?.pin, null);
+  assert.equal(wide({ on: true }, { view: "other" }), null);
+  for (const pin of [null, undefined, true, "on", 1]) assert.equal(wide(pin), null, String(pin));
+});
+
+test("web components: TopBar の pin（hand の後・× の前の data-act=pin の IconButton。aria-pressed・aria-label、押せないときは aria-disabled と title が理由で on.pin を呼ばない）。pin を渡さない描き出しは今と同じ（#507）", () => {
+  const calls: unknown[][] = [];
+  const on = { ...topRec().on, close: () => void calls.push(["close"]), pin: (o: unknown) => void calls.push(["pin", o]) };
+  const base = topProps({ variant: "wide", close: true });
+  const v = shell.TopBar({ ...base, pin: { on: false, disabled: false }, on }) as VNode;
+  assert.deepEqual(keysOf(v.props.children), ["text", "status", "place", "gap", "menu", "pin", "close"]);
+  const bar = one(v);
+  const acts = bar.children.flatMap((c) => (typeof c === "string" ? [] : [c.props["data-act"]])).filter((a) => a !== undefined);
+  assert.deepEqual(acts, ["place", "menu", "pin", "close"]);
+  const holder = bar.children.find((c) => typeof c !== "string" && c.props["data-act"] === "pin") as El;
+  assert.equal(holder.props.class, "c-top-act");
+  const btn = find(holder, "c-iconbtn")[0]!;
+  assert.deepEqual([btn.props["aria-label"], btn.props["aria-pressed"], btn.props["aria-disabled"], btn.props.title], ["ピン留めする", "false", undefined, "ピン留めする"]);
+  assert.match(String(((find(btn, "c-icon")[0] as El).children[0] as El).props.href), /\/static\/icons-app\.svg#pin$/);
+  const ev = fakeEvent();
+  (btn.props.onClick as (e: unknown) => void)(ev);
+  assert.deepEqual(calls, [["pin", ev.currentTarget]]);
+  // 留めてある: 押された形と「ピン留めを外す」
+  const onBtn = find(one(html`<${shell.TopBar} ...${base} pin=${{ on: true, disabled: false }} on=${on} />`), "c-iconbtn").find((b) => b.props["aria-label"] === "ピン留めを外す")!;
+  assert.deepEqual([onBtn.props["aria-pressed"], onBtn.props.title], ["true", "ピン留めを外す"]);
+  // 上限で押せない: aria-disabled と title が理由、押しても on.pin を呼ばない
+  calls.length = 0;
+  const offBar = one(html`<${shell.TopBar} ...${base} pin=${{ on: false, disabled: true, why: "ピン留めは 4 つまで" }} on=${on} />`);
+  const off = find(offBar.children.find((c) => typeof c !== "string" && c.props["data-act"] === "pin") as El, "c-iconbtn")[0]!;
+  assert.deepEqual([off.props["aria-label"], off.props["aria-pressed"], off.props["aria-disabled"], off.props.title], ["ピン留めする", "false", "true", "ピン留めは 4 つまで"]);
+  const oe = fakeEvent();
+  (off.props.onClick as (e: unknown) => void)(oe);
+  assert.deepEqual([calls, oe.count()], [[], 1]);
+  // pin を渡さない（・null・phone・other）描き出しは今と同じ
+  const same = (a: unknown, b: unknown): void => assert.deepEqual(shapeOf(expand(a)), shapeOf(expand(b)));
+  same(html`<${shell.TopBar} ...${base} on=${on} />`, html`<${shell.TopBar} ...${base} pin=${null} on=${on} />`);
+  assert.deepEqual(keysOf((shell.TopBar({ ...base, on }) as VNode).props.children), ["text", "status", "place", "gap", "menu", "close"]);
+  same(html`<${shell.TopBar} ...${topProps()} on=${on} />`, html`<${shell.TopBar} ...${topProps({ pin: { on: true } })} on=${on} />`);
+  same(html`<${shell.TopBar} ...${topProps({ variant: "wide", view: "other" })} on=${on} />`, html`<${shell.TopBar} ...${topProps({ variant: "wide", view: "other", pin: { on: true } })} on=${on} />`);
 });
 
 test("web components: TopBar は view が none・知らない値で null。c-shell.js（TopBar を含む）は id の見張りの対象", () => {
@@ -4330,6 +4406,8 @@ const deck = (await import(deckUrl)) as Record<string, Fn> & {
   focusAfter: (before: string[], after: string[], key: string) => string | null;
   pressableKeys: (entries: Array<{ key: string; pressable: boolean; kind?: string }>, kind?: string) => string[];
   deckFit: (width: unknown, seatOpen: boolean) => { cols: number; side: boolean; seat: number; colW: number };
+  stripFit: (width: unknown, seatOpen: boolean) => { show: boolean; seat: number; room: number; colW: number; convW: number };
+  stripSeen: (view: unknown, cols: unknown, slack?: number) => unknown[];
   itemWord: (kind: unknown, src: unknown, state: Obj) => string;
   turnItems: (state: Obj) => FlowItem[];
   runningItems: (state: Obj) => FlowItem[];
@@ -4355,7 +4433,7 @@ function flowOf(o: Obj = {}): Obj {
 }
 
 test("web components: deckFit は設計書の幅の計算（列・席・並ぶか畳むか）で、数でない幅は既定", () => {
-  assert.deepEqual({ ...deck.DECK }, { COL_MIN: 300, COL_MAX: 420, SIDE_MIN: 1340, SIDE_REST: 900, SIDE_MAX: 720, FOLD_RATE: 0.48, FOLD_MIN: 440, FOLD_MAX: 600 });
+  assert.deepEqual({ ...deck.DECK }, { COL_MIN: 300, COL_MAX: 420, SIDE_MIN: 1340, SIDE_REST: 900, SIDE_MAX: 720, FOLD_RATE: 0.48, FOLD_MIN: 440, FOLD_MAX: 600, CONV: 420, GAP: 8, LANE: 80, PIN_MAX: 4 });
   assert.ok(Object.isFrozen(deck.DECK));
   const fit = (w: number, open: boolean) => deck.deckFit(w, open);
   assert.deepEqual(fit(1440, true), { cols: 3, side: true, seat: 540, colW: 300 });
@@ -4371,6 +4449,56 @@ test("web components: deckFit は設計書の幅の計算（列・席・並ぶ�
   // 席が閉じていれば 1 列は出す
   assert.equal(fit(200, false).cols, 1);
   for (const w of [Number.NaN, 0, -5, "1440", null, undefined, Number.POSITIVE_INFINITY]) assert.deepEqual(deck.deckFit(w, true), { cols: 1, side: false, seat: 0, colW: 0 }, String(w));
+});
+
+test("web components: stripFit は帯の見える幅（幅 − 席 − 席との間 8 − 丸の通り道 80）と流れの列・会話の列の幅。席だけの幅・数でない幅は show: false（docs/plan/web-ui-pins.md §4.2。#507）", () => {
+  const table: Array<[number, boolean, boolean, number, number, number, number]> = [
+    [1440, false, true, 0, 1360, 300, 420],
+    [1440, true, true, 540, 812, 300, 420],
+    [1920, false, true, 0, 1840, 300, 420],
+    [1920, true, true, 720, 1112, 300, 420],
+    [820, false, true, 0, 740, 300, 420],
+    [820, true, true, 440, 292, 292, 292],
+    [640, false, true, 0, 560, 300, 420],
+    [640, true, false, 440, 0, 0, 0],
+  ];
+  for (const [width, open, show, seat, room, colW, convW] of table) assert.deepEqual(deck.stripFit(width, open), { show, seat, room, colW, convW }, `${width} ${open ? "開" : "閉"}`);
+  for (const w of [Number.NaN, 0, -5, "1440", null, undefined, Number.POSITIVE_INFINITY]) {
+    for (const open of [true, false]) assert.deepEqual(deck.stripFit(w, open), { show: false, seat: 0, room: 0, colW: 0, convW: 0 }, `${String(w)} ${open}`);
+  }
+  // 見える幅が 0 以下なら出さない（席が閉じていて丸の通り道より狭い）
+  assert.deepEqual(deck.stripFit(80, false), { show: false, seat: 0, room: 0, colW: 0, convW: 0 });
+  assert.deepEqual(deck.stripFit(50, false), { show: false, seat: 0, room: 0, colW: 0, convW: 0 });
+  assert.deepEqual(deck.stripFit(81, false), { show: true, seat: 0, room: 1, colW: 1, convW: 1 });
+});
+
+test("web components: stripSeen は帯の中で端まで見えている列の id（cols の順。slack は既定 1）。壊れた入力は []（#507）", () => {
+  const cols = [
+    { id: "turn", x: 0, w: 300 },
+    { id: "tasks", x: 308, w: 300 },
+    { id: "feed", x: 616, w: 300 },
+    { id: "A", x: 924, w: 420 },
+    { id: "B", x: 1352, w: 420 },
+  ];
+  assert.deepEqual(deck.stripSeen({ left: 0, width: 1360 }, cols), ["turn", "tasks", "feed", "A"]);
+  assert.deepEqual(deck.stripSeen({ left: 412, width: 1360 }, cols), ["feed", "A", "B"]);
+  assert.deepEqual(deck.stripSeen({ left: 200, width: 1360 }, cols), ["tasks", "feed", "A"]);
+  // 境い目: 1px はみ出しは入る・2px は入らない（左端も右端も）
+  const one1 = [{ id: "a", x: 99, w: 100 }];
+  assert.deepEqual(deck.stripSeen({ left: 100, width: 100 }, one1), ["a"]);
+  assert.deepEqual(deck.stripSeen({ left: 100, width: 100 }, [{ id: "a", x: 98, w: 100 }]), []);
+  assert.deepEqual(deck.stripSeen({ left: 100, width: 100 }, [{ id: "a", x: 101, w: 100 }]), ["a"]);
+  assert.deepEqual(deck.stripSeen({ left: 100, width: 100 }, [{ id: "a", x: 102, w: 100 }]), []);
+  assert.deepEqual(deck.stripSeen({ left: 100, width: 100 }, [{ id: "a", x: 102, w: 100 }], 2), ["a"]);
+  assert.deepEqual(deck.stripSeen({ left: 100, width: 100 }, one1, 0), []);
+  // 壊れた view・cols → []
+  for (const view of [null, undefined, 3, "x", {}, { left: 0 }, { width: 100 }, { left: Number.NaN, width: 100 }, { left: 0, width: Number.POSITIVE_INFINITY }, { left: "0", width: 100 }]) {
+    assert.deepEqual(deck.stripSeen(view, cols), [], JSON.stringify(view));
+  }
+  for (const bad of [null, undefined, "x", { id: "a", x: 0, w: 1 }]) assert.deepEqual(deck.stripSeen({ left: 0, width: 1360 }, bad), [], JSON.stringify(bad));
+  // x・w が有限の数でない列は捨てる（ほかは残す）
+  const mixed = [null, { id: "n", x: Number.NaN, w: 10 }, { id: "s", x: "0", w: 10 }, { id: "i", x: 0, w: Number.POSITIVE_INFINITY }, { id: "ok", x: 0, w: 10 }];
+  assert.deepEqual(deck.stripSeen({ left: 0, width: 100 }, mixed), ["ok"]);
 });
 
 test("web components: turnItems は turnIds の順に話題と右腕（題「右腕」）を引き、引けない id・番の無い物を捨て、開いている物に current", () => {
@@ -5405,6 +5533,99 @@ test("web components: DeckBand の title（phone で name が空でないとき�
     const wide = nameOf({ name: "タスク", count: 3 }, variant);
     assert.deepEqual([wide.type, wide.props["data-kind"], textOf(wide)], ["span", undefined, "self-agent"], String(variant));
   }
+});
+
+test("web components: DeckBand の turn（phone でなく count が 1 以上の数のときだけ、名前の所を data-act=turn のボタン「あなたの番」+ warning の Badge に。読み上げ「あなたの番 n 件」・押すと on.turn(opener)）。ほかは今の描き出しのまま（#507）", () => {
+  const calls: unknown[][] = [];
+  const rec = (name: string) => (o?: unknown): void => void calls.push([name, o]);
+  const on = { status: rec("status"), find: rec("find"), hand: rec("hand"), start: rec("start"), more: rec("more"), turn: rec("turn") };
+  const props = { conn: { tone: "ok", label: "見本の Bot: 接続中" }, hand: { mark: "turn", open: false }, controls: "v3-hand", on };
+  const band = one(html`<${deck.DeckBand} turn=${{ count: 2 }} ...${props} />`);
+  const names = find(band, "c-band-name");
+  assert.equal(names.length, 1);
+  const btn = names[0]!;
+  assert.deepEqual([btn.type, btn.props.class, btn.props.type, btn.props["data-act"], btn.props["aria-label"]], ["button", "c-band-name c-band-turn", "button", "turn", "あなたの番 2 件"]);
+  assert.equal(textOf(find(btn, "c-band-title")), "あなたの番");
+  assert.deepEqual(find(btn, "c-badge").map((b) => [textOf(b), b.props["data-tone"]]), [["2", "warning"]]);
+  // 帯の子の並びは今と同じ（点・名前・操作）。名前の key も同じ
+  assert.deepEqual(keysOf((deck.DeckBand({ ...props, turn: { count: 2 } }) as VNode).props.children), keysOf((deck.DeckBand(props) as VNode).props.children));
+  const ev = fakeEvent();
+  (btn.props.onClick as (e: unknown) => void)(ev);
+  assert.deepEqual(calls, [["turn", ev.currentTarget]]);
+  // 端数は切り捨て
+  assert.equal(find(one(html`<${deck.DeckBand} turn=${{ count: 3.7 }} ...${props} />`), "c-band-turn")[0]?.props["aria-label"], "あなたの番 3 件");
+  assert.equal(find(one(html`<${deck.DeckBand} turn=${{ count: 1 }} ...${props} />`), "c-band-turn")[0]?.props["aria-label"], "あなたの番 1 件");
+  // turn 無し・count が 0 や数でない・phone → 今の描き出しと同じ
+  const same = (a: unknown, b: unknown, msg: string): void => assert.deepEqual(shapeOf(expand(a)), shapeOf(expand(b)), msg);
+  const now = html`<${deck.DeckBand} ...${props} />`;
+  for (const turn of [null, undefined, {}, { count: 0 }, { count: 0.5 }, { count: -1 }, { count: "2" }, { count: Number.NaN }, 2]) {
+    same(html`<${deck.DeckBand} turn=${turn} ...${props} />`, now, JSON.stringify(turn) ?? String(turn));
+  }
+  same(html`<${deck.DeckBand} variant="phone" turn=${{ count: 2 }} ...${props} />`, html`<${deck.DeckBand} variant="phone" ...${props} />`, "phone");
+  const title = { name: "タスク", count: 3 };
+  same(html`<${deck.DeckBand} variant="phone" title=${title} turn=${{ count: 2 }} ...${props} />`, html`<${deck.DeckBand} variant="phone" title=${title} ...${props} />`, "phone title");
+  assert.equal(textOf(find(one(now), "c-band-name")), "self-agent");
+});
+
+test("web components: deckModel の seen（見えている留めた列のタブの ID）の話題の項目にも current。strip は true のときだけ鍵 strip。渡さない結果は前と同じ（#507）", () => {
+  const topics = {
+    turnIds: ["ch:1"],
+    groups: [],
+    pins: ["2", "3"],
+    topics: [
+      { id: "ch:1", title: "番", mark: "turn", turn: { kind: "permission", summary: "", since: "s" } },
+      { id: "ch:2", title: "留めた 1", mark: null, turn: null, activityAt: "2026-01-01T02:00:00Z" },
+      { id: "ch:3", title: "留めた 2", mark: "running", turn: null, activityAt: "2026-01-01T01:00:00Z" },
+      { id: "ch:4", title: "待機", mark: null, turn: null, activityAt: "2026-01-01T00:00:00Z" },
+    ],
+    rightHands: [],
+  };
+  const currentOf = (m: { columns: FlowColumn[] }): string[] => m.columns.flatMap((c) => c.sections.flatMap((x) => x.items)).filter((i) => i.current).map((i) => i.key);
+  const plain = deck.deckModel(flowOf({ topics, current: "ch:1" }));
+  assert.deepEqual(currentOf(plain), ["turn:ch:1"]);
+  // seen に在る話題にも（state.current と両方）
+  assert.deepEqual(currentOf(deck.deckModel(flowOf({ topics, current: "ch:1", seen: ["ch:2", "ch:3"] }))), ["turn:ch:1", "pin:ch:2", "pin:ch:3"]);
+  assert.deepEqual(currentOf(deck.deckModel(flowOf({ topics, current: null, seen: ["ch:3", "ch:missing"] }))), ["pin:ch:3"]);
+  // 配列の中の文字列だけ
+  assert.deepEqual(currentOf(deck.deckModel(flowOf({ topics, current: null, seen: [2, null, { id: "ch:2" }, "ch:4"] }))), ["idle:ch:4"]);
+  // seen が配列でない → 今と同じ
+  for (const seen of [undefined, null, "ch:2", { 0: "ch:2" }, 3]) assert.deepEqual(deck.deckModel(flowOf({ topics, current: "ch:1", seen })), plain, String(seen));
+  // strip は true のときだけ鍵ごと
+  const stripped = deck.deckModel(flowOf({ topics, current: "ch:1", strip: true })) as Obj;
+  assert.equal(stripped.strip, true);
+  assert.deepEqual({ ...stripped, strip: undefined }, { ...plain, strip: undefined });
+  for (const strip of [undefined, false, "true", 1, null]) {
+    const m = deck.deckModel(flowOf({ topics, current: "ch:1", strip })) as Obj;
+    assert.ok(!("strip" in m), String(strip));
+    assert.deepEqual(m, plain, String(strip));
+  }
+  // 渡さない結果は前と同じ（鍵の並びも）
+  assert.deepEqual(Object.keys(plain), ["cols", "paged", "columns"]);
+  assert.deepEqual(Object.keys(stripped), ["cols", "paged", "strip", "columns"]);
+});
+
+test("web components: Deck は model.strip が true のときだけ data-strip=\"true\"（ほかは属性なし。data-paged と同じ書き方）。c-deck.css の帯の中の規則（#507）", () => {
+  const on = { open: () => undefined, op: () => undefined, more: () => undefined };
+  const model = deck.deckModel(flowOf({}));
+  assert.equal(one(html`<${deck.Deck} model=${model} on=${on} />`).props["data-strip"], undefined);
+  assert.equal(one(html`<${deck.Deck} model=${{ ...model, strip: true }} on=${on} />`).props["data-strip"], "true");
+  assert.equal(one(html`<${deck.Deck} model=${deck.deckModel(flowOf({ strip: true }))} on=${on} />`).props["data-strip"], "true");
+  for (const strip of [false, "true", 1]) assert.equal(one(html`<${deck.Deck} model=${{ ...model, strip }} on=${on} />`).props["data-strip"], undefined, String(strip));
+  const rules = parseCss(read("c-deck.css"));
+  const body = (sel: string): string => rules.filter((r) => r.at.length === 0 && r.selectors.includes(sel)).map((r) => r.body).join(" ");
+  const strip = body('.c-deck[data-strip="true"]');
+  for (const decl of ["overflow: visible", "width: max-content", "grid-auto-columns: var(--c-deck-col-w)"]) assert.ok(strip.includes(decl), decl);
+  const col = body('.c-deck[data-strip="true"] > .c-col');
+  assert.ok(col.includes("scroll-snap-align: start"), col);
+  assert.ok(!col.includes("scroll-snap-stop"), col);
+  // data-cols の規則の後ろ（同じ詳しさの規則を上書きする）
+  const src = stripCssComments(read("c-deck.css"));
+  assert.ok(src.indexOf('.c-deck[data-strip="true"] {') > src.indexOf('.c-deck[data-cols="3"] {'));
+  for (const [name, value] of [["--c-deck-col-w", "300px"], ["--c-deck-conv-w", "420px"], ["--c-deck-lane", "80px"]] as const) assert.match(read("tokens.css"), new RegExp(`\\n {2}${name}: ${value};\\n`), name);
+  // あなたの番のボタン: 素のボタンの見た目を消し、当たりは --c-tap、地・線は付けない
+  const turn = body(".c-band-turn");
+  for (const decl of ["gap: var(--space-2)", "min-height: var(--c-tap)", "border: 0", "background: transparent", "font: inherit", "cursor: pointer"]) assert.ok(turn.includes(decl), decl);
+  assert.ok(!/outline|box-shadow|background: var/.test(turn), turn);
 });
 
 test("web components: c-deck.css のスマホの帯の題（名前と数を横に並べ、名前は省き数は縮めない）と、paged の列の見出しを出さない", () => {

@@ -7,7 +7,8 @@ import { Badge, Button, Empty, IconButton, Loading, Mark } from "./c-atoms.js";
 import { rowModel, turnWord } from "./c-list.js";
 
 /** 幅の計算の数（設計書 §3。列の 300・席の幅は溝を含む目安）。数は全部ここ */
-export const DECK = Object.freeze({ COL_MIN: 300, COL_MAX: 420, SIDE_MIN: 1340, SIDE_REST: 900, SIDE_MAX: 720, FOLD_RATE: 0.48, FOLD_MIN: 440, FOLD_MAX: 600 });
+/** 会話の列の幅 CONV・列の間 GAP・帯の右の丸の通り道 LANE・留められる数 PIN_MAX は、留めた話題の会話の列の物（docs/plan/web-ui-pins.md §4.2。#507） */
+export const DECK = Object.freeze({ COL_MIN: 300, COL_MAX: 420, SIDE_MIN: 1340, SIDE_REST: 900, SIDE_MAX: 720, FOLD_RATE: 0.48, FOLD_MIN: 440, FOLD_MAX: 600, CONV: 420, GAP: 8, LANE: 80, PIN_MAX: 4 });
 
 /**
  * width は #v3 の幅、seatOpen は席が開いているか。返す: { cols: 見える列の数 0〜3, side: 列と席が並ぶ幅か, seat: 席の幅, colW: 1 列の幅 }。
@@ -26,6 +27,32 @@ export function deckFit(width, seatOpen) {
   if (!seatOpen && cols < 1) cols = 1;
   const colW = cols === 0 ? 0 : Math.min(DECK.COL_MAX, Math.floor(room / cols));
   return { cols, side, seat, colW };
+}
+
+/**
+ * 帯（流れの列と留めた会話の列を 1 本に並べて横に送る所。#507）の幅。留めた数が 1 以上の時だけ使う。width・seatOpen は deckFit と同じ。
+ * 返す: { show: 帯を出すか, seat: 席の幅, room: 帯の見える幅（width − 席 − 席との間 − 丸の通り道）, colW: 流れの列の幅, convW: 会話の列の幅 }。
+ * 数でない・0 以下の幅、席だけの幅（deckFit の cols が 0）、見える幅が 0 の時は show: false
+ */
+export function stripFit(width, seatOpen) {
+  if (typeof width !== "number" || !Number.isFinite(width) || width <= 0) return { show: false, seat: 0, room: 0, colW: 0, convW: 0 };
+  const f = deckFit(width, seatOpen);
+  if (f.cols === 0) return { show: false, seat: f.seat, room: 0, colW: 0, convW: 0 };
+  const room = Math.max(0, width - f.seat - (f.seat > 0 ? DECK.GAP : 0) - DECK.LANE);
+  if (room === 0) return { show: false, seat: f.seat, room: 0, colW: 0, convW: 0 };
+  return { show: true, seat: f.seat, room, colW: Math.min(DECK.COL_MIN, room), convW: Math.min(DECK.CONV, room) };
+}
+
+const finite = (v) => typeof v === "number" && Number.isFinite(v);
+
+/**
+ * 帯の中で端まで見えている列の id（cols の順。#507）。view は { left, width }（帯の送りの位置と見える幅）、cols は [{ id, x, w }]（帯の中の位置と幅）。
+ * 左端 x ≥ left − slack かつ右端 x + w ≤ left + width + slack の列。view・cols が壊れていれば []、x・w が有限の数でない列は捨てる
+ */
+export function stripSeen(view, cols, slack = 1) {
+  if (view === null || typeof view !== "object" || !finite(view.left) || !finite(view.width) || !Array.isArray(cols)) return [];
+  const { left, width } = view;
+  return cols.filter((c) => c !== null && typeof c === "object" && finite(c.x) && finite(c.w) && c.x >= left - slack && c.x + c.w <= left + width + slack).map((c) => c.id);
 }
 
 const filled = (v) => typeof v === "string" && v !== "";
@@ -100,9 +127,12 @@ function flowItem(state, o) {
     href: target === null && filled(o.href) ? o.href : null,
     ops: state.ops === true && Array.isArray(o.ops) ? o.ops : [],
     opsRow: o.opsRow === true,
-    current: target !== null && state.current === target,
+    current: target !== null && (state.current === target || seenIds(state).includes(target)),
   };
 }
+
+/** 見えている留めた列の話題（タブの ID。ch:<id> の形）。state.seen が配列ならその中の文字列だけ、でなければ空（#507） */
+const seenIds = (state) => (Array.isArray(state.seen) ? state.seen.filter((id) => typeof id === "string") : []);
 
 const topicsOf = (state) => (state.topics && Array.isArray(state.topics.topics) ? state.topics.topics : []);
 /** 留めた話題の channelId（留めた順。ch: は付かない。文字列でない物と重なりは捨てる（最初の出現の順）。#507） */
@@ -417,7 +447,8 @@ export function focusAfter(before, after, key) {
 /**
  * 3 つの列のモデル。cols は見える列の数（0〜3。既定 3）。paged（スマホの 1 列ずつの横送り。D2）は true のときだけ。空の節は出さない。
  * あなたの番の列の節は 番・動いている・待機 の順。待機は IDLE_MAX 件までで、残りがあれば more: { count, label }（列の数は番だけ。#505）。
- * 番の次に留めた話題の節「ピン留め」（pinItems。留めた物が無ければ出ないので、pins の無い state の結果は前と同じ。#507）
+ * 番の次に留めた話題の節「ピン留め」（pinItems。留めた物が無ければ出ないので、pins の無い state の結果は前と同じ。#507）。
+ * strip（帯の中の流れの列）は true のときだけ鍵 strip を足し、seen（見えている留めた列のタブの ID）の話題の項目にも current を付ける（#507）
  */
 export function deckModel(state) {
   const cols = typeof state.cols === "number" && Number.isFinite(state.cols) ? Math.max(0, Math.min(3, Math.floor(state.cols))) : 3;
@@ -429,6 +460,8 @@ export function deckModel(state) {
   return {
     cols,
     paged: state.paged === true,
+    // 帯（#507）の中の流れの列か。true の時だけ鍵ごと足す（渡さない今の呼び出しの結果は前と同じ）
+    ...(state.strip === true ? { strip: true } : {}),
     columns: [
       {
         id: "turn",
@@ -470,9 +503,9 @@ export function deckModel(state) {
 
 // ===== 部品 =====
 
-/** 3 つの列（見えない列も描き、横に送る。paged は 1 列ずつ止まる）。on: { open(item, key), op(item, opId), more(colId) } */
+/** 3 つの列（見えない列も描き、横に送る。paged は 1 列ずつ止まる。strip は帯の中で自分では送らない。#507）。on: { open(item, key), op(item, opId), more(colId) } */
 export function Deck({ model, on }) {
-  return html`<div class="c-deck" data-cols=${String(model.cols)} data-paged=${model.paged === true ? "true" : undefined}>
+  return html`<div class="c-deck" data-cols=${String(model.cols)} data-paged=${model.paged === true ? "true" : undefined} data-strip=${model.strip === true ? "true" : undefined}>
     ${model.columns.map((col) => html`<${Column} key=${col.id} col=${col} on=${on} />`)}
   </div>`;
 }
@@ -576,12 +609,14 @@ function bandHandName(mark) {
  * 上の帯。conn は { tone: "ok"|"bad", label } か null（状態をまだ読めていない）、hand は { mark, open } か null、controls は右腕のボタンの aria-controls。
  * variant が phone（スマホ。D2）なら［右腕］を出さず（下のバーの物）、［始める］は字のないボタン。ほかは今の形。hand が無ければ［右腕］を出さない（広い幅の口は右下の丸。D6）。
  * title は { name, count: number|null, tone: "warning"|undefined } か null（今いる列）。phone で name が空でないときだけ「self-agent」の代わりに列の名前と数を出す（列の見出しは出さない）。
- * on: { status(), find(opener), hand(opener), start(opener), more(opener) }
+ * turn は { count } か null（番の列が見えていない間の あなたの番 の数。#507）。phone でなく count が 1 以上の数のときだけ「self-agent」の代わりにボタン「あなたの番」と数。
+ * on: { status(), find(opener), hand(opener), start(opener), more(opener), turn(opener) }
  */
-export function DeckBand({ variant, conn, hand, controls, title, on }) {
+export function DeckBand({ variant, conn, hand, controls, title, turn, on }) {
   const phone = variant === "phone";
   const page = phone && title && filled(title.name) ? title : null;
   const count = page ? countLabel(page.name, page.count) : null;
+  const turns = !phone && turn !== null && typeof turn === "object" && typeof turn.count === "number" && turn.count >= 1 ? Math.floor(turn.count) : 0;
   const mark = hand ? bandMark(hand.mark) : null;
   return html`<header class="c-band">
     ${conn
@@ -598,7 +633,12 @@ export function DeckBand({ variant, conn, hand, controls, title, on }) {
               : html`<span class="c-band-count">${page.count}</span>`
             : null}
         </h2>`
-      : html`<span class="c-band-name" key="name">self-agent</span>`}
+      : turns > 0
+        ? html`<button class="c-band-name c-band-turn" key="name" type="button" data-act="turn" aria-label=${"あなたの番 " + turns + " 件"} onClick=${(event) => on.turn(event.currentTarget)}>
+            <span class="c-band-title">あなたの番</span>
+            <${Badge} count=${turns} tone="warning" />
+          </button>`
+        : html`<span class="c-band-name" key="name">self-agent</span>`}
     <span class="c-band-ops" key="ops">
       <span class="c-band-act" data-act="find"><${Button} kind="ghost" size="sm" icon="search" label="探す" onPress=${(event) => on.find(event.currentTarget)} /></span>
       ${phone || !hand
