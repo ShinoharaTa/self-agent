@@ -2920,6 +2920,10 @@ type Topics = {
   pins: () => string[];
   pinMax: () => number;
   setPins: (res: unknown) => void;
+  hand: () => { id: string } | null;
+  handPinnable: () => boolean;
+  handPinned: () => boolean;
+  pinColumns: () => string[];
 };
 type HandFrame = {
   title: string;
@@ -9983,7 +9987,7 @@ test("web static: 広い幅で head.menu も取り込みも無い話題でも、
   assert.equal(zero.lastTop().menu, false);
 });
 
-test("web static: 席の右腕の「…」の板にはピン留めの行が出ない（#507。右腕を留める画面は #514 の R6）", async () => {
+test("web static: 応答に handPins が無い（R5 より前のサーバー）間は、席の右腕の「…」の板にピン留めの行が出ない（#507。右腕を留める画面は #514 の R6）", async () => {
   const h = await loadHand({}, [v3Topic("ch:11")], { pins: [], pinMax: 4 });
   h.chatHeads["900"] = { title: "inbox", status: null, note: null, menu: [{ icon: "rotate-ccw", label: "会話を新しくする", run: () => undefined }] };
   h.app.open("ch:900");
@@ -13191,4 +13195,287 @@ test("web static: 上の帯の「あなたの番 n」（P5）: fitDeck の終わ
   assert.equal(p.nodes.v3.getAttribute("data-view"), "list");
   assert.equal(bandOf(p).scrollLeft, 332);
   assert.equal(lastBand(p).turnAway, true);
+});
+
+// ===== 右腕を留める（#514 の R6。応答の handPins・右腕は上限の外・会話の列の先頭） =====
+/** 留めた話題の列の殻に、右腕の handPins（null なら応答に足さない = 古いサーバー）と 5 つの話題を足して読ませる。state を書き換えると次の読み直しから効く */
+async function loadHandPins(opts: Parameters<typeof loadShell>[0] = {}, pins: string[] = [], handPins: string[] | null = [], pinMax = 4) {
+  const h = loadShell({
+    deck: true,
+    pins: true,
+    width: 1440,
+    handComposer: true,
+    composer: (root: DomNode) => {
+      root.focus();
+      return true;
+    },
+    ...opts,
+  });
+  await h.flush();
+  const topics = [1, 2, 3, 4, 5].map((n) => v3Topic("ch:" + n, { title: "題" + n }));
+  const state: Record<string, unknown> = { rightHands: [v3Hand()], pins, pinMax, ...(handPins === null ? {} : { handPins }) };
+  h.api.reply = () => Promise.resolve(v3Result(topics, { ...state }));
+  await h.topics.load();
+  h.chatHeads["900"] = { title: "inbox", status: null, note: null, menu: [{ icon: "rotate-ccw", label: "会話を新しくする", run: () => undefined }] };
+  return { h, state };
+}
+/** 開いている物の「…」の板の行（板は閉じる） */
+const menuRows = (h: PinShell) => {
+  h.lastTop().on.menu(h.nodes.topButtons.menu);
+  const rows = sheetRows(h as unknown as PlaceShell);
+  const title = h.nodes.sheet.getAttribute("aria-label");
+  h.nodes.sheet.removeAttribute("open");
+  return { title, rows };
+};
+
+test("web static: 右腕のピン留めの口（R6）: SA.topics.hand は rightHands[0]、handPinnable は handPins が配列で pinMax が 1 以上の時だけ、handPinned は handPins に右腕のチャンネルが在るか（先頭でなくても）、pinColumns は留めた右腕を先頭に話題の順", async () => {
+  const cases: Array<[string[] | null, number, boolean, boolean]> = [
+    [null, 4, false, false],
+    [[], 4, true, false],
+    [["900"], 4, true, true],
+    [["5", "900"], 4, true, true],
+    [["901"], 4, true, false],
+    [["900"], 0, false, false],
+  ];
+  for (const [handPins, pinMax, pinnable, pinned] of cases) {
+    const { h } = await loadHandPins({}, ["1", "2"], handPins, pinMax);
+    const label = JSON.stringify([handPins, pinMax]);
+    assert.equal(h.topics.hand()!.id, "ch:900", label);
+    assert.deepEqual([h.topics.handPinnable(), h.topics.handPinned()], [pinnable, pinned], label);
+    assert.deepEqual([...h.topics.pinColumns()], pinned ? ["900", "1", "2"] : ["1", "2"], label);
+    // pins は話題だけのまま
+    assert.deepEqual([...h.topics.pins()], ["1", "2"], label);
+  }
+  // 右腕が無ければ null・留められない列は無い
+  const none = loadShell();
+  await none.flush();
+  none.api.reply = () => Promise.resolve(v3Result([], { pins: [], pinMax: 4, handPins: ["900"] }));
+  await none.topics.load();
+  assert.equal(none.topics.hand(), null);
+  assert.equal(none.topics.handPinned(), false);
+  assert.deepEqual([...none.topics.pinColumns()], []);
+  // setPins は handPins が配列の時だけ取り込み、無ければ今の値のまま
+  const { h } = await loadHandPins({}, [], ["900"]);
+  h.topics.setPins({ pins: ["1"], pinMax: 4 });
+  assert.deepEqual([...h.topics.pinColumns()], ["900", "1"]);
+  h.topics.setPins({ pins: ["1"], pinMax: 4, handPins: [] });
+  assert.deepEqual([...h.topics.pinColumns()], ["1"]);
+  h.topics.setPins({ pins: ["1"], pinMax: 4, handPins: "900" });
+  assert.equal(h.topics.handPinned(), false);
+});
+
+test("web static: 右腕のピン留め（R6）: 一覧を読んでいる途中に留めた右腕を、その古い応答の handPins が戻さない（次の読み直しではサーバーの値）", async () => {
+  const { h, state } = await loadHandPins({}, [], []);
+  let answer: (v: unknown) => void = () => undefined;
+  h.api.reply = () => new Promise((done) => (answer = done));
+  const reading = h.topics.load();
+  h.topics.setPins({ pins: [], pinMax: 4, handPins: ["900"] });
+  answer(v3Result([v3Topic("ch:1")], { rightHands: [v3Hand()], pins: [], pinMax: 4, handPins: [] }));
+  await reading;
+  await h.flush();
+  assert.equal(h.topics.handPinned(), true);
+  assert.deepEqual(pinCols(h), ["900"]);
+  state.handPins = [];
+  h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:1")], { ...state }));
+  await h.topics.load();
+  assert.equal(h.topics.handPinned(), false);
+  assert.deepEqual(pinCols(h), []);
+});
+
+test("web static: 右腕のピン留め（R6）: 応答に handPins が無い間は、席の右腕の見出しにピンのボタンが無く「…」の板にピンの行も無い。在れば留めていない右腕に「ピン留めする」のボタンと行（話題を 4 つ留めていても理由の行でない）", async () => {
+  const old = (await loadHandPins({}, ["1"], null)).h;
+  old.app.open("ch:900");
+  assert.equal(old.nodes.v3.getAttribute("data-view"), "body");
+  assert.equal("pin" in old.lastTop(), false);
+  assert.deepEqual(menuRows(old), { title: "右腕 の操作", rows: [{ label: "会話を新しくする", why: null, disabled: false, icon: "rotate-ccw" }] });
+  // ピン留めの口が無い（pinMax 0）サーバーも同じ
+  const zero = (await loadHandPins({}, [], [], 0)).h;
+  zero.app.open("ch:900");
+  assert.equal("pin" in zero.lastTop(), false);
+  assert.deepEqual(menuRows(zero).rows.map((r) => r.label), ["会話を新しくする"]);
+  for (const pins of [[], ["1", "2", "3", "4"]]) {
+    const { h } = await loadHandPins({}, pins, []);
+    h.app.open("ch:900");
+    assert.deepEqual(json((h.lastTop() as PinTopState).pin), { on: false }, JSON.stringify(pins));
+    assert.equal(h.lastTop().menu, true);
+    assert.deepEqual(menuRows(h).rows, [
+      { label: "ピン留めする", why: null, disabled: false, icon: "pin" },
+      { label: "会話を新しくする", why: null, disabled: false, icon: "rotate-ccw" },
+    ]);
+  }
+  // head の menu が無くても、ピンの行が在れば見出しの menu は true
+  const bare = (await loadHandPins({}, [], [])).h;
+  delete bare.chatHeads["900"];
+  bare.app.open("ch:900");
+  assert.equal(bare.lastTop().menu, true);
+  // スマホ: ボタンは無く、「…」の行は出る（列が無いので留めても見た目は変わらない）
+  const p = (await loadHandPins({ phone: true, width: 390 }, [], [])).h;
+  p.app.open("ch:900");
+  assert.equal("pin" in p.lastTop(), false);
+  assert.deepEqual(menuRows(p).rows.map((r) => r.label), ["ピン留めする", "会話を新しくする"]);
+});
+
+test("web static: 右腕のピン留め（R6）: 席の右腕のピンのボタンで留めると POST し、席を閉じて会話の列の先頭に右腕の列（右腕の会話の指定・題「右腕」）を出し、その列のピンのボタンに焦点。席の中は空で入力欄の根は 1 つ", async () => {
+  const { h } = await loadHandPins({}, ["1", "2"], []);
+  h.app.open("ch:900");
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
+  h.nodes.topButtons.menu.focus();
+  h.api.reply = () => Promise.resolve(v3Result([1, 2, 3, 4, 5].map((n) => v3Topic("ch:" + n)), { rightHands: [v3Hand()], pins: ["1", "2"], pinMax: 4, handPins: ["900"] }));
+  h.api.postReply = () => Promise.resolve({ pins: ["1", "2"], pinMax: 4, handPins: ["900"] });
+  (h.lastTop() as PinTopState).on.pin!();
+  await h.flush();
+  assert.deepEqual(json(h.api.posts.at(-1)), { path: "/api/topics/ch:900/pin", body: { on: true }, opts: { quiet: true } });
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "list");
+  assert.deepEqual([...h.topics.pinColumns()], ["900", "1", "2"]);
+  assert.deepEqual(pinCols(h), ["900", "1", "2"]);
+  assert.equal(pinCol(h, "900")!.getAttribute("aria-label"), "右腕");
+  // 先頭に差し込んだ（話題の列は作り直さない）。新しく留めた右腕の列にだけ data-new
+  assert.deepEqual(["900", "1", "2"].map((id) => pinCol(h, id)!.getAttribute("data-new")), ["true", null, null]);
+  const frame = h.handRenders.filter((r) => r.id === "900").at(-1)!.frame;
+  assert.deepEqual([frame.title, frame.placeholder, frame.head, typeof frame.replyRefs, typeof frame.noticeRefs, "outgoing" in frame], ["右腕", "右腕に頼む・訊く", false, "function", "function", false]);
+  // 話題の列は今の既定の枠のまま
+  assert.deepEqual(json(h.handRenders.filter((r) => r.id === "1").at(-1)!.frame), { head: false });
+  const st = pinHead(h, "900");
+  assert.deepEqual(json({ title: st.title, status: st.status, menu: st.menu, pin: st.pin, close: st.close }), { title: "右腕", status: null, menu: true, pin: { on: true }, close: false });
+  assert.equal(h.document.activeElement, pinButton(h, "900"));
+  assert.equal(h.nodes.ed.querySelectorAll("[data-composer]").length, 0);
+  assert.equal(h.document.body.querySelectorAll('[data-composer="900"]').length, 1);
+  assert.equal(h.location.hash, "");
+  // 右腕の列の「…」: 題「右腕」・「ピン留めを外す」と右腕の操作
+  const menu = pinCol(h, "900")!.querySelector('[data-act="menu"]')!.querySelector("button")!;
+  pinHead(h, "900").on.menu(menu);
+  assert.equal(h.nodes.sheet.getAttribute("aria-label"), "右腕 の操作");
+  assert.deepEqual(sheetRows(h as unknown as PlaceShell).map((r) => r.label), ["ピン留めを外す", "会話を新しくする"]);
+  h.nodes.sheet.removeAttribute("open");
+});
+
+test("web static: 右腕のピン留め（R6）: 右腕を留めていても話題の上限は 4 つ（話題 4 つで席のボタンは押せず理由・「…」の行も理由）。話題 3 つなら留められる。節「ピン留め」の元の pins に右腕は入らない", async () => {
+  const full = (await loadHandPins({}, ["1", "2", "3", "4"], ["900"])).h;
+  assert.deepEqual(pinCols(full), ["900", "1", "2", "3", "4"]);
+  full.app.open("ch:5");
+  assert.deepEqual(json((full.lastTop() as PinTopState).pin), { on: false, disabled: true, why: "ピン留めは 4 つまで" });
+  assert.deepEqual(menuRows(full).rows.find((r) => r.label === "ピン留めする"), { label: "ピン留めする", why: "ピン留めは 4 つまで", disabled: true, icon: "pin" });
+  assert.deepEqual([...full.topics.pins()], ["1", "2", "3", "4"]);
+  const room = (await loadHandPins({}, ["1", "2", "3"], ["900"])).h;
+  room.app.open("ch:5");
+  assert.deepEqual(json((room.lastTop() as PinTopState).pin), { on: false });
+});
+
+test("web static: 右腕のピン留め（R6）: 留めた右腕を開く（行・「探す」の板）と、帯の幅では席に開かず右腕の列へ送って入力欄に焦点。見えている右腕の列は seen に入り、流れの列に ch: 付きで渡る。帯が出ない幅（席だけの幅）・スマホは席・全画面", async () => {
+  const { h } = await loadHandPins({}, ["1", "2", "3"], ["900"]);
+  assert.deepEqual(pinCols(h), ["900", "1", "2", "3"]);
+  // 帯を送って右腕の列を隠してから開く
+  bandOf(h).scrollLeft = 1400;
+  h.nodes.deckBox.dispatch("scroll");
+  h.advance(150);
+  assert.equal(h.pins!.seen().includes("900"), false);
+  h.app.open("ch:900");
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "list");
+  assert.equal(h.location.hash, "");
+  assert.equal((h.document.activeElement as DomNode).getAttribute("data-composer"), "900");
+  assert.ok(pinCol(h, "900")!.contains(h.document.activeElement));
+  assert.ok(h.pins!.seen().includes("900"));
+  assert.ok(json((h.app as PinApp).readingChannelIds()).includes("900"));
+  // 「探す」の板から: 板を閉じて列へ
+  lastBand(h).on.find!(h.nodes.bandButtons.find);
+  h.app.open("ch:900");
+  assert.equal(h.nodes.v3.getAttribute("data-find"), "closed");
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "list");
+  // 席だけの幅（700 で席を開いて帯が隠れた）: 席に開く
+  const s = (await loadHandPins({ width: 700 }, ["1"], ["900"])).h;
+  s.app.open("ch:3");
+  assert.equal(s.nodes.v3.getAttribute("data-pins"), null);
+  s.app.open("ch:900");
+  assert.equal(s.nodes.v3.getAttribute("data-view"), "body");
+  assert.equal(s.location.hash, "#/ch/900");
+  assert.equal(s.lastTop().title, "右腕");
+  // スマホ: 全画面
+  const p = (await loadHandPins({ phone: true, width: 390 }, ["1"], ["900"])).h;
+  p.app.open("ch:900");
+  assert.equal(p.nodes.v3.getAttribute("data-view"), "body");
+  assert.equal(p.lastTop().title, "右腕");
+  assert.equal(p.nodes.pinsBox.children.length, 0);
+});
+
+test("web static: 右腕のピン留め（R6）: 席だけの幅・スマホで席に開いた留めた右腕は、帯が出る幅に変わると席を閉じて列にする（列と席の両方に右腕の会話が在る状態にならない）", async () => {
+  // スマホで全画面に開いた右腕を、席だけの幅（700。席が開いていて帯が出ない）へ広げても席のまま
+  const s = (await loadHandPins({ phone: true, width: 390 }, ["1"], ["900"])).h;
+  s.app.open("ch:900");
+  s.setPhone(false, 700);
+  assert.equal(s.nodes.v3.getAttribute("data-view"), "body");
+  assert.equal(s.nodes.v3.getAttribute("data-pins"), null);
+  assert.equal(s.nodes.pinsBox.children.length, 0);
+  s.nodes.ed.querySelector('[data-composer="900"]')!.focus();
+  // 帯が出る幅へ: 席を閉じて列
+  s.setPhone(false, 1440);
+  assert.equal(s.nodes.v3.getAttribute("data-view"), "list");
+  assert.deepEqual(pinCols(s), ["900", "1"]);
+  assert.equal(s.nodes.ed.querySelectorAll("[data-composer]").length, 0);
+  assert.equal(s.document.body.querySelectorAll('[data-composer="900"]').length, 1);
+  assert.ok(pinCol(s, "900")!.contains(s.document.activeElement));
+  // 一覧の右腕の行の seen（席に見えている右腕）も外れる
+  assert.deepEqual(json(s.listState().seen), []);
+  const p = (await loadHandPins({ phone: true, width: 390 }, [], ["900"])).h;
+  p.app.open("ch:900");
+  p.setPhone(false, 1440);
+  assert.equal(p.nodes.v3.getAttribute("data-view"), "list");
+  assert.deepEqual(pinCols(p), ["900"]);
+  assert.equal(p.document.body.querySelectorAll('[data-composer="900"]').length, 1);
+});
+
+test("web static: 右腕のピン留め（R6）: 列の「ピン留めを外す」で右腕の列が消え（右腕はまだ在る）、席の「…」の行は「ピン留めする」に戻る。席に開いた留めた右腕の「…」は「ピン留めを外す」", async () => {
+  const { h } = await loadHandPins({}, ["1"], ["900"]);
+  const menu = pinCol(h, "900")!.querySelector('[data-act="menu"]')!.querySelector("button")!;
+  menu.focus();
+  pinHead(h, "900").on.menu(menu);
+  h.api.reply = () => Promise.resolve(v3Result([1, 2, 3, 4, 5].map((n) => v3Topic("ch:" + n)), { rightHands: [v3Hand()], pins: ["1"], pinMax: 4, handPins: [] }));
+  h.api.postReply = () => Promise.resolve({ pins: ["1"], pinMax: 4, handPins: [] });
+  pickPlace(h as unknown as PlaceShell, "ピン留めを外す");
+  menu.focus();
+  await h.flush();
+  assert.deepEqual(json(h.api.posts.at(-1)), { path: "/api/topics/ch:900/pin", body: { on: false }, opts: { quiet: true } });
+  assert.deepEqual(pinCols(h), ["1"]);
+  assert.equal(h.topics.hand()!.id, "ch:900");
+  assert.equal(h.document.activeElement, pinButton(h, "1"));
+  h.app.open("ch:900");
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
+  assert.deepEqual(menuRows(h).rows.map((r) => r.label), ["ピン留めする", "会話を新しくする"]);
+  // 席だけの幅で席に開いた留めた右腕の「…」は外す行
+  const s = (await loadHandPins({ width: 700 }, [], ["900"])).h;
+  s.app.open("ch:3");
+  s.app.open("ch:900");
+  assert.equal("pin" in s.lastTop(), false);
+  assert.deepEqual(menuRows(s).rows.map((r) => r.label), ["ピン留めを外す", "会話を新しくする"]);
+});
+
+test("web static: 右腕のピン留め（R6）: pins.js は右腕を知らない（字・判定が無い）。列の枠と見出しは shell.js の on.frame・on.top に訊き、shell.js は右腕だけ HAND_TALK と題「右腕」を答える", () => {
+  const js = read("pins.js");
+  assert.doesNotMatch(js, /"右腕"|handTab|handChannel|HAND_TALK|rightHands/);
+  assert.match(js, /hooks\.frame\(id\)/);
+  assert.match(js, /hooks\.top\(id\)/);
+  assert.match(js, /SA\.topics\.pinColumns\(\)/);
+  assert.doesNotMatch(js, /SA\.topics\.pins\(\)/);
+  const shell = read("shell.js");
+  assert.match(shell, /\n {4}frame: \(channelId\) => \(channelId === handChannelId\(\) \? HAND_TALK : null\),\n/);
+  assert.match(shell, /\n {4}top: \(channelId\) => \(channelId === handChannelId\(\) \? \{ title: HAND_TALK\.title, status: handStatus\(\) \} : null\),\n/);
+});
+
+test("web static: 右腕のピン留め（R6）: 留めた右腕の列も、返事・知らせに出た話題の札の中身が変わると描き直す（変わらなければ描き直さない）", async () => {
+  const h = loadShell({ deck: true, pins: true, width: 1440 });
+  await h.flush();
+  const topics = [v3Topic("ch:208", { title: "領収書の整理" })];
+  h.handNotices.push("終わりました: <#208>（4 分）");
+  h.api.reply = () => Promise.resolve(v3Result(topics, { rightHands: [v3Hand()], pins: [], pinMax: 4, handPins: ["900"] }));
+  await h.topics.load();
+  assert.deepEqual(pinCols(h), ["900"]);
+  const text = () => pinCol(h, "900")!.querySelector("p.fake-notice")!.textContent;
+  assert.match(text(), /「領収書の整理」/);
+  // 列を作った読み込みで札の署名を覚えるので、中身が変わらなければ描き直さない
+  const renders = h.handRenders.filter((r) => r.id === "900").length;
+  await h.topics.load();
+  assert.equal(h.handRenders.filter((r) => r.id === "900").length, renders);
+  topics[0] = v3Topic("ch:208", { title: "領収書の整理 2" });
+  await h.topics.load();
+  assert.equal(h.handRenders.filter((r) => r.id === "900").length, renders + 1);
+  assert.match(text(), /「領収書の整理 2」/);
 });

@@ -395,12 +395,17 @@
   }
 
   /**
-   * 「…」の板の「ピン留めする／ピン留めを外す」の行（#507）。ピン留めの口が在り、完了でない ch: の話題で、右腕でないときだけ。出さなければ null。
-   * 上限の時、留めていない話題の行は押せず理由の文
+   * 「…」の板の「ピン留めする／ピン留めを外す」の行（#507）。ピン留めの口が在り、完了でない ch: の話題のときだけ。出さなければ null。
+   * 上限の時、留めていない話題の行は押せず理由の文。右腕（#514 の R6）は右腕を留める口が在る時だけ出し、上限の外（理由の行は出さない）
    */
   function pinRow(t) {
+    if (t && typeof t.id === "string" && t.id === handTab()) {
+      if (!t.id.startsWith("ch:") || !SA.topics.handPinnable()) return null;
+      if (SA.topics.handPinned()) return { icon: "pin", label: "ピン留めを外す", run: () => setPin(t.id, false) };
+      return { icon: "pin", label: "ピン留めする", run: () => pinSeat(t.id), why: "" };
+    }
     const max = SA.topics.pinMax();
-    if (max <= 0 || !t || typeof t.id !== "string" || !t.id.startsWith("ch:") || t.state === "done" || t.id === handTab()) return null;
+    if (max <= 0 || !t || typeof t.id !== "string" || !t.id.startsWith("ch:") || t.state === "done") return null;
     const pins = SA.topics.pins();
     if (pins.includes(t.id.slice(3))) return { icon: "pin", label: "ピン留めを外す", run: () => setPin(t.id, false) };
     const full = pins.length >= max;
@@ -414,11 +419,13 @@
 
   /**
    * 席の見出しのピンのボタン（#507）: 帯が出る幅（640px 以上で席だけの幅でない）で、「…」の板に「ピン留めする」を出す話題（pinRow）のうち留めていない物だけ { on: false }。ほかは null。
-   * 上限の時は押せず（IconButton の aria-disabled。押しても on.pin を呼ばない）、理由の文を出す。ほかの端末と競った時はサーバーの 409 の知らせ
+   * 上限の時は押せず（IconButton の aria-disabled。押しても on.pin を呼ばない）、理由の文を出す。ほかの端末と競った時はサーバーの 409 の知らせ。
+   * 右腕（#514 の R6）は上限を見ない（留めていなければ { on: false }）
    */
   function seatPin(t) {
     if (phone() || !deckOn() || !SA.pins || typeof SA.deck.stripFit !== "function" || !t || pinRow(t) === null) return null;
-    if (SA.topics.pins().includes(t.id.slice(3)) || SA.deck.stripFit(refs.v3.clientWidth, true).show !== true) return null;
+    if (SA.topics.pinColumns().includes(t.id.slice(3)) || SA.deck.stripFit(refs.v3.clientWidth, true).show !== true) return null;
+    if (t.id === handTab()) return { on: false };
     const max = SA.topics.pinMax();
     if (SA.topics.pins().length >= max) return { on: false, disabled: true, why: pinLimitText(max) };
     return { on: false };
@@ -437,12 +444,12 @@
     writeHash();
   }
 
-  /** 最後に fitDeck が済んだ留めた話題（#507。","で繋いだ channelId。0 個は ""。fitDeck が投げたら書かず、次の refreshTabs でやり直す） */
+  /** 最後に fitDeck が済んだ会話の列（#507。pinColumns の channelId を ","で繋いだ物。0 個は ""。fitDeck が投げたら書かず、次の refreshTabs でやり直す） */
   let pinSig = "";
 
   /** 一覧を読み直した後: 留めた話題が変わったら帯の列を合わせ（#507）、帯を描き、[端末] を出せなくなって出す物が変わったら描き直す */
   function refreshTabs() {
-    const sig = SA.topics.pins().join(",");
+    const sig = SA.topics.pinColumns().join(",");
     if (sig !== pinSig) {
       fitDeck();
       pinSig = sig;
@@ -623,6 +630,12 @@
     return S.active !== null && S.active === handTab();
   }
 
+  /** 右腕が帯の会話の列に在るか（留めた右腕。#514 の R6） */
+  function handColumn() {
+    const id = handChannelId();
+    return id !== null && !!SA.pins && SA.pins.has(id);
+  }
+
   /** 右腕の会話が見えているか（席の住人が右腕で、席が隠れていない間）。見えていなければ行と下のバーに未読・作業中を出す */
   function handSeen() {
     return handSeated() && !mainHidden();
@@ -660,8 +673,10 @@
     return head ? head.menu : [];
   }
 
+  /** 席の右腕の「…」の板: ピン留めの行（右腕を留める口が在る時だけ。#514 の R6）と右腕の操作 */
   function openHandMenu(opener) {
-    const items = handMenu();
+    const pin = pinRow({ id: handTab() });
+    const items = (pin ? [pin] : []).concat(handMenu());
     if (items.length === 0) return;
     openSheet(HAND_TALK.title + " の操作", items, opener);
   }
@@ -676,24 +691,32 @@
     else if (SA.top) SA.top.focus("close");
   }
 
-  /** 席の右腕の見出しの state: 題「右腕」・状態は あなたの番 > 作業中・場所・モード・［会話］［端末］は無し・「…」は右腕の操作 */
-  function handSeatTop() {
+  /** 右腕の見出しの状態（席と会話の列で同じ）: あなたの番 > 作業中、どちらでもなければ null */
+  function handStatus() {
     const data = SA.topics.data();
     const hand = data && data.rightHands[0];
-    let status = null;
-    if (hand && hand.turn) status = { text: "あなたの番", tone: "warning" };
-    else if (SA.store.runningOf(handChannelId()) !== null) status = { text: "作業中", tone: "accent" };
+    if (hand && hand.turn) return { text: "あなたの番", tone: "warning" };
+    if (SA.store.runningOf(handChannelId()) !== null) return { text: "作業中", tone: "accent" };
+    return null;
+  }
+
+  /** 席の右腕の見出しの state: 題「右腕」・状態は あなたの番 > 作業中・場所・モード・［会話］［端末］は無し・「…」は右腕の操作とピン留めの行・ピンのボタン（#514 の R6。口が在る時だけ） */
+  function handSeatTop() {
+    const t = { id: handTab() };
+    const pin = seatPin(t);
     return {
       view: "talk",
       title: HAND_TALK.title,
-      status,
+      status: handStatus(),
       note: null,
       place: null,
       views: null,
       compact: S.topCompact,
-      menu: handMenu().length > 0,
+      menu: handMenu().length > 0 || pinRow(t) !== null,
       mode: null,
       close: deckOn() && !phone(),
+      // ピンのボタンは出す時だけ鍵を足す（出さない時の state は前と同じ）
+      ...(pin ? { pin } : {}),
       backLabel: deckFull() ? "戻る" : undefined,
       on: TOP_ON,
     };
@@ -759,6 +782,11 @@
     if (lastHandTab !== null && lastHandTab !== tab && S.active === lastHandTab) leaveHandSeat();
     lastHandTab = tab;
     if (handSeated() && (!edHand || handCardSig !== cardSig())) refresh(tab);
+    else if (handColumn() && handCardSig !== cardSig()) {
+      // 留めた右腕の列（#514 の R6）も札の中身が変わったら描き直す（refresh が列を描き直す）
+      refresh(tab);
+      handCardSig = cardSig();
+    }
     renderHandEntries();
   }
 
@@ -1634,18 +1662,30 @@
   }
 
   // ===== 留めた話題の会話の列（#507。docs/plan/web-ui-pins.md §4.1〜§4.3。状態と描き出しは pins.js） =====
-  /** pins.js に渡す押した先（1 回だけ作り、毎回同じ物を渡す）。seen は見えている列が替わった時（節「ピン留め」の行の線） */
+  /**
+   * pins.js に渡す押した先（1 回だけ作り、毎回同じ物を渡す）。seen は見えている列が替わった時（節「ピン留め」と右腕の行の線）。
+   * frame・top は列の会話の枠の指定と見出しの題・状態（右腕の列だけ HAND_TALK と題「右腕」。#514 の R6。ほかは null = pins.js の今の形）
+   */
   const PINS_ON = {
     seen: () => renderFlows(),
     menu: (channelId, opener) => openPinMenu(channelId, opener),
     pin: (channelId) => unpinColumn(channelId),
+    frame: (channelId) => (channelId === handChannelId() ? HAND_TALK : null),
+    top: (channelId) => (channelId === handChannelId() ? { title: HAND_TALK.title, status: handStatus() } : null),
   };
 
-  /** 留めた列の見出しの「…」の板: 「ピン留めを外す」と、チャンネルの操作（chat.js の head の menu。席の「…」と同じ順）。場所・許可のモードは出さない */
+  /** 留めた列の見出しの「…」の板: 「ピン留めを外す」と、チャンネルの操作（chat.js の head の menu。席の「…」と同じ順）。場所・許可のモードは出さない。右腕の列の題は「右腕」 */
   function openPinMenu(channelId, opener) {
     const head = SA.chat.head ? SA.chat.head(channelId) : null;
     const t = SA.topics.find("ch:" + channelId);
-    const title = head && typeof head.title === "string" && head.title !== "" ? head.title : t && typeof t.title === "string" && t.title !== "" ? t.title : "会話";
+    const title =
+      channelId === handChannelId()
+        ? HAND_TALK.title
+        : head && typeof head.title === "string" && head.title !== ""
+          ? head.title
+          : t && typeof t.title === "string" && t.title !== ""
+            ? t.title
+            : "会話";
     const items = [{ icon: "pin", label: "ピン留めを外す", run: () => unpinColumn(channelId) }];
     if (head) items.push(...head.menu);
     openSheet(title + " の操作", items, opener);
@@ -1699,15 +1739,15 @@
     return !!refs.v3 && refs.v3.getAttribute("data-pins") === "true";
   }
 
-  /** 留めた数が 1 以上で帯が出る幅なら c-deck.js の stripFit の結果（show が true）、ほかは { show: false }。seatOpen は席が開いているか */
+  /** 会話の列（留めた話題と留めた右腕。pinColumns）が 1 本以上で帯が出る幅なら c-deck.js の stripFit の結果（show が true）、ほかは { show: false }。seatOpen は席が開いているか */
   function pinFit(seatOpen) {
-    if (!SA.pins || !SA.deck || typeof SA.deck.stripFit !== "function" || SA.topics.pins().length === 0) return { show: false };
+    if (!SA.pins || !SA.deck || typeof SA.deck.stripFit !== "function" || SA.topics.pinColumns().length === 0) return { show: false };
     return SA.deck.stripFit(refs.v3.clientWidth, seatOpen);
   }
 
-  /** 席の住人が留めた話題（ch:）で、今の席の開閉のまま帯が出るか */
+  /** 席の住人が留めた話題か留めた右腕（ch:）で、今の席の開閉のまま帯が出るか */
   function pinnedSeat() {
-    if (!S.active || !S.active.startsWith("ch:") || !SA.pins || !SA.topics.pins().includes(S.active.slice(3))) return false;
+    if (!S.active || !S.active.startsWith("ch:") || !SA.pins || !SA.topics.pinColumns().includes(S.active.slice(3))) return false;
     return pinFit(S.view === "body").show === true;
   }
 
@@ -1716,6 +1756,8 @@
    * 席が開いていれば一覧にし、今の entry を一覧の物に置き換える（syncHand と同じ）
    */
   function leavePinnedSeat() {
+    // 席の右腕を列へ移した時は、右腕の印（見えている右腕）も描き直す（#514 の R6）
+    const hand = handSeated();
     const ed = $("ed");
     if (ed) {
       for (const [attr, part] of [
@@ -1742,6 +1784,7 @@
     }
     renderMain();
     SA.topics.render();
+    if (hand) renderHandEntries();
   }
 
   /**
