@@ -1,7 +1,7 @@
 # 右腕を一覧の一番上の行にして、ほかの話題と同じに使う 設計（#514）
 
-状態: 設計は確定（2026-11-26。オーナーの決定は §1 と §12）。今は R6 まで（行を本番に出し、右腕を席に開く。スマホの下のバーは 3 つで、会話の見出しに［右腕］は無い。広い幅の丸・枠・［広げる］・帯の［右腕］・落ち先の右腕の列も消した。帯の右の通り道 80px と番の列の末尾の丸の分の余白も外した。サーバーは右腕を上限 4 つの外で留められ、応答に `handPins` を足した（R5。§6.1）。画面でも右腕を留められ、留めた右腕は会話の列の先頭に出る（R6。§6.2）。実際の形は §5.3・§5.4・§6.2・§7・§10）。前提の #507（P0〜P5）は main に入った（2026-11-26）。
-行番号は #507 の P4 を作っている途中に読んだ物で、目安（P4 のレビューの直しと P5 でずれている）。段を始める時に読み直す。
+状態: 設計は確定（2026-11-26。オーナーの決定は §1 と §12）。R0〜R7 すべて済み（右腕の入口は あなたの番 の列の一番上の行と「探す」の板の一番上の行だけで、ほかの話題と同じに席（スマホは全画面）に開く。スマホの下のバーは 3 つ（右腕の未読は［あなたの番］の点）で、会話の見出しに［右腕］は無い。広い幅の丸・枠・［広げる］・帯の［右腕］・落ち先の右腕の列・帯の右の通り道 80px・番の列の末尾の丸の分の余白は消した。右腕は上限 4 つの外で留められ、会話の列の先頭に出る（R5 のサーバーの `handPins`・R6 の画面。節「ピン留め」には出ない）。R7 で文書を今の形に直し、使われなくなった物を消した（§11.1）。実際の形は §5.3・§5.4・§6.2・§7・§10）。前提の #507（P0〜P5）は main に入った（2026-11-26）。
+行番号は #507 の P4 を作っている途中に読んだ物で、R2〜R7 で消した・動いた所が多い（経緯として残す）。今のコードは名前で grep して探す。
 
 ## 0. 何のために
 
@@ -177,7 +177,7 @@
   - ピンのボタン（`seatPin`。§6）。［閉じる］は広い幅の流れの列（今と同じ）。スマホは「戻る」。
   - `hand`・`controls: "v3-hand"` は渡さない（R3 で消す）。
 - 入力欄の薄い字は「右腕に頼む・訊く」。
-- 一覧の今の行（`SA.topics.setCurrent`）: 右腕も current になる。`topics.js:22, 187` の「右腕は current にならないので別に持つ」は要らなくなるが、R2 では触らない（R7 で片付ける）。
+- 一覧の今の行（`SA.topics.setCurrent`）: 右腕も current になる。`topics.js` の `turnFrom` のコメント「右腕は current にならないので別に持つ」は R2 では触らず、R7 で「列に留めた話題は席に開かず current にならないので別に持つ」に直した（`turnFrom` は留めた話題の先へ進むのに今も要るので残す）。
 
 ### 5.2 丸・枠と並ぶ間（R2 から R3 まで）
 
@@ -298,7 +298,7 @@ R3a で入れた形（実装）:
 | 物 | この issue で |
 |---|---|
 | 古い殻 | 触らない。`chat.js` の枠の鍵（`ops`・`outgoing` を読む側）は残す（消すのは古い殻を消す M8b と一緒） |
-| `tokens.css` | `--c-deck-lane`・`--c-orb` を消す（R4・R3b）。`--c-hand-w` は見本の入れ物の幅だけが使うので、`c-gallery.css` の中の変数に移して消す（R3b） |
+| `tokens.css` | `--c-deck-lane`・`--c-orb` を消す（どちらも R4）。`--c-hand-w` は見本の入れ物の幅だけが使うので、`c-gallery.css` の中の変数に移して消す（R3b）。上書きの無くなった `--c-deck-tail` は R7 で消した（使う所は `var(--space-2)`） |
 | 見本 | 丸の節・右腕の見出しの節を消す。下のバーの見本から `hand=` を外す。流れの列の見本に「右腕の行」（待機・未読・作業中・番・右腕が無い）を足す。一覧の見本に一番上の行を足す（R1・R3） |
 | 落ち先の形 | 右腕の列（`data-hand-mode`・`--v3-hand-w`・`#v3-hand-show`）を消し、右腕は一覧（`TopicList`）の一番上の行から列 2 に開く（R3b）。落ち先そのものを消すのは今までどおり D10 |
 
@@ -316,7 +316,7 @@ shell.css: .v3-deck の margin-right を消す。--c-deck-tail の上書きを�
 tokens.css: --c-deck-lane を消す
 ```
 
-テストで固定する値（`docs/plan/web-ui-pins.md` §4.2 の表を書き直す。`test/web-components.test.ts:4488` の段）:
+テストで固定する値（`docs/plan/web-ui-pins.md` §4.2 の表を書き直す。`test/web-components.test.ts` の「stripFit は帯の見える幅」の段）:
 
 | width | 席 | show | seat | room | colW | convW |
 |---|---|---|---|---|---|---|
@@ -354,6 +354,8 @@ R4 で入れた: 上の「変える」のとおり（`DECK.LANE`・`--c-deck-lan
   `handVisible`・`handSeated`・`handSeen`・`handSeatable`・`handOps`・`openHand`・`closeHand`・`applyHand`・`seatHand`・`leaveHandSeat`・`clearHandEd`・`drawHandHead`・`renderHand`・`renderHandEntries`・`syncHand`・`renderOrb`、
   `viewingTitle`・`withViewing`、Ctrl+K・Escape の「重ねた右腕」の枝（`shell.js:2422, 2439–2442`）、`readingChannelIds`・`shownChannelIds` の枠の枝。
 - 残す: `handTab`・`handChannelId`・`handMark`（行の印の元）・`handMenu`・`handSeatTop`（名前は `handTop` に）・`cardIds`〜`handNoticeText`（札と名前）。右腕が無いときの文は `c-list.js` の `HAND_NONE` に在る（shell.js の `HAND_NONE_TEXT` は R3b で消した）。
+- R7 で消した（済）: `shell.js` の `focusSeatInput`（呼び手なし）・`icons-app.svg` の symbol `bot`・`maximize`（使う所なし）・`tokens.css` の `--c-deck-tail`（上書きが無く、使う所を `var(--space-2)` に替えた）・見本の帯の同じ中身の `band-running`・`band-no-hand`（`band` の 1 つに畳んだ。絵の枚数・名前は変わらない）と、丸・枠・右腕のボタンを前提にした古いコメント（`topics.js`・`c-list.js` の `turnFrom`、`ui-shots.ts`）。localStorage の鍵 `v3-hand` の読み書きはコードに残っていなかった。
+- 残す（次にプロンプトを変える時に消す）: システムプロンプト（`src/agent/system-prompt.ts`）の「（いま見ている話題: 題名）」の説明の文。もう付かない行の説明だが、プロンプトキャッシュを外さないため R7 では触らない。
 
 ### 11.2 テスト（当たりを付けた所。行は今の枝）
 
@@ -452,7 +454,7 @@ R4 で入れた: 上の「変える」のとおり（`DECK.LANE`・`--c-deck-lan
 | R4 | 通り道 80px と番の列の末尾の余白を消す | 静的ファイル |
 | R5 | サーバー: 右腕を上限の外で留める・`handPins` | **Bot の再起動が要る**（オーナーに訊いてから） |
 | R6 | 画面: 右腕のピンのボタン・「…」の行・会話の列（先頭） | 静的ファイル（R5 の再起動の後に効く） |
-| R7 | 片付け: 文書の書き直し（deck・pins・GUIDELINES・components・directory-structure・CLAUDE.md）と残りの名前 | 文書と小さい片付け |
+| R7 | **済**。片付け: 文書の書き直し（deck・pins・GUIDELINES・components・directory-structure・CLAUDE.md）と残りの名前 | 文書と小さい片付け |
 
 R5 は R2 の後ならいつ入れてもよい（R3・R4 と並べて進められる）。R6 は R4 の後（列の幅の算数が落ち着いてから）。
 
@@ -502,7 +504,7 @@ R5 は R2 の後ならいつ入れてもよい（R3・R4 と並べて進めら�
 
 ### R3b 丸・枠・［広げる］・帯の［右腕］を消す
 
-- 触る: §11.1 の一覧（`index.html`・`shell.js`・`shell.css`・`c-shell.js/.css`・`c-deck.js/.css`・`c-app.js`・`c-hand.js/.css` を消す・`gallery.html`・`c-gallery.js/.css`・`tokens.css` の `--c-hand-w`・`--c-orb`）、テスト 2 つ、`ui-shots.ts`。
+- 触る: §11.1 の一覧（`index.html`・`shell.js`・`shell.css`・`c-shell.js/.css`・`c-deck.js/.css`・`c-app.js`・`c-hand.js/.css` を消す・`gallery.html`・`c-gallery.js/.css`・`tokens.css` の `--c-hand-w`。`--c-orb` は実際には R4 で消した）、テスト 2 つ、`ui-shots.ts`。
 - 受け入れ:
   - `index.html` に `v3-orb`・`c-orb-root`・`v3-hand`・`c-hand-root`・`v3-hand-backdrop` の id が無い。`#v3` に `data-hand`・`data-hand-mode` が無い。
   - `src/web/static/` に `c-hand.js`・`c-hand.css` が無く、どのファイルも import・link しない。`HandOrb`・`HandHead`・`drawOrb`・`v3Hand` の字が `src/web/static/`（`classic.html` の側を除く）に無い。
@@ -547,6 +549,7 @@ R5 は R2 の後ならいつ入れてもよい（R3・R4 と並べて進めら�
 - 触る: `docs/plan/web-ui-deck.md`（§6.4 を「#514 で置き換えた」に・絵・段の表）、`docs/plan/web-ui-pins.md`（§4.8〜§4.10・§5.1・§6.2・§6.3）、`docs/design/WEB-UI-GUIDELINES.md`（accent の塗りの一覧・帯・下のバー・右腕の枠と丸の行・浮いたボタンの例外）、
   `docs/plan/web-ui-components.md`（HandHead・HandOrb・BottomBar・TopBar の行）、`docs/directory-structure.md`、`CLAUDE.md`、`topics.js` の `turnFrom` まわりのコメント。
 - 受け入れ: 文書に「右腕の丸」「［広げる］」「通り道」が今の形として残っていない（経緯として残す所は「#514 で消した」と書く）。
+- 済（R7）: 上の文書を今の形に直した（経緯の節は残して「#514 で消した・置き換えた」の注記）。消した物と残した物は §11.1 の「R7 で消した」「残す（次にプロンプトを変える時に消す）」。画面の見た目と振る舞いは変えていない（見本のページの絵 `g-deck`・`g-gallery` だけ、同じ中身の帯 2 つ分が短くなる）。
 
 ## 15. 決まった事・決まっていない事
 
