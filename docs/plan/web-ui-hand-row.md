@@ -344,7 +344,7 @@ tokens.css: --c-deck-lane を消す
 - shell.js: `S.handMode`・`S.handWant`・`S.handOver`・`S.handSeat`、`HAND_MAIN_MIN`・`HAND_FRAME`（`HAND_TALK` に置き換え）・`HAND_FRAME_BARE`・`HAND_SEAT_FRAME`・`HAND_ON`・`ORB_ON`、
   `handVisible`・`handSeated`・`handSeen`・`handSeatable`・`handOps`・`openHand`・`closeHand`・`applyHand`・`seatHand`・`leaveHandSeat`・`clearHandEd`・`drawHandHead`・`renderHand`・`renderHandEntries`・`syncHand`・`renderOrb`、
   `viewingTitle`・`withViewing`、Ctrl+K・Escape の「重ねた右腕」の枝（`shell.js:2422, 2439–2442`）、`readingChannelIds`・`shownChannelIds` の枠の枝。
-- 残す: `handTab`・`handChannelId`・`handMark`（行の印の元）・`handMenu`・`handSeatTop`（名前は `handTop` に）・`cardIds`〜`handNoticeText`（札と名前）・`HAND_NONE_TEXT`。
+- 残す: `handTab`・`handChannelId`・`handMark`（行の印の元）・`handMenu`・`handSeatTop`（名前は `handTop` に）・`cardIds`〜`handNoticeText`（札と名前）。右腕が無いときの文は `c-list.js` の `HAND_NONE` に在る（shell.js の `HAND_NONE_TEXT` は R3b で消した）。
 
 ### 11.2 テスト（当たりを付けた所。行は今の枝）
 

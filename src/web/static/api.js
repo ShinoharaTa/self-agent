@@ -169,7 +169,7 @@
       if (zoneChanged) {
         const tabId = SA.app.activeTabId();
         if (tabId && tabId !== "status" && tabId !== "settings") SA.app.refresh(tabId);
-        // 前に出ているタブのほかに見えている会話（M3b の右腕）も描き直す
+        // 前に出ているタブのほかに見えている会話（新しい殻の帯の留めた列など）も描き直す
         for (const id of SA.app.shownChannelIds()) if ("ch:" + id !== tabId) SA.app.refresh("ch:" + id);
         SA.app.refreshSidebar();
       }
