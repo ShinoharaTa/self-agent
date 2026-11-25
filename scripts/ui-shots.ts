@@ -177,6 +177,8 @@ function newShellNames(vp: Viewport, theme: Theme, full: boolean): string[] {
     ...(vp === "phone" && theme === "dark" ? ["a-deck-hand"] : []),
     // 帯と会話の列（#507 の P4。ダークの PC だけ）: 2 つ留めた帯の左端と、右端まで送った所
     ...(vp === "pc" && theme === "dark" ? ["a-deck-pins-wide", "a-deck-pins-wide-end"] : []),
+    // 留めた右腕の列（#514 の R6。ダークの PC だけ）: 右腕と話題 1 つを留め、右腕の列が会話の列の先頭に出た所
+    ...(vp === "pc" && theme === "dark" ? ["a-deck-pins-hand"] : []),
     // 列の中の操作（D1 の PR-2。ダークの PC と、D2 からダークのスマホ）: タスクを［完了］にした直後
     ...(vp !== "tablet" && theme === "dark" ? ["a-deck-done"] : []),
     // 列のリマインドの［次を飛ばす］［止める］（#472 の PR-1。ダークの PC だけ）: ［止める］の確認が出た所
@@ -5940,6 +5942,173 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
             for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
           }
           if (problems.length > 0) throw new Error(`帯と会話の列の検査で ${problems.length} 件`);
+        });
+      }
+      // 留めた右腕の列（#514 の R6。ダークの PC だけ）: 席の右腕の見出しのピンのボタンで右腕を留め、続けて話題を 1 つ留めて、右腕の列が会話の列の先頭に在る所を撮る。
+      // 絵にしない DOM の確かめ: 留めた後に席が閉じる・#v3-pins の最初の子が右腕の列・列の見出しの題「右腕」・入力欄の placeholder・一番上の右腕の行に data-current・節「ピン留め」に右腕の行が無い・
+      // 話題を留めた後の列の順（右腕が先頭）・会話の根が 1 チャンネルに 1 つ・列の「…」の板の題と行・「ピン留めを外す」で列が消えて行は残る。終わりに両方外し、掃除で留めた物を残さない（後ろの段の絵を変えない）
+      if (vp === "pc" && theme === "dark") {
+        await step(`${p} pins-hand`, [`${p}-a-deck-pins-hand`], async () => {
+          const TURN = '#c-deck-root .c-col[data-col="turn"]';
+          const SEAT_PIN = '#c-top-root [data-act="pin"] button';
+          const problems: string[] = [];
+          const say = (text: string): void => void problems.push(`留めた右腕の列: ${text}`);
+          type Win = Window & {
+            SA: {
+              topics: {
+                data: () => { topics: Array<{ id: string; title: string; state: string; turn: unknown; last: unknown }> } | null;
+                hand: () => { id: string } | null;
+                handPinnable: () => boolean;
+              };
+              store: { isUnread: (c: { id: string; last: unknown }) => boolean };
+            };
+          };
+          /** 今の列と行の形（ブラウザの中で測る） */
+          type Cols = { view: string | null; pins: string[]; title: string | null; placeholder: string | null; current: string | null; pinRows: string[]; dupRoots: string[]; focus: string };
+          const cols = (hand: string): Promise<Cols> =>
+            page.evaluate(
+              ({ sel, hand }: { sel: string; hand: string }) => {
+                const v3 = document.querySelector<HTMLElement>("#v3")!;
+                const col = document.querySelector<HTMLElement>(`#v3-pins > section.v3-pin[data-pin="${hand}"]`);
+                const counts = new Map<string, number>();
+                for (const attr of ["data-talk", "data-composer", "data-cards"]) {
+                  for (const el of document.querySelectorAll(`[${attr}]`)) {
+                    const key = `${attr}=${el.getAttribute(attr)}`;
+                    counts.set(key, (counts.get(key) ?? 0) + 1);
+                  }
+                }
+                const active = document.activeElement;
+                const pinOf = active?.closest("section.v3-pin")?.getAttribute("data-pin") ?? null;
+                return {
+                  view: v3.getAttribute("data-view"),
+                  pins: [...document.querySelectorAll("#v3-pins > section.v3-pin")].map((c) => c.getAttribute("data-pin") ?? ""),
+                  title: col?.querySelector(".c-top-title")?.textContent?.trim() ?? null,
+                  placeholder: col?.querySelector("textarea")?.getAttribute("placeholder") ?? null,
+                  current: document.querySelector(`${sel} > .c-col-top .c-item[data-kind="hand"]`)?.getAttribute("data-current") ?? null,
+                  pinRows: [...document.querySelectorAll(`${sel} .c-item[data-key^="pin:"]`)].map((el) => el.getAttribute("data-key") ?? ""),
+                  dupRoots: [...counts].filter(([, n]) => n > 1).map(([k, n]) => `${k} が ${n} 個`),
+                  focus: pinOf === null ? (active?.closest("[data-act]")?.getAttribute("data-act") ?? active?.tagName.toLowerCase() ?? "無し") : `${pinOf}:${active?.closest('[data-act="pin"]') ? "pin" : "other"}`,
+                };
+              },
+              { sel: TURN, hand },
+            );
+          /** 知らせを × で閉じる（撮る絵に残さない） */
+          const closeNotices = async (): Promise<void> => {
+            await page.evaluate(() => {
+              for (const b of document.querySelectorAll<HTMLButtonElement>('#c-notice-root .c-toast-list[role="status"] .c-toast-item button[aria-label="閉じる"]')) b.click();
+            });
+            await settled(page);
+          };
+
+          await load(page, "/");
+          await page.waitForSelector(HAND_ROW, { timeout: 5000 });
+          await page.keyboard.press("Shift");
+          await settled(page);
+          const hand = await page.evaluate(() => {
+            const w = window as unknown as Win;
+            const h = w.SA.topics.hand();
+            return h !== null && h.id.startsWith("ch:") && w.SA.topics.handPinnable() ? h.id.slice(3) : null;
+          });
+          if (hand === null) throw new Error("右腕が無いか、右腕を留める口（handPins）が無い");
+          // 留める話題: あなたの番の列の「動いている」「待機」の項目のうち、未読でない話題（a-deck-pins-wide の段と同じ選び方）
+          const pick = await page.evaluate((sel: string) => {
+            const w = window as unknown as Win;
+            const data = w.SA.topics.data();
+            if (data === null) return null;
+            const keys = [...document.querySelectorAll(`${sel} .c-item[data-kind="running"], ${sel} .c-item[data-kind="idle"]`)].map((el) => el.getAttribute("data-key") ?? "");
+            const found = keys
+              .map((key) => ({ key, t: data.topics.find((t) => key.endsWith(":" + t.id)) }))
+              .find(({ t }) => t !== undefined && t.id.startsWith("ch:") && t.state !== "done" && t.turn === null && !w.SA.store.isUnread({ id: t.id.slice(3), last: t.last }));
+            return found === undefined ? null : { key: found.key, id: found.t!.id.slice(3) };
+          }, TURN);
+          if (pick === null) throw new Error("留められる既読の話題が無い");
+          const pinned: string[] = [];
+          try {
+            // 右腕: 行から席に開き、席の見出しのピンのボタン
+            await page.click(HAND_ROW);
+            await page.waitForSelector('#v3[data-view="body"] #ed textarea', { timeout: 5000 });
+            await settled(page);
+            if ((await page.locator(SEAT_PIN).count()) !== 1) throw new Error("席の右腕の見出しにピンのボタンが無い");
+            if ((await page.locator(SEAT_PIN).getAttribute("aria-pressed")) !== "false") say("席の右腕のピンのボタンの aria-pressed が false でない");
+            await page.click(SEAT_PIN);
+            await page.waitForSelector(`#v3-pins > section.v3-pin[data-pin="${hand}"] .c-top`, { timeout: 5000 });
+            await settled(page);
+            pinned.push(hand);
+            let c = await cols(hand);
+            if (c.view !== "list") say(`ピンのボタンの後の data-view が ${String(c.view)}（list のはず。席を閉じる）`);
+            if (c.pins[0] !== hand) say(`#v3-pins の最初の子が ${String(c.pins[0])}（右腕の列のはず）`);
+            if (c.title !== "右腕") say(`右腕の列の見出しの題が ${JSON.stringify(c.title)}（「右腕」のはず）`);
+            if (c.placeholder !== HAND_PLACEHOLDER) say(`右腕の列の入力欄の placeholder が ${JSON.stringify(c.placeholder)}（${JSON.stringify(HAND_PLACEHOLDER)} のはず）`);
+            if (c.current !== "true") say(`右腕の列が見えている間の右腕の行の data-current が ${String(c.current)}（true のはず）`);
+            if (c.pinRows.some((k) => k.endsWith(":ch:" + hand))) say("節「ピン留め」に右腕の行が在る");
+            if (c.focus !== `${hand}:pin`) say(`留めた後の焦点が ${c.focus}（右腕の列のピンのボタンのはず）`);
+            if (c.dupRoots.length > 0) say(`会話の根が 2 つ以上（${c.dupRoots.join("・")}）`);
+            // 右腕の列の「…」: 題「右腕 の操作」・先頭が「ピン留めを外す」
+            await page.click(`#v3-pins > section.v3-pin[data-pin="${hand}"] [data-act="menu"] button`);
+            await page.waitForSelector("#v3-sheet[open]", { timeout: 5000 });
+            const sheetTitle = await page.getAttribute("#v3-sheet", "aria-label");
+            if (sheetTitle !== "右腕 の操作") say(`右腕の列の「…」の板の題が ${JSON.stringify(sheetTitle)}（「右腕 の操作」のはず）`);
+            const handRows = await sheetRows(page);
+            if (handRows[0] !== "ピン留めを外す" || handRows.includes("ピン留めする")) say(`右腕の列の「…」の板の行が「${handRows.join("・")}」（先頭が ピン留めを外す のはず）`);
+            await escSheet(page);
+            await settled(page);
+
+            // 話題: 列の項目から席に開き、席の見出しのピンのボタン（右腕の列の後ろに並ぶ）
+            await page.locator(`${TURN} .c-item[data-key="${pick.key}"] button.c-item-main`).click();
+            await page.waitForSelector('#v3[data-view="body"] #ed textarea', { timeout: 5000 });
+            await settled(page);
+            await page.click(SEAT_PIN);
+            await page.waitForSelector(`#v3-pins > section.v3-pin[data-pin="${pick.id}"] .c-top`, { timeout: 5000 });
+            await settled(page);
+            pinned.push(pick.id);
+            // 帯は話題の列へ送られているので左端へ戻す（右腕の列が端まで見える所）
+            await page.evaluate(() => void (document.querySelector<HTMLElement>("#v3-deck")!.scrollLeft = 0));
+            await page.waitForFunction(() => document.querySelector<HTMLElement>("#v3-deck")!.scrollLeft === 0, undefined, { timeout: 5000 });
+            await page.mouse.move(1, 1);
+            await settled(page);
+            await closeNotices();
+            c = await cols(hand);
+            if (JSON.stringify(c.pins) !== JSON.stringify([hand, pick.id])) say(`話題を留めた後の列の順が ${c.pins.join("・")}（右腕が先頭のはず）`);
+            if (c.current !== "true") say(`話題を留めた後の右腕の行の data-current が ${String(c.current)}（true のはず）`);
+            if (c.pinRows.some((k) => k.endsWith(":ch:" + hand))) say("話題を留めた後の節「ピン留め」に右腕の行が在る");
+            if (!c.pinRows.some((k) => k.endsWith(":ch:" + pick.id))) say("節「ピン留め」に留めた話題の行が無い");
+            if (c.dupRoots.length > 0) say(`話題を留めた後の会話の根が 2 つ以上（${c.dupRoots.join("・")}）`);
+            await shot(page, `${p}-a-deck-pins-hand`);
+
+            // 外す: 話題は列のピンのボタン、右腕は列の「…」→「ピン留めを外す」。列が消えて、右腕の行は残る
+            await page.click(`#v3-pins > section.v3-pin[data-pin="${pick.id}"] [data-act="pin"] button`);
+            await page.waitForSelector(`#v3-pins > section.v3-pin[data-pin="${pick.id}"]`, { state: "detached", timeout: 5000 });
+            await settled(page);
+            pinned.splice(pinned.indexOf(pick.id), 1);
+            await page.click(`#v3-pins > section.v3-pin[data-pin="${hand}"] [data-act="menu"] button`);
+            await page.waitForSelector("#v3-sheet[open]", { timeout: 5000 });
+            await page.locator("#v3-sheet .more-row").filter({ hasText: "ピン留めを外す" }).first().click();
+            await page.waitForSelector(`#v3-pins > section.v3-pin[data-pin="${hand}"]`, { state: "detached", timeout: 5000 });
+            await settled(page);
+            pinned.splice(pinned.indexOf(hand), 1);
+            await closeNotices();
+            c = await cols(hand);
+            if (c.pins.length !== 0) say(`外した後も会話の列が ${c.pins.length} 本`);
+            if ((await page.locator(HAND_ROW).count()) !== 1) say("右腕の列を外した後に右腕の行が無い");
+            if (c.current === "true") say("右腕の列を外した後も右腕の行に data-current が付いている");
+          } finally {
+            // 掃除（画面から外せなかった時も、後の段に留めた物を残さない）: サーバーの pins と handPins を全部外す
+            const swept = await page
+              .evaluate(async () => {
+                const headers = { "X-Self-Agent": "1", "Content-Type": "application/json" };
+                const res = await fetch("/api/topics", { headers: { "X-Self-Agent": "1" }, credentials: "same-origin", cache: "no-store" });
+                const body = (await res.json()) as { pins?: unknown; handPins?: unknown };
+                const list = (v: unknown): string[] => (Array.isArray(v) ? v.filter((id): id is string => typeof id === "string") : []);
+                const ids = [...list(body.pins), ...list(body.handPins)];
+                for (const id of ids) await fetch("/api/topics/ch:" + id + "/pin", { method: "POST", headers, credentials: "same-origin", body: JSON.stringify({ on: false }) });
+                return ids.length;
+              })
+              .catch(() => -1);
+            if (swept !== 0 && pinned.length === 0) say(swept < 0 ? "掃除の読み取り・外しに失敗" : `画面から外した後もサーバーに留めた物が ${swept} 個残っていた（掃除で外した）`);
+            if (pinned.length > 0) say(`外せなかった物が ${pinned.length} 個（掃除で外した）`);
+            for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
+          }
+          if (problems.length > 0) throw new Error(`留めた右腕の列の検査で ${problems.length} 件`);
         });
       }
       // 席が開くときの動き（D5 の PR-1。ダークのスマホと PC）: 読み込み（hash）で開いた席は動かず印（data-moves）が無い。最初の操作の後に項目を押すと、
