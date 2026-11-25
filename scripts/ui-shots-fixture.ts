@@ -37,6 +37,7 @@ import { ProjectStore } from "../src/store/projects.ts";
 import { ReminderStore } from "../src/store/reminders.ts";
 import { SdkSessionStore } from "../src/store/sdk-sessions.ts";
 import { TaskStore } from "../src/store/tasks.ts";
+import { TopicPinStore } from "../src/store/topic-pins.ts";
 import { TopicReadStore } from "../src/store/topic-reads.ts";
 import { TopicSessionStore } from "../src/store/topic-sessions.ts";
 import { UsageStore } from "../src/store/usage.ts";
@@ -191,6 +192,8 @@ export async function startFixtureServer(options: { log?: (line: string) => void
     const sessions = new SdkSessionStore(db, now);
     const permissions = new CcPermissionStore(db, now);
     const reads = new TopicReadStore(db, now);
+    // ピン留め（#507）: 最初は 1 つも留めない（段 a-deck-pins が画面から留めて外す）
+    const pins = new TopicPinStore(db, now);
     const projects = new ProjectStore(db, now);
     const tasks = new TaskStore(db, now);
     const reminders = new ReminderStore(db, now);
@@ -444,6 +447,7 @@ export async function startFixtureServer(options: { log?: (line: string) => void
       workspaceRoot: workspace,
       projectPermissions,
       reads: { store: reads, lookup },
+      pins: { store: pins, lookup },
       now,
       ...(cc === undefined ? {} : { cc: cc.topics }),
     };
