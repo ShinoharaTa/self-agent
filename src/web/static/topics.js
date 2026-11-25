@@ -19,6 +19,8 @@
   let filter = "";
   /** 一覧で選んでいる話題（列 2 の話題の ID。[端末] の間も ch: のまま。shell.js が setCurrent で渡す） */
   let current = null;
+  /** 見えている右腕のタブ（席に右腕が見えている間だけ [右腕のタブ]。shell.js が setSeen で渡す。一覧の右腕の行の未読・作業中を出さない。#514 の R3b） */
+  let seen = [];
   /** 一覧から最後に開いた話題（「あなたの番 N」のボタンの次の起点。右腕は current にならないので別に持つ） */
   let turnFrom = null;
   let lastLoadAt = 0;
@@ -221,6 +223,7 @@
       failed,
       filter,
       current,
+      seen,
       doneGroup,
       dataDone,
       turnFrom,
@@ -261,6 +264,14 @@
     if (current !== null) turnFrom = current;
   }
 
+  /** 見えている右腕のタブを変える。変わったら true（描き直しは呼んだ側の render） */
+  function setSeen(ids) {
+    const next = Array.isArray(ids) ? ids.filter((id) => typeof id === "string" && id !== "") : [];
+    if (next.length === seen.length && next.every((id, i) => id === seen[i])) return false;
+    seen = next;
+    return true;
+  }
+
   // ===== ピン留め（#507。GET /api/topics の pins・pinMax） =====
   /** 留めた話題の channelId（留めた順。ch: は付かない）。形が違えば空 */
   function pins() {
@@ -282,5 +293,5 @@
     SA.app.refreshTabs();
   }
 
-  SA.topics = { load, schedule, render, find, data: () => data, counts, setFilter, setCurrent, pins, pinMax, setPins };
+  SA.topics = { load, schedule, render, find, data: () => data, counts, setFilter, setCurrent, setSeen, pins, pinMax, setPins };
 })();

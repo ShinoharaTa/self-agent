@@ -105,7 +105,7 @@ export function turnItem(id, state) {
 /**
  * 一覧の一番上の右腕の行のモデル（#514）。絞り込みの語が在れば、題「右腕」に当たる時だけ（当たらなければ null）。
  * 右腕（rightHands[0]）が在れば { row: 話題の行と同じ rowModel の値, note: "" }、無ければ { row: null, note: HAND_NONE }。
- * 見えている間（current か seen に在る）は未読・作業中の印を出さない。作業中は state.isRunning(チャンネル) が在る時だけ訊く
+ * 見えている間（seen に在る。shell.js が席に右腕が見えている間だけ渡す）は未読・作業中の印を出さない。current（いま開いている印）は見ない（席が隠れても current は住人のまま。#514 の R3b）。作業中は state.isRunning(チャンネル) が在る時だけ訊く
  */
 export function handRowModel(state, words) {
   if (words.length > 0 && !topicHits({ title: "右腕" }, "", words)) return null;
@@ -113,7 +113,7 @@ export function handRowModel(state, words) {
   const hand = hands.length > 0 ? hands[0] : null;
   if (!hand || typeof hand.id !== "string" || hand.id === "") return { row: null, note: HAND_NONE };
   const id = hand.id;
-  const seen = state.current === id || (Array.isArray(state.seen) && state.seen.includes(id));
+  const seen = Array.isArray(state.seen) && state.seen.includes(id);
   const channelId = id.startsWith("ch:") ? id.slice(3) : null;
   const running = !seen && channelId !== null && typeof state.isRunning === "function" && state.isRunning(channelId) === true;
   const topic = { id, title: "右腕", mark: hand.turn ? "turn" : running ? "running" : null, turn: hand.turn, last: hand.last, activityAt: null };
