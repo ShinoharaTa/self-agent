@@ -904,7 +904,7 @@ const DECK_IDLE_DATA = {
   cc: { enabled: true, stale: false, unreadable: false },
 };
 const DECK_ON = { open: noop, op: noop, more: noop };
-const BAND_ON = { status: noop, find: noop, hand: noop, start: noop, more: noop };
+const BAND_ON = { status: noop, find: noop, hand: noop, start: noop, more: noop, turn: noop };
 
 /** スマホの幅の枠の操作つきの見本（タスクの列だけ。リマインドの操作の行が狭い列で 1 行に入るか） */
 const deckTasksOnly = (state) => {
@@ -919,7 +919,8 @@ const BAND_TITLES = Object.freeze([
   { demo: "band-phone-feed", title: { name: "通知", count: 0 } },
 ]);
 
-/** 帯と 3 つの列の見本（列は見本の幅で 3 等分。deck-idle は待機の節の「ほか n 件」。deck-empty は待機も無い形。band-running は右腕が作業中の帯、band-no-hand は丸を描けた広い幅の帯（［右腕］なし）。band-phone・deck-paged・deck-phone-ops はスマホの幅の枠で、列は 1 列ずつ横に送る）。押しても何も起きない */
+/** 帯と 3 つの列の見本（列は見本の幅で 3 等分。deck-idle は待機の節の「ほか n 件」。deck-empty は待機も無い形。band-running は右腕が作業中の帯、band-no-hand は丸を描けた広い幅の帯（［右腕］なし）。
+ * band-turn は番の列が見えない間の「あなたの番 2」の帯、deck-strip は帯の中の流れの列（3 列が 300 で並び、包みの中で横に送る。#507）。band-phone・deck-paged・deck-phone-ops はスマホの幅の枠で、列は 1 列ずつ横に送る）。押しても何も起きない */
 function Decks() {
   return html`<${Section} name="deck" title="流れの列と上の帯">
     <div class="c-gallery-slide" data-demo="band">
@@ -937,6 +938,11 @@ function Decks() {
         <${DeckBand} conn=${{ tone: "ok", label: "見本の Bot: 接続中" }} hand=${null} controls="v3-hand" on=${BAND_ON} />
       </div>
     </div>
+    <div class="c-gallery-slide" data-demo="band-turn">
+      <div class="c-gallery-deck c-gallery-band">
+        <${DeckBand} conn=${{ tone: "ok", label: "見本の Bot: 接続中" }} hand=${null} controls="v3-hand" turn=${{ count: 2 }} on=${BAND_ON} />
+      </div>
+    </div>
     <div class="c-gallery-slide" data-demo="band-phone">
       <div class="c-gallery-deck c-gallery-phone">
         <${DeckBand} variant="phone" conn=${{ tone: "ok", label: "見本の Bot: 接続中" }} hand=${{ mark: "turn", open: false }} controls="v3-hand" on=${BAND_ON} />
@@ -950,6 +956,9 @@ function Decks() {
       </div>`,
     )}
     <div class="c-gallery-deck" data-demo="deck-3"><${Deck} model=${deckModel(deckState())} on=${DECK_ON} /></div>
+    <div class="c-gallery-slide" data-demo="deck-strip">
+      <div class="c-gallery-deck c-gallery-strip"><${Deck} model=${deckModel(deckState({ strip: true }))} on=${DECK_ON} /></div>
+    </div>
     <div class="c-gallery-deck" data-demo="deck-idle"><${Deck} model=${deckModel(deckState({ topics: DECK_IDLE_DATA }))} on=${DECK_ON} /></div>
     <div class="c-gallery-slide" data-demo="deck-ops">
       <div class="c-gallery-deck c-gallery-deck-ops">

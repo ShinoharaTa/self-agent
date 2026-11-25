@@ -176,6 +176,11 @@
   width: var(--c-top-full-min);
 }
 
+/* 帯の中の流れの列の見本（#507）: 入れ物は中身の幅（3 列が --c-deck-col-w で並ぶ）。包み（.c-gallery-slide）の中で横に送る */
+.c-gallery-strip {
+  width: max-content;
+}
+
 /* 操作の付いた列も、スマホの幅で項目のリンクが［対応］に押し潰されないよう、帯の幅より縮めずに横に送る */
 .c-gallery-deck-ops {
   min-width: var(--c-top-full-min);
