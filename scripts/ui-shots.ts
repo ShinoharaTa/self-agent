@@ -2780,6 +2780,47 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     return lines;
   }
 
+  /**
+   * 右腕の行から席に右腕を開いた直後と、席の動きが終わった後に画面がずれない（D6 の PR-4 の検査の残り。#514 の R3b で枠と一緒に消えたのを席に戻した）:
+   * ページ・body・#v3 の scrollLeft・scrollTop が 0、送りの棒が出ていない（innerWidth = clientWidth・innerHeight = clientHeight）。後では はみ出しも残らない。
+   * 最初の操作（何も起きない Shift）の後に押す（席が動く形）。終わりは席を閉じた列の画面。足りない物の文
+   */
+  async function handShiftLines(page: Page): Promise<string[]> {
+    type ShiftState = { rootLeft: number; bodyLeft: number; v3Left: number; rootTop: number; bodyTop: number; v3Top: number; innerW: number; clientW: number; scrollW: number; innerH: number; clientH: number; scrollH: number };
+    const shiftLines = (st: ShiftState | null, when: string, after: boolean): string[] =>
+      st === null
+        ? [`席の右腕のずれ: ${when}に右腕の行が無い`]
+        : st.rootLeft !== 0 || st.bodyLeft !== 0 || st.v3Left !== 0 || st.rootTop !== 0 || st.bodyTop !== 0 || st.v3Top !== 0 || st.innerW !== st.clientW || st.innerH !== st.clientH || (after && (st.scrollW > st.clientW || st.scrollH > st.clientH))
+          ? [`席の右腕のずれ: ${when}のずれ・送りの棒が ${JSON.stringify(st)}（scrollLeft・scrollTop は全部 0・innerWidth = clientWidth・innerHeight = clientHeight${after ? "・scrollWidth ≦ clientWidth・scrollHeight ≦ clientHeight" : ""} のはず）`]
+          : [];
+    // いまのずれを読む式は、ページの中の 2 か所に同じ形で書く（ページの中の関数は外の物を使えない）
+    await load(page, "/");
+    await page.waitForSelector(HAND_ROW, { timeout: 5000 });
+    await page.keyboard.press("Shift");
+    await settled(page);
+    const started = await page.evaluate((sel: string) => {
+      const row = document.querySelector<HTMLElement>(sel);
+      if (row === null) return null;
+      row.click();
+      const root = document.documentElement;
+      const v3 = document.querySelector("#v3");
+      return { rootLeft: root.scrollLeft, bodyLeft: document.body.scrollLeft, v3Left: v3?.scrollLeft ?? -1, rootTop: root.scrollTop, bodyTop: document.body.scrollTop, v3Top: v3?.scrollTop ?? -1, innerW: window.innerWidth, clientW: root.clientWidth, scrollW: root.scrollWidth, innerH: window.innerHeight, clientH: root.clientHeight, scrollH: root.scrollHeight };
+    }, HAND_ROW);
+    const lines = shiftLines(started, "押した直後", false);
+    await page.waitForSelector('#v3[data-view="body"] #ed .c-talk', { timeout: 5000 });
+    await settled(page);
+    const after = await page.evaluate(() => {
+      const root = document.documentElement;
+      const v3 = document.querySelector("#v3");
+      return { rootLeft: root.scrollLeft, bodyLeft: document.body.scrollLeft, v3Left: v3?.scrollLeft ?? -1, rootTop: root.scrollTop, bodyTop: document.body.scrollTop, v3Top: v3?.scrollTop ?? -1, innerW: window.innerWidth, clientW: root.clientWidth, scrollW: root.scrollWidth, innerH: window.innerHeight, clientH: root.clientHeight, scrollH: root.scrollHeight };
+    });
+    lines.push(...shiftLines(after, "席の動きが終わった後", true));
+    await page.click('#c-top-root [data-act="close"] button');
+    await page.waitForSelector('#v3[data-view="list"]', { timeout: 5000 });
+    await settled(page);
+    return lines;
+  }
+
   /** 右腕の入力欄の薄い字（shell.js の HAND_TALK の placeholder） */
   const HAND_PLACEHOLDER = "右腕に頼む・訊く";
 
@@ -4901,6 +4942,39 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
    * ［ほか n 件］は 8 件を越えたときだけ・同じ題が通知の列に無い。足りない物の文
    */
   /**
+   * 流れの列の K2 の Mark の running（「動いている」の項目の印）の外寸（段 deck の a-deck を撮る前。#463 の D6 の PR-5 の検査の残り。右腕の丸と帯の［右腕］は #514 の R3b で消した）:
+   * 見えている物が 1 つ以上・外寸が --c-mark（base.css の border-box なので輪は箱の内側）・輪の太さが --c-mark-ring の実線・地を塗らない。足りない物の文
+   */
+  async function markRunningLines(page: Page): Promise<string[]> {
+    return page.evaluate(() => {
+      const out: string[] = [];
+      const lengthOf = (value: string): number => {
+        const probe = document.createElement("span");
+        Object.assign(probe.style, { display: "block", position: "absolute", visibility: "hidden", width: value, height: "0" });
+        document.body.append(probe);
+        const w = probe.getBoundingClientRect().width;
+        probe.remove();
+        return w;
+      };
+      const ring = lengthOf("var(--c-mark-ring)");
+      const want = lengthOf("var(--c-mark)");
+      if (!(ring > 0) || !(want > ring * 2)) out.push(`作業中の印: トークンを測れない（輪 ${ring}・外寸 ${want}）`);
+      const marks = [...document.querySelectorAll<HTMLElement>('#c-deck-root .c-mark[data-state="running"]')].filter((el) => el.getClientRects().length > 0);
+      if (marks.length === 0) out.push("作業中の印: 流れの列に見えている K2 の Mark の running が無い");
+      for (const el of marks) {
+        const r = el.getBoundingClientRect();
+        if (Math.abs(r.width - want) > 0.5 || Math.abs(r.height - want) > 0.5) out.push(`作業中の印: 外寸が ${r.width.toFixed(1)}×${r.height.toFixed(1)}（--c-mark ${want.toFixed(1)} のはず）`);
+        const cs = getComputedStyle(el);
+        const widths = [cs.borderTopWidth, cs.borderRightWidth, cs.borderBottomWidth, cs.borderLeftWidth].map((w) => parseFloat(w));
+        if (widths.some((w) => Math.abs(w - ring) > 0.01)) out.push(`作業中の印: 輪の太さが ${widths.join(" ")}（${ring} のはず）`);
+        if ([cs.borderTopStyle, cs.borderRightStyle, cs.borderBottomStyle, cs.borderLeftStyle].some((st) => st !== "solid")) out.push("作業中の印: 輪の線が実線でない");
+        if (cs.backgroundColor !== "rgba(0, 0, 0, 0)" || cs.backgroundImage !== "none") out.push(`作業中の印: 地が塗られている（${cs.backgroundColor} ${cs.backgroundImage}）`);
+      }
+      return out;
+    });
+  }
+
+  /**
    * あなたの番の列の一番上の右腕の行（#514 の R2）: 列の見出しと本体（.c-col-body）の間の .c-col-top に右腕の行（data-kind hand）が 1 つで題は「右腕」・押せる。
    * ほかの列・本体の中には無い。本体を末尾まで送っても行は動かない（送られない。送った位置は戻す）
    */
@@ -5185,6 +5259,8 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
           problems.push(...(await idleListLines(page)));
           // あなたの番の列の一番上の右腕の行（#514 の R2）
           problems.push(...(await handRowLines(page)));
+          // 「動いている」の項目の K2 の Mark の running の外寸
+          problems.push(...(await markRunningLines(page)));
           await shot(page, `${p}-a-deck`);
           const opener = page.locator('#c-deck-root .c-col[data-col="turn"] .c-item[data-turn="true"] button.c-item-main').first();
           const openerBox = await opener.boundingBox();
@@ -6308,6 +6384,7 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
         // 右腕の行から右腕の会話を席に開く（#514 の R2。絵の名前は R3b で c-hand-seat から a-deck-hand に替えた）。席の右腕の中の部品（札・まとめの知らせ・「…」）も見る
         await step(`${p} seat-hand`, [`${p}-a-deck-hand`], async () => {
           const problems = await handSeatLines(page, `${p}-a-deck-hand`);
+          problems.push(...(await handShiftLines(page)));
           problems.push(...(await handPartsLines(page, vp)));
           for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
           if (problems.length > 0) throw new Error(`右腕の行から席に開く検査で ${problems.length} 件`);
