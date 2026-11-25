@@ -12939,6 +12939,24 @@ function loadFlows(get: (path: string) => Promise<unknown>) {
   };
 }
 
+test("web static: 流れの列の［ほか n 件］（あなたの番の列の待機。#505）: FLOW_ON.more は SA.app.palette を 1 回呼ぶ（流れの列では「探す」の板）。palette が無くても投げない", () => {
+  const SA = loadFlows(() => Promise.resolve({}));
+  const app = SA.app as Record<string, unknown>;
+  let palettes = 0;
+  app.palette = (...args: unknown[]) => {
+    assert.deepEqual(args, []);
+    palettes++;
+  };
+  const on = SA.flows.state().on as { more: (colId: string) => void };
+  on.more("turn");
+  assert.equal(palettes, 1);
+  delete app.palette;
+  assert.doesNotThrow(() => on.more("turn"));
+  SA.app = undefined;
+  assert.doesNotThrow(() => on.more("turn"));
+  assert.equal(palettes, 1);
+});
+
 test("web static: 流れの列の読み込み: init でタスク（open）とリマインドを読み、一度も読んでいなくても lists で読み直す。GitHub は有効と分かるまで読まず、分かった回に 1 回", async () => {
   const paths: string[] = [];
   const SA = loadFlows((path) => {

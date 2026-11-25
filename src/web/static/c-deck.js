@@ -1,8 +1,9 @@
 // 流れの列（docs/plan/web-ui-deck.md §4 の D1）: Deck・DeckBand と、そのモデルの関数（幅の計算・3 つの列の項目）。
 // hook を使わない（Node から関数として呼べる）。状態は持たず、入口が deckModel(state) の結果を押し込む。クラスは固定の文字列、状態は data-* と aria-*
+// あなたの番の列の「動いている」の下に、既読で動いていない話題の節「待機」（新しい順に IDLE_MAX 件。残りは「ほか n 件」で on.more。#505）
 import { html } from "./c-lib.js";
 import { Badge, Button, Empty, IconButton, Loading, Mark } from "./c-atoms.js";
-import { turnWord } from "./c-list.js";
+import { rowModel, turnWord } from "./c-list.js";
 
 /** 幅の計算の数（設計書 §3。列の 300・席の幅は溝を含む目安）。数は全部ここ */
 export const DECK = Object.freeze({ COL_MIN: 300, COL_MAX: 420, SIDE_MIN: 1340, SIDE_REST: 900, SIDE_MAX: 720, FOLD_RATE: 0.48, FOLD_MIN: 440, FOLD_MAX: 600 });
@@ -40,11 +41,21 @@ function dueWord(task, state) {
   return "タスク";
 }
 
-/** 種類の語。src は元の物（タスク・リマインドのときだけ見る）、state は期限の語に使う。知らない種類は あなたの番 の語（turnWord） */
+/** 待機の語を決める rowModel の ctx（未読・時刻・開いている物は見ない） */
+const IDLE_CTX = Object.freeze({ isUnread: () => false, time: () => "", current: null });
+
+/**
+ * 種類の語。src は元の物（タスク・リマインド・待機の話題のときだけ見る）、state は期限の語に使う。知らない種類は あなたの番 の語（turnWord）。
+ * 待機は一覧の行の状態の語（順番待ち・上限で停止・失敗・中断・停止）が在ればそれ、無ければ「待機」（#505）
+ */
 export function itemWord(kind, src, state) {
   switch (kind) {
     case "running":
       return "動いている";
+    case "idle": {
+      const row = src ? rowModel(src, IDLE_CTX) : null;
+      return row && row.state ? row.state.text : "待機";
+    }
     case "task":
       return dueWord(src, state);
     case "reminder":
@@ -163,6 +174,32 @@ export function runningItems(state) {
         at: t.activityAt,
         title: t.title,
         mark: "running",
+        target: t.id,
+      }),
+    )
+    .sort(byNewest);
+}
+
+/** 待機の節に出す数（残りは「ほか n 件」。#505） */
+export const IDLE_MAX = 8;
+
+/**
+ * 待機: 印の無い・完了でない ch: の話題で、入口（pinned）でなく未読でない物（未読は通知の列。1 つの話題は 1 か所）。activityAt の新しい順で全部（切るのは deckModel。#505）
+ */
+export function idleItems(state) {
+  const unread = typeof state.isUnread === "function" ? state.isUnread : () => false;
+  return topicsOf(state)
+    .filter((t) => t.mark === null && t.state !== "done" && typeof t.id === "string" && t.id.startsWith("ch:") && t.pinned !== true && !unread(t.id.slice(3), t.last))
+    .map((t) =>
+      flowItem(state, {
+        key: "idle:" + t.id,
+        kind: "idle",
+        word: itemWord("idle", t, state),
+        place: groupName(state, t.group),
+        time: t.activityAt ? state.time(t.activityAt) : "",
+        at: t.activityAt,
+        title: t.title,
+        mark: "none",
         target: t.id,
       }),
     )
@@ -338,11 +375,16 @@ export function focusAfter(before, after, key) {
   return after[Math.min(Math.max(i, 0), after.length - 1)];
 }
 
-/** 3 つの列のモデル。cols は見える列の数（0〜3。既定 3）。paged（スマホの 1 列ずつの横送り。D2）は true のときだけ。空の節は出さない */
+/**
+ * 3 つの列のモデル。cols は見える列の数（0〜3。既定 3）。paged（スマホの 1 列ずつの横送り。D2）は true のときだけ。空の節は出さない。
+ * あなたの番の列の節は 番・動いている・待機 の順。待機は IDLE_MAX 件までで、残りがあれば more: { count, label }（列の数は番だけ。#505）
+ */
 export function deckModel(state) {
   const cols = typeof state.cols === "number" && Number.isFinite(state.cols) ? Math.max(0, Math.min(3, Math.floor(state.cols))) : 3;
   const sections = (list) => list.filter((s) => s.items.length > 0);
   const turns = state.topics ? turnItems(state) : [];
+  const idle = state.topics ? idleItems(state) : [];
+  const idleRest = idle.length - IDLE_MAX;
   const tasks = taskItems(state);
   return {
     cols,
@@ -355,7 +397,13 @@ export function deckModel(state) {
         tone: "warning",
         phase: state.topics ? "ready" : "loading",
         empty: "今は待たせている事がありません",
-        sections: state.topics ? sections([{ label: null, items: turns }, { label: "動いている", items: runningItems(state) }]) : [],
+        sections: state.topics
+          ? sections([
+              { label: null, items: turns },
+              { label: "動いている", items: runningItems(state) },
+              { label: "待機", items: idle.slice(0, IDLE_MAX), more: idleRest > 0 ? { count: idleRest, label: "ほか " + idleRest + " 件" } : null },
+            ])
+          : [],
       },
       {
         id: "tasks",
@@ -381,7 +429,7 @@ export function deckModel(state) {
 
 // ===== 部品 =====
 
-/** 3 つの列（見えない列も描き、横に送る。paged は 1 列ずつ止まる）。on: { open(item, key), op(item, opId) } */
+/** 3 つの列（見えない列も描き、横に送る。paged は 1 列ずつ止まる）。on: { open(item, key), op(item, opId), more(colId) } */
 export function Deck({ model, on }) {
   return html`<div class="c-deck" data-cols=${String(model.cols)} data-paged=${model.paged === true ? "true" : undefined}>
     ${model.columns.map((col) => html`<${Column} key=${col.id} col=${col} on=${on} />`)}
@@ -394,7 +442,7 @@ function countLabel(name, count) {
   return { counted, label: counted ? name + " " + count + " 件" : name };
 }
 
-/** 1 本の列。見出し（名前と数）と、縦に送る本体（同じ要素を使い回すので縦の位置が残る） */
+/** 1 本の列。見出し（名前と数）と、縦に送る本体（同じ要素を使い回すので縦の位置が残る）。節に more があれば項目の後ろに［ほか n 件］（on.more(列の id)。#505） */
 export function Column({ col, on }) {
   const { counted, label } = countLabel(col.name, col.count);
   let body;
@@ -404,6 +452,9 @@ export function Column({ col, on }) {
     body = col.sections.flatMap((s, i) => [
       s.label ? html`<p class="c-col-label" key=${"label:" + i}>${s.label}</p>` : null,
       ...s.items.map((item) => html`<${Item} key=${item.key} item=${item} on=${on} />`),
+      s.more
+        ? html`<button class="c-col-more" type="button" key=${"more:" + i} onClick=${() => on.more && on.more(col.id)}>${s.more.label}</button>`
+        : null,
     ]);
   return html`<section class="c-col" data-col=${col.id} aria-label=${label}>
     <header class="c-col-head">
