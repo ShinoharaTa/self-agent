@@ -180,6 +180,8 @@
   // ===== 部品の入口（c-app.js の SA.list）へ渡す物 =====
   /** 部品は (channelId, last) で訊く（store.isUnread は { id, last }） */
   const IS_UNREAD = (channelId, last) => store.isUnread({ id: channelId, last });
+  /** 右腕の行の作業中の印（#514）。チャンネルに実行中のターンが在るか */
+  const IS_RUNNING = (channelId) => store.runningOf(channelId) !== null;
 
   /** 一覧の部品が押されたとき（1 回だけ作る） */
   const LIST_ON = {
@@ -224,6 +226,9 @@
       turnFrom,
       othersOpen: othersSaved(),
       isUnread: IS_UNREAD,
+      isRunning: IS_RUNNING,
+      // 一覧の一番上に右腕の行（#514。いつも）
+      handRow: true,
       time: SA.ui.shortTime,
       ago: SA.views.ago,
       on: LIST_ON,
