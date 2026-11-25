@@ -1718,7 +1718,10 @@
     renderBar();
   }
 
-  /** 留める・外す（#507）。id（ch:<channelId>）は encode しない。成功したら pins を取り込み、知らせて見出し（「…」の行の語）を描き直し、一覧を読み直す */
+  /**
+   * 留める・外す（#507）。id（ch:<channelId>）は encode しない。成功したら pins を取り込み（setPins の refreshTabs が見出しの「…」の行の語も描き直す）、知らせて一覧を読み直す。
+   * 上限（409）・引けない（404）は知らせの後に読み直す（画面の pins が古い）。つながらない時は読み直さない
+   */
   async function setPin(id, on) {
     let res;
     try {
@@ -1728,13 +1731,16 @@
       if (code === "pin_limit") {
         const max = err.data && typeof err.data.max === "number" ? err.data.max : SA.topics.pinMax();
         SA.ui.toast("ピン留めは " + max + " つまで", null, { level: "error" });
-      } else if (err && err.status === 404) SA.ui.toast("この話題はピン留めできません", null, { level: "error" });
-      else SA.ui.toast(err && typeof err.toast === "string" ? err.toast : "サーバーにつながりません", null, { level: "error", retry: () => setPin(id, on) });
+        // 画面の pins が古いので読み直す
+        SA.topics.load();
+      } else if (err && err.status === 404) {
+        SA.ui.toast("この話題はピン留めできません", null, { level: "error" });
+        SA.topics.load();
+      } else SA.ui.toast(err && typeof err.toast === "string" ? err.toast : "サーバーにつながりません", null, { level: "error", retry: () => setPin(id, on) });
       return;
     }
     SA.topics.setPins(res);
     SA.ui.toast(on ? "ピン留めした" : "ピン留めを外した");
-    renderBar();
     SA.topics.load();
   }
 
@@ -2135,9 +2141,9 @@
     if (!SA.deck) return;
     if (from && typeof from.key === "string" && SA.deck.focusItem(from.key)) return;
     if (S.active) {
-      // #507: 通知の列から開いた物は節「ピン留め」へ飛ばさない（スマホの列が横に送られる）
-      const fromFeed = from && typeof from.key === "string" && from.key.startsWith("topic:");
-      const prefixes = fromFeed ? ["turn:", "run:", "topic:"] : ["turn:", "run:", "pin:", "topic:"];
+      // #507: 節「ピン留め」へ焦点を返すのは、あなたの番の列の項目から開いた時だけ（鍵を足すたびに #505 と同じ形でスマホの列が横に送られないように）
+      const fromTurnColumn = !!from && typeof from.key === "string" && ["turn:", "run:", "idle:", "pin:"].some((p) => from.key.startsWith(p));
+      const prefixes = fromTurnColumn ? ["turn:", "run:", "pin:", "topic:"] : ["turn:", "run:", "topic:"];
       for (const prefix of prefixes) if (SA.deck.focusItem(prefix + S.active)) return;
     }
     SA.deck.focusBand("find");

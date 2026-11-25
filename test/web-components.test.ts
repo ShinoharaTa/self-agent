@@ -4688,6 +4688,8 @@ test("web components: pinItems は pins の順のまま（activityAt で並べ�
   // pins が無い・配列でない・文字列でない要素は捨てる
   for (const pins of [undefined, null, "1", 1, {}]) assert.deepEqual(deck.pinItems(flowOf({ topics: { ...topics, pins } })), [], String(pins));
   assert.deepEqual(deck.pinItems(flowOf({ topics: { ...topics, pins: [1, null, "2", { id: "3" }] } })).map((i) => i.target), ["ch:2"]);
+  // 同じ ID の重なりは落とす（最初の出現の順）
+  assert.deepEqual(deck.pinItems(flowOf({ topics: { ...topics, pins: ["1", "1", "2"] } })).map((i) => i.key), ["pin:ch:1", "pin:ch:2"]);
   assert.deepEqual(deck.pinItems(flowOf({ topics: null })), []);
   assert.equal(deck.itemWord("pin", idleTopic("ch:1", 1, { stopped: true, ended: "max_turns" }), flowOf()), "上限で停止");
 });
@@ -4717,6 +4719,16 @@ test("web components: deckModel のあなたの番の列は 番・ピン留め�
   // 留めた物が 0（pins が空・無い・生きている物が無い）なら節「ピン留め」が無く、pins を渡さない時と同じ
   for (const pins of [[], ["missing"], ["1"], null]) assert.deepEqual(model(pins), model(), JSON.stringify(pins));
   assert.ok(!model().columns[0]!.sections.some((s) => s.label === "ピン留め"));
+});
+
+test("web components: 待機の［ほか n 件］は留めた話題を除いた後の数（待機 10 件で 留め 0 → ほか 2 件・1 → ほか 1 件・2 → 無し。#507）", () => {
+  assert.equal(deck.IDLE_MAX, 8);
+  const topics = Array.from({ length: 10 }, (_, i) => idleTopic("ch:" + (1 + i), i));
+  const idleOf = (pins: string[]) => deck.deckModel(flowOf({ topics: { turnIds: [], groups: [], topics, rightHands: [], pins } })).columns[0]!.sections.find((s) => s.label === "待機")!;
+  assert.deepEqual(idleOf([]).more, { count: 2, label: "ほか 2 件" });
+  assert.deepEqual(idleOf(["1"]).more, { count: 1, label: "ほか 1 件" });
+  assert.equal(idleOf(["1", "2"]).more, null);
+  assert.equal(idleOf(["1", "2"]).items.length, 8);
 });
 
 test("web components: 1 つの話題は あなたの番 の列の中で 1 か所: turnItems・pinItems・runningItems・idleItems の target が重ならない（#507）", () => {

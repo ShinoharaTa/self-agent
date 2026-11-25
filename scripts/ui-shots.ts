@@ -5572,10 +5572,28 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
             }
           } finally {
             // 片付け: 2 つとも節の項目から開いて「ピン留めを外す」
-            for (const title of [...pinned]) {
-              await openItem("pin", title);
-              if (await pinVia("ピン留めを外す", "ピン留めを外した")) pinned.splice(pinned.indexOf(title), 1);
+            let thrown: unknown = null;
+            try {
+              for (const title of [...pinned]) {
+                await openItem("pin", title);
+                if (await pinVia("ピン留めを外す", "ピン留めを外した")) pinned.splice(pinned.indexOf(title), 1);
+              }
+            } catch (error) {
+              thrown = error;
             }
+            // 掃除（画面から外せなかった時も、後の段に留めた物を残さない）: サーバーの pins を全部外す
+            const swept = await page
+              .evaluate(async () => {
+                const headers = { "X-Self-Agent": "1", "Content-Type": "application/json" };
+                const res = await fetch("/api/topics", { headers: { "X-Self-Agent": "1" }, credentials: "same-origin", cache: "no-store" });
+                const body = (await res.json()) as { pins?: unknown };
+                const ids = Array.isArray(body.pins) ? body.pins.filter((id): id is string => typeof id === "string") : [];
+                for (const id of ids) await fetch("/api/topics/ch:" + id + "/pin", { method: "POST", headers, credentials: "same-origin", body: JSON.stringify({ on: false }) });
+                return ids.length;
+              })
+              .catch(() => -1);
+            if (swept !== 0 && thrown === null) say(swept < 0 ? "掃除の読み取り・外しに失敗" : `画面から外した後もサーバーに留めた物が ${swept} 個残っていた（掃除で外した）`);
+            if (thrown !== null) throw thrown;
           }
           if (pinned.length > 0) throw new Error(`外せなかった話題が ${pinned.length} 個（後の段に残る）`);
           const end = await seen();
