@@ -1887,3 +1887,87 @@ test("POST /api/topics/ch:<id>/pin: 冪等。同じ on: true を 2 回でも 1 �
   assert.deepEqual(await pin(s, "999", { on: false }), { status: 200, json: { pins: ["200", "201"], pinMax: 4 } });
   assert.deepEqual(s.topicPins.all(), ["200", "201"]);
 });
+
+/** 進行中の話題を count 件足す（時刻は setup と同じ NOW なので、同じ時刻の並びは channel_id の昇順。"1000" からの ID は "200" より前に並ぶ） */
+function addActive(s: Awaited<ReturnType<typeof setup>>, count: number): string[] {
+  const ids = Array.from({ length: count }, (_, index) => String(1000 + index));
+  for (const channelId of ids) s.topicSessions.create({ channelId, guildId: GUILD, title: `足した話 ${channelId}`, categoryId: "c" });
+  return ids;
+}
+
+test("GET /api/topics: 留めた話題は件数の上限（進行中 25）の外でも pins と topics に入る。留めていない上限の外の話題は今までどおり無い", async (t) => {
+  const s = await setup(t, { pins: true });
+  assert.equal((await pin(s, "200", { on: true })).status, 200);
+  addActive(s, 30);
+  // "200" は進行中の 26 件目以降（一覧の走査の外）
+  const scanned = s.topicSessions.listByState(GUILD, "active", 25).map((item) => item.channelId);
+  assert.equal(scanned.length, 25);
+  assert.ok(!scanned.includes("200"));
+  assert.deepEqual(await pinsOf(s.server), { pins: ["200"], pinMax: 4 });
+  const result = await topics(s.server);
+  assert.equal(byId(result, "ch:200")?.state, "active");
+  // 留めていない 26 件目以降は出ない
+  for (const id of ["ch:1025", "ch:1029", "ch:201", "ch:204", "ch:205"]) assert.equal(byId(result, id), undefined, id);
+});
+
+test("POST /api/topics/ch:<id>/pin: 留めた 4 つが件数の上限の外に落ちても数に入り、5 つ目は 409 pin_limit", async (t) => {
+  const s = await setup(t, { pins: true });
+  for (const channelId of ["200", "201", "203", "205"]) {
+    assert.equal((await pin(s, channelId, { on: true })).status, 200, channelId);
+  }
+  addActive(s, 30);
+  assert.deepEqual(await pinsOf(s.server), { pins: ["200", "201", "203", "205"], pinMax: 4 });
+  assert.deepEqual(await pin(s, "1000", { on: true }), { status: 409, json: { error: "pin_limit", max: 4 } });
+  assert.deepEqual(s.topicPins.all(), ["200", "201", "203", "205"]);
+});
+
+test("POST /api/topics/ch:<id>/pin: 件数の上限の外の留めていない話題への on: true は今までどおり 404", async (t) => {
+  const s = await setup(t, { pins: true });
+  addActive(s, 30);
+  assert.deepEqual(await pin(s, "204", { on: true }), { status: 404, json: { error: "not_found" } });
+  assert.deepEqual(s.topicPins.all(), []);
+});
+
+test("POST /api/topics/ch:<id>/pin: 留め済みで完了した話題への on: true は 404 で pins に無く、行は残る。進行中に戻すと pins に戻る", async (t) => {
+  const s = await setup(t, { pins: true });
+  assert.equal((await pin(s, "200", { on: true })).status, 200);
+  s.topicSessions.close("200", "要約");
+  assert.deepEqual(await pin(s, "200", { on: true }), { status: 404, json: { error: "not_found" } });
+  assert.deepEqual(await pinsOf(s.server), { pins: [], pinMax: 4 });
+  assert.deepEqual(s.topicPins.all(), ["200"]);
+  s.topicSessions.setActive("200");
+  assert.deepEqual(await pinsOf(s.server), { pins: ["200"], pinMax: 4 });
+  assert.deepEqual(s.topicPins.all(), ["200"]);
+});
+
+test("POST /api/topics/ch:<id>/pin: #tasks・足した人格の入口・生きている Claude Code のチャンネルは留められる", async (t) => {
+  const s = await setup(t, { pins: true, cc: true });
+  assert.deepEqual(await pin(s, "101", { on: true }), { status: 200, json: { pins: ["101"], pinMax: 4 } });
+  assert.deepEqual(await pin(s, "102", { on: true }), { status: 200, json: { pins: ["101", "102"], pinMax: 4 } });
+  assert.deepEqual(await pin(s, "300", { on: true }), { status: 200, json: { pins: ["101", "102", "300"], pinMax: 4 } });
+  assert.deepEqual(await pinsOf(s.server), { pins: ["101", "102", "300"], pinMax: 4 });
+});
+
+test("GET /api/topics: ほかのサーバーのセッション・削除済み・走査の外の完了の話題を留めた行がストアに在っても、pins にも topics にも出ない", async (t) => {
+  const s = await setup(t, { pins: true });
+  s.topicSessions.create({ channelId: "206", guildId: GUILD, title: "消した話", categoryId: "c" });
+  s.topicSessions.markDeleted("206");
+  // 完了の走査（新しい順に 200 件）の外に落ちる完了の話題 "207"（同じ時刻の並びは channel_id の昇順）
+  s.topicSessions.create({ channelId: "207", guildId: GUILD, title: "前に終わった話", categoryId: "c" });
+  s.topicSessions.close("207", "要約");
+  for (let index = 0; index < 200; index++) {
+    const channelId = String(1000 + index);
+    s.topicSessions.create({ channelId, guildId: GUILD, title: `終わった話 ${channelId}`, categoryId: "c" });
+    s.topicSessions.close(channelId, "要約");
+  }
+  assert.ok(!s.topicSessions.listByState(GUILD, "done", 200).some((item) => item.channelId === "207"));
+  for (const channelId of ["400", "206", "207"]) s.topicPins.add(channelId);
+  assert.deepEqual(await pinsOf(s.server), { pins: [], pinMax: 4 });
+  for (const path of ["/api/topics", "/api/topics?done=general"]) {
+    const result = await topics(s.server, path);
+    for (const id of ["ch:400", "ch:206", "ch:207"]) assert.equal(byId(result, id), undefined, `${path} ${id}`);
+    // 完了の数も走査の 200 件のまま（留めた "207" を足さない）
+    assert.equal(result.groups.find((group) => group.key === "general")?.done, 200, path);
+  }
+  assert.deepEqual(s.topicPins.all(), ["400", "206", "207"]);
+});

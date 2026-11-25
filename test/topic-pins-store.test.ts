@@ -50,6 +50,18 @@ test("openDb: v47 の DB を開くと最新（v48 以上）に上がり、今あ
   assert.equal(db.prepare("PRAGMA user_version").get()?.user_version, MIGRATIONS.length);
   assert.equal(new HistoryStore(db).list("topic-1", { limit: 10 })[0]?.text, "こんにちは");
   assert.equal(count(db), 0);
+  // 3 列の名前・型・NOT NULL・主キー（channel_id が主キー、position と created_at は NOT NULL）
+  assert.deepEqual(
+    db
+      .prepare("PRAGMA table_info(topic_pins)")
+      .all()
+      .map((column) => [String(column.name), String(column.type), Number(column.notnull), Number(column.pk)]),
+    [
+      ["channel_id", "TEXT", 0, 1],
+      ["position", "INTEGER", 1, 0],
+      ["created_at", "TEXT", 1, 0],
+    ],
+  );
   const pins = new TopicPinStore(db, () => NOW);
   pins.add("topic-1");
   assert.deepEqual(pins.all(), ["topic-1"]);
