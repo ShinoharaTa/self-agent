@@ -4666,7 +4666,11 @@ test("web components: Column は more の節で項目の後ろに［ほか n 件
   assert.deepEqual([more[0]!.type, more[0]!.props.type, textOf(more[0]!)], ["button", "button", "ほか 2 件"]);
   // 節の見出し → 8 件 → ［ほか 2 件］の順
   const kids = body.children.filter((c): c is El => typeof c !== "string");
-  assert.deepEqual(kids.map((c) => String(c.props.class)), ["c-col-label", ...Array(8).fill("c-item"), "c-col-more"]);
+  assert.deepEqual(kids.slice(0, -1).map((c) => String(c.props.class)), ["c-col-label", ...Array(8).fill("c-item")]);
+  // ［ほか n 件］は list の子なので listitem の包みの中
+  const last = kids.at(-1)!;
+  assert.equal(last.props.role, "listitem");
+  assert.deepEqual(find(last, "c-col-more"), more);
   assert.deepEqual(find(turnBox, "c-col-label").map(textOf), ["待機"]);
   (more[0]!.props.onClick as () => void)();
   assert.deepEqual(calls, ["turn"]);
