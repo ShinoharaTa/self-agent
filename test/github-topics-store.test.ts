@@ -35,9 +35,9 @@ test("openDb: v45 までの DB を上げると最新の版になり、github_top
     )
     .run();
   // github_topics の他の表・索引の定義（名前の近い github_handoffs・github_notifications も入る）。
-  // 後の移行が変える表（v47 の sessions・usage_log・place_settings）は除く（その移行のテストで見る）
+  // 後の移行が変える表（v47 の sessions・usage_log・place_settings、v48 の topic_pins）は除く（その移行のテストで見る）
   const others =
-    "SELECT name, sql FROM sqlite_master WHERE name NOT LIKE 'github_topics%' AND tbl_name NOT IN ('sessions', 'usage_log', 'place_settings') ORDER BY name";
+    "SELECT name, sql FROM sqlite_master WHERE name NOT LIKE 'github_topics%' AND tbl_name NOT IN ('sessions', 'usage_log', 'place_settings', 'topic_pins') ORDER BY name";
   const defsBefore = old.prepare(others).all().map((row) => ({ ...row }));
   assert.ok(defsBefore.some((row) => row.name === "github_handoffs"));
   old.close();
