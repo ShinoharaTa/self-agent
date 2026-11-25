@@ -7918,6 +7918,10 @@ test("web static: 右腕は rightHands の先頭の #inbox で、ほかの話題
   await h.flush();
   assert.equal(h.app.activeTabId(), "ch:900", "一覧の前は列 2 に開く");
   assert.equal(handOf(h), "open", "一覧の前の右腕の列は読み込み中");
+  // /turns を読むのは列 2 に開いた時の 1 回だけ（views の onOpen。殻は右腕の列の道でも席の道でも読まない）
+  const opened = () => h.opens.filter((t) => t === "ch:900").length;
+  assert.equal(opened(), 1);
+  assert.deepEqual(h.loads.turns, []);
   const turn = { kind: "confirm", since: "2026-11-14T00:00:00.000Z", summary: null };
   h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:a")], { rightHands: [v3Hand({ turn }), v3Hand({ id: "ch:901" })], turnIds: ["ch:900"], turns: 1 }));
   await h.topics.load();
@@ -7935,6 +7939,12 @@ test("web static: 右腕は rightHands の先頭の #inbox で、ほかの話題
   assert.equal("outgoing" in seat.frame, false);
   assert.equal(seat.frame.placeholder, "右腕に頼む・訊く");
   assert.equal(h.lastTop().title, "右腕");
+  // 一覧が届いて（syncHand → refresh）右腕の会話の指定で描き直しても、/turns を読み直さない（onOpen も殻の load.turns も増えない）
+  assert.equal(opened(), 1);
+  assert.deepEqual(h.loads.turns, []);
+  await h.topics.load();
+  assert.equal(opened(), 1);
+  assert.deepEqual(h.loads.turns, []);
   // 一覧の一番上の右腕の行は current（番の項目には出さない）
   const top = () => (h.model() as ReturnType<typeof h.model> & { hand?: { row: { id: string; title: string; current: boolean } | null } | null }).hand!.row!;
   assert.deepEqual([top().id, top().title, top().current], ["ch:900", "右腕", true]);
@@ -7955,6 +7965,59 @@ test("web static: 右腕は rightHands の先頭の #inbox で、ほかの話題
   assert.match(none.nodes.handEd.textContent, /右腕はまだありません。Discord で \/setup を実行すると、ここで頼めます。/);
   assert.equal(none.handRenders.length, 0);
   assert.deepEqual(shownIds(none), []);
+});
+
+test("web static: 落ち先の広い幅（SA.deck 無し）で列 2 に開いた右腕は、一覧の entry への popstate でも話題と同じに列 2 に残り、右腕の列の口（#v3-hand-show）は枠・列に描かず席の入力欄へ（#514 の R2）", async () => {
+  const h = await loadHand({ width: 1400 });
+  h.app.open("ch:900");
+  assert.equal(h.app.activeTabId(), "ch:900");
+  assert.equal(handOf(h), "closed");
+  const renders = h.handRenders.length;
+  // 一覧の entry に着く（落ち先の広い幅は列 2 を隠さない）
+  h.fire("popstate", { state: null });
+  assert.equal(h.app.activeTabId(), "ch:900");
+  assert.doesNotMatch(h.nodes.ed.textContent, /左の一覧から話題を選んでください/);
+  assert.equal(h.nodes.ed.querySelectorAll("div.ed-scroll").length, 1);
+  assert.equal(h.handRenders.length, renders, "席を空にして描き直さない");
+  // 話題も同じ（列 2 に残る）
+  h.app.open("ch:1");
+  h.fire("popstate", { state: null });
+  assert.equal(h.app.activeTabId(), "ch:1");
+  // 右腕の列の口: 右腕が列 2 に在る間は列を開かず、席の入力欄へ
+  h.app.open("ch:900");
+  h.fire("popstate", { state: null });
+  h.nodes.handShow.dispatch("click");
+  assert.equal(handOf(h), "closed");
+  assert.equal(h.nodes.handEd.children.length, 0);
+  assert.equal(h.nodes.ed.querySelectorAll("div.ed-scroll").length + h.nodes.handEd.querySelectorAll("div.ed-scroll").length, 1);
+  assert.equal(h.document.activeElement, h.nodes.ed.querySelector("textarea.composer-input"));
+});
+
+test("web static: スマホの流れの列: 一覧より先に hash で席に開いた右腕の上に見出しの［右腕］で枠を開き、一覧が届いて畳むと entry の右腕の印（v3Hand）を外し、焦点は席の入力欄。［‹］1 回で列へ戻る（#514 の R2）", async () => {
+  const h = loadShell({ deck: true, phone: true, width: 390, hand: {}, hash: "#/ch/900" }) as HandShell;
+  await h.flush();
+  assert.equal(h.app.activeTabId(), "ch:900");
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "body");
+  // 一覧の前は右腕と分からないので、見出しの［右腕］は枠を開く（entry を 1 つ積む）
+  h.lastTop().on.hand(h.nodes.topButtons.hand);
+  assert.equal(handOf(h), "open");
+  assert.deepEqual(JSON.parse(JSON.stringify(h.history.state)), { v3Body: true, v3Hand: true, v3Depth: 1 });
+  assert.ok(h.nodes.hand.contains(h.document.activeElement), "焦点は枠の中");
+  // 一覧が届く: 席の右腕なので枠を畳み、entry の印を外す（段数は話題の entry と同じ数え方）。焦点は席の入力欄
+  h.api.reply = () => Promise.resolve(v3Result([v3Topic("ch:1")], { rightHands: [v3Hand()] }));
+  await h.topics.load();
+  assert.equal(handOf(h), "closed");
+  assert.equal(h.app.activeTabId(), "ch:900");
+  assert.deepEqual(JSON.parse(JSON.stringify(h.history.state)), { v3Body: true, v3Depth: 2 });
+  assert.equal(h.nodes.handEd.children.length, 0);
+  assert.ok(!h.nodes.hand.contains(h.document.activeElement), "焦点は畳んだ枠の中に無い");
+  assert.equal(h.document.activeElement, seatInput(h));
+  // ［‹］1 回で列
+  h.lastTop().on.back();
+  assert.equal(h.nodes.v3.getAttribute("data-view"), "list");
+  assert.equal(h.history.state, null);
+  assert.equal(h.app.activeTabId(), null);
+  assert.equal(handOf(h), "closed");
 });
 
 test("web static: 新しい殻の shownChannelIds は列 2 の会話と見えている右腕で、畳む・閉じると右腕を外す", async () => {

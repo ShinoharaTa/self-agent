@@ -971,7 +971,9 @@
     if (handSeated()) focusSeatInput();
   }
 
-  /** 枠・列の右腕を畳む（席に右腕を開くとき。列の形は［畳む］と同じに保存する。焦点は動かさない）。畳んだら true */
+  /**
+   * 枠・列の右腕を畳む（席に右腕を開くとき。列の形は［畳む］と同じに保存する。重ねる形は fitHand と同じに今の entry の右腕の印（v3Hand）を外す。焦点は動かさない）。畳んだら true
+   */
   function foldHand() {
     if (S.handMode === "column") {
       if (!S.handWant) return false;
@@ -980,6 +982,7 @@
     } else {
       if (!S.handOver) return false;
       S.handOver = false;
+      dropHandMark();
     }
     applyHand();
     return true;
@@ -1176,9 +1179,11 @@
     if (lastHandTab !== null && lastHandTab !== tab && S.active === lastHandTab) leaveHandSeat();
     lastHandTab = tab;
     if (handSeated()) {
-      // 同じチャンネルを 2 つの入れ物に描かない（落ち先の右腕の列が開いていれば畳む）
-      foldHand();
+      // 同じチャンネルを 2 つの入れ物に描かない（一覧より先に開いた枠・落ち先の右腕の列が開いていれば畳む）。畳んだ枠の中の焦点は、描き直した後の席の入力欄へ
+      const focusInHand = handHasFocus();
+      const folded = foldHand();
       if (!edHand || handCardSig !== cardSig()) refresh(tab);
+      if (folded && focusInHand) focusSeatInput();
     }
     if (handVisible() && (handShown !== handKey() || handCardSig !== cardSig())) renderHand();
     renderHandEntries();
@@ -1408,8 +1413,8 @@
     setView("list");
     if (deckOn()) focusSeatFrom();
     else focusCurrentRow();
-    // 席の右腕を閉じた: 席を空にする（枠は開かない）
-    if (handSeated()) leaveHandSeat();
+    // 席の右腕を閉じた: 席が隠れる形なら席を空にする（枠は開かない）。落ち先の広い幅は列 2 が見えたままなので、話題と同じに残す
+    if (handSeated() && (phone() || deckOn())) leaveHandSeat();
   }
 
   function openDrawer() {
@@ -2598,8 +2603,8 @@
           if (deckOn()) focusSeatFrom();
           else if (phone()) focusCurrentRow();
         }
-        // 席の右腕を閉じた: 席を空にする（枠は開かない）
-        if (handSeated()) leaveHandSeat();
+        // 席の右腕を閉じた: 席が隠れる形なら席を空にする（枠は開かない）。落ち先の広い幅は列 2 が見えたままなので、話題と同じに残す
+        if (handSeated() && (phone() || deckOn())) leaveHandSeat();
       }
       if (handChanged) applyHand();
       if (handClosed) restoreHandFocus();
