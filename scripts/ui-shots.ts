@@ -173,6 +173,8 @@ function newShellNames(vp: Viewport, theme: Theme, full: boolean): string[] {
     ...(vp === "phone" && theme === "dark" ? ["a-deck-tasks", "a-deck-feed", "a-deck-more"] : []),
     // あなたの番の列の節「ピン留め」（#507 の P2。ダークのスマホだけ）: 動いている話題と待機の話題を「…」から留めた所
     ...(vp === "phone" && theme === "dark" ? ["a-deck-pins"] : []),
+    // 帯と会話の列（#507 の P4。ダークの PC だけ）: 2 つ留めた帯の左端と、右端まで送った所
+    ...(vp === "pc" && theme === "dark" ? ["a-deck-pins-wide", "a-deck-pins-wide-end"] : []),
     // 列の中の操作（D1 の PR-2。ダークの PC と、D2 からダークのスマホ）: タスクを［完了］にした直後
     ...(vp !== "tablet" && theme === "dark" ? ["a-deck-done"] : []),
     // 列のリマインドの［次を飛ばす］［止める］（#472 の PR-1。ダークの PC だけ）: ［止める］の確認が出た所
@@ -5602,6 +5604,378 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
             say(`外した後の「動いている」「待機」が「${end.running.join("・")}」「${end.idle.join("・")}」（留める前の「${before.running.join("・")}」「${before.idle.join("・")}」のはず）`);
           for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
           if (problems.length > 0) throw new Error(`節「ピン留め」の検査で ${problems.length} 件`);
+        });
+      }
+      // 帯と会話の列（#507 の P4。ダークの PC だけ）: 待機・動いている話題（番の無い・既読の物）の 2 つを、席の見出しのピンのボタンと「…」の「ピン留めする」で留め、帯の左端と右端まで送った所を撮る。
+      // 絵にしない DOM の確かめ: 留めた数 0 の #v3 の属性と格子・列の数と幅（300・420）・帯の幅（stripFit の room と 1px 以内）と scrollWidth・丸が列に重ならない・送りを止めると列の左端（末尾は右端）で止まる・
+      // 止まった後の shownChannelIds・readingChannelIds が見えている列と同じ（左端・右端・席を開いた時・右腕の枠を重ねた時）・見える列だけ既読を付けに行く・節の行を押した後の scrollLeft と焦点・
+      // 会話の根（data-talk・data-composer・data-cards）が 1 チャンネルに 1 つ・列の見出しがはみ出さない（幅 820 で席を開いた狭い列も）・留める・外した後の焦点。終わりに 2 つとも外し、掃除で留めた物を残さない
+      if (vp === "pc" && theme === "dark") {
+        await step(`${p} pins-wide`, [`${p}-a-deck-pins-wide`, `${p}-a-deck-pins-wide-end`], async () => {
+          const TURN = '#c-deck-root .c-col[data-col="turn"]';
+          const problems: string[] = [];
+          const say = (text: string): void => void problems.push(`帯と会話の列: ${text}`);
+          type Win = Window & {
+            SA: {
+              topics: { data: () => { topics: Array<{ id: string; title: string; state: string; mark: string | null; turn: unknown; last: unknown }>; rightHands: Array<{ id: string }> } | null; pins: () => string[] };
+              store: { isUnread: (c: { id: string; last: unknown }) => boolean; markSeen: (id: string, n: number) => boolean };
+              app: { shownChannelIds: () => string[]; readingChannelIds: () => string[] };
+              deck: { stripFit: (w: number, open: boolean) => { show: boolean; room: number; colW: number; convW: number } };
+              pins: { seen: () => string[] };
+            };
+            __pinEnds?: number;
+            __pinMarks?: string[];
+          };
+          /** 今の帯と列の形（ブラウザの中で測る） */
+          type Strip = {
+            attr: string | null;
+            view: string | null;
+            pins: string[];
+            geo: string[];
+            seen: string[];
+            shown: string[];
+            reading: string[];
+            seat: string | null;
+            seatOpen: boolean;
+            hand: string | null;
+            over: boolean;
+            find: boolean;
+            left: number;
+            max: number;
+            client: number;
+            scrollWidth: number;
+            room: number;
+            flowW: number[];
+            convW: number[];
+            snaps: number[];
+            orbHits: string[];
+            dupRoots: string[];
+            headOver: string[];
+            focus: string;
+          };
+          const strip = (): Promise<Strip> =>
+            page.evaluate(() => {
+              const w = window as unknown as Win;
+              const v3 = document.querySelector<HTMLElement>("#v3")!;
+              const band = document.querySelector<HTMLElement>("#v3-deck")!;
+              const br = band.getBoundingClientRect();
+              const cols = [...document.querySelectorAll<HTMLElement>("#v3-pins > section.v3-pin")];
+              const inside = (r: DOMRect): boolean => r.left >= br.left - 1 && r.right <= br.left + band.clientWidth + 1;
+              const seatOpen = v3.getAttribute("data-view") === "body";
+              // 席の住人（席の中に描いた会話。閉じても残り、shownChannelIds は残った住人も返す）
+              const hash = document.querySelector("#ed .ed-scroll[data-channel]")?.getAttribute("data-channel") ?? null;
+              const orb = document.querySelector("#c-orb-root button.c-orb");
+              const or = orb === null ? null : orb.getBoundingClientRect();
+              const orbHits: string[] = [];
+              if (or !== null) {
+                for (const el of [...document.querySelectorAll<HTMLElement>("#c-deck-root .c-col"), ...cols]) {
+                  const r = el.getBoundingClientRect();
+                  // 帯の見える範囲で切った列の箱
+                  const l = Math.max(r.left, br.left);
+                  const rr = Math.min(r.right, br.left + band.clientWidth);
+                  if (rr > l && rr > or.left && l < or.right && r.bottom > or.top && r.top < or.bottom) orbHits.push(el.getAttribute("data-pin") ?? el.getAttribute("data-col") ?? "?");
+                }
+              }
+              const counts = new Map<string, number>();
+              for (const attr of ["data-talk", "data-composer", "data-cards"]) {
+                for (const el of document.querySelectorAll(`[${attr}]`)) {
+                  const key = `${attr}=${el.getAttribute(attr)}`;
+                  counts.set(key, (counts.get(key) ?? 0) + 1);
+                }
+              }
+              const active = document.activeElement;
+              const pinOf = active?.closest("section.v3-pin")?.getAttribute("data-pin") ?? null;
+              const focus =
+                pinOf === null
+                  ? active === null
+                    ? "無し"
+                    : (active.closest("[data-act]")?.getAttribute("data-act") ?? active.tagName.toLowerCase())
+                  : `${pinOf}:${active?.closest('[data-act="pin"]') ? "pin" : active?.closest("[data-composer]") || active?.matches("textarea") ? "composer" : "other"}`;
+              const hand = w.SA.topics.data()?.rightHands[0]?.id ?? null;
+              return {
+                attr: v3.getAttribute("data-pins"),
+                view: v3.getAttribute("data-view"),
+                pins: cols.map((c) => c.getAttribute("data-pin") ?? ""),
+                geo: cols.filter((c) => inside(c.getBoundingClientRect())).map((c) => c.getAttribute("data-pin") ?? ""),
+                seen: w.SA.pins.seen(),
+                shown: w.SA.app.shownChannelIds(),
+                reading: w.SA.app.readingChannelIds(),
+                seat: hash,
+                seatOpen,
+                hand: hand !== null && v3.getAttribute("data-hand") === "open" ? hand.slice(3) : null,
+                over: v3.getAttribute("data-hand") === "open",
+                find: v3.getAttribute("data-find") === "open",
+                left: band.scrollLeft,
+                max: band.scrollWidth - band.clientWidth,
+                client: band.clientWidth,
+                scrollWidth: band.scrollWidth,
+                room: w.SA.deck.stripFit(v3.clientWidth, seatOpen).room,
+                flowW: [...document.querySelectorAll<HTMLElement>("#c-deck-root .c-col")].map((c) => c.offsetWidth),
+                convW: cols.map((c) => c.offsetWidth),
+                snaps: [...document.querySelectorAll<HTMLElement>("#c-deck-root .c-col"), ...cols].map((c) => Math.min(c.offsetLeft, band.scrollWidth - band.clientWidth)),
+                orbHits,
+                dupRoots: [...counts].filter(([, n]) => n > 1).map(([k, n]) => `${k} が ${n} 個`),
+                headOver: cols.flatMap((c) => {
+                  const top = c.querySelector<HTMLElement>(".c-top");
+                  return top === null ? [`${c.getAttribute("data-pin")} の見出しが無い`] : top.scrollWidth > top.clientWidth ? [`${c.getAttribute("data-pin")} の見出しが ${top.scrollWidth}/${top.clientWidth}px`] : [];
+                }),
+                focus,
+              };
+            });
+          /** 帯の形の確かめ（どの状態でも成り立つ物）。where は文の頭 */
+          const stripLines = (s: Strip, where: string, n: number): void => {
+            if (s.attr !== "true") say(`${where}: #v3 の data-pins が ${String(s.attr)}（true のはず）`);
+            if (s.pins.length !== n) say(`${where}: 会話の列が ${s.pins.length} 本（${n} 本のはず）`);
+            if (Math.abs(s.client - s.room) > 1) say(`${where}: 帯の見える幅 ${s.client}px（stripFit の room ${s.room}px と 1px 以内のはず）`);
+            const wantW = Math.min(300, s.room);
+            const wantC = Math.min(420, s.room);
+            if (s.flowW.length !== 3 || s.flowW.some((x) => Math.abs(x - wantW) > 1)) say(`${where}: 流れの列の幅が ${s.flowW.join("・")}（${wantW} が 3 本のはず）`);
+            if (s.convW.some((x) => Math.abs(x - wantC) > 1)) say(`${where}: 会話の列の幅が ${s.convW.join("・")}（${wantC} のはず）`);
+            // 中身が見える幅より狭ければ scrollWidth は見える幅
+            const total = Math.max(3 * wantW + n * wantC + (2 + n) * 8, s.client);
+            if (Math.abs(s.scrollWidth - total) > 1) say(`${where}: 帯の scrollWidth ${s.scrollWidth}px（${total}px のはず）`);
+            if (s.orbHits.length > 0) say(`${where}: 右腕の丸が列 ${s.orbHits.join("・")} に重なる`);
+            if (s.dupRoots.length > 0) say(`${where}: 会話の根が 2 つ以上（${s.dupRoots.join("・")}）`);
+            if (s.headOver.length > 0) say(`${where}: 列の見出しがはみ出す（${s.headOver.join("・")}）`);
+            // 止まった後: 見えている列（pins.js）= 端まで見えている列（測った箱）。読み直しは席・右腕・見えている列、既読は重なりの下を除く
+            if (JSON.stringify(s.seen) !== JSON.stringify(s.geo)) say(`${where}: 見えている列が「${s.seen.join("・")}」（端まで見えている「${s.geo.join("・")}」のはず）`);
+            const wantShown = [...new Set([...(s.seat ? [s.seat] : []), ...(s.hand ? [s.hand] : []), ...s.geo])];
+            const wantReading = [...new Set([...(s.seat && s.seatOpen && !s.over ? [s.seat] : []), ...(s.hand ? [s.hand] : []), ...(s.over || s.find ? [] : s.geo)])];
+            if (JSON.stringify(s.shown) !== JSON.stringify(wantShown)) say(`${where}: shownChannelIds が「${s.shown.join("・")}」（${wantShown.join("・")} のはず）`);
+            if (JSON.stringify(s.reading) !== JSON.stringify(wantReading)) say(`${where}: readingChannelIds が「${s.reading.join("・")}」（${wantReading.join("・")} のはず）`);
+          };
+          /** 送りが止まるまで待つ（scrollend の数が増えるまで。送らなかったら増えないので、先に送れるかを見る） */
+          const scrollBand = async (to: "end" | "start" | number): Promise<void> => {
+            const before = await page.evaluate(() => {
+              const w = window as unknown as Win;
+              const band = document.querySelector<HTMLElement>("#v3-deck")!;
+              if (w.__pinEnds === undefined) {
+                w.__pinEnds = 0;
+                band.addEventListener("scrollend", () => void (w.__pinEnds = (w.__pinEnds ?? 0) + 1));
+              }
+              return { ends: w.__pinEnds, left: band.scrollLeft, max: band.scrollWidth - band.clientWidth };
+            });
+            const target = to === "end" ? before.max : to === "start" ? 0 : to;
+            if (Math.abs(target - before.left) < 1) return;
+            const box = await page.locator("#v3-deck").boundingBox();
+            if (box === null) throw new Error("帯の箱が無い");
+            // 帯の中の空いた所（列の見出しの高さ）にポインタを置いて横に送る（トラックパッドの横の送りと同じ。JS で wheel を取っていないので、ブラウザの送りと止まり方）
+            await page.mouse.move(box.x + box.width / 2, box.y + 12);
+            await page.mouse.wheel(target - before.left, 0);
+            await page.waitForFunction((n: number) => ((window as unknown as Win).__pinEnds ?? 0) > n, before.ends, { timeout: 5000 });
+            await page.mouse.move(box.x + box.width + 40, box.y + 200);
+            await settled(page);
+          };
+          /** 知らせを × で閉じる（撮る絵に残さない） */
+          const closeNotices = async (): Promise<void> => {
+            await page.evaluate(() => {
+              for (const b of document.querySelectorAll<HTMLButtonElement>('#c-notice-root .c-toast-list[role="status"] .c-toast-item button[aria-label="閉じる"]')) b.click();
+            });
+            await settled(page);
+          };
+          /** #v3 の属性（data-moves は最初の操作で付くので、操作の後に比べる）と格子 */
+          const shellForm = (): Promise<string> =>
+            page.evaluate(() => {
+              const v3 = document.querySelector<HTMLElement>("#v3")!;
+              const attrs = [...v3.attributes].map((a) => `${a.name}=${a.value}`).sort();
+              const band = document.querySelector<HTMLElement>("#v3-deck")!.getBoundingClientRect();
+              return JSON.stringify({ attrs, grid: getComputedStyle(v3).gridTemplateColumns, band: [band.left, band.width], pins: document.querySelector("#v3-pins")?.children.length ?? -1 });
+            });
+
+          await load(page, "/");
+          await page.waitForSelector(`${TURN} .c-item`, { timeout: 5000 });
+          // 最初の操作（何も起きない Shift）の後の、留めた数 0 の形
+          await page.keyboard.press("Shift");
+          await settled(page);
+          const zero = await shellForm();
+          // 留める 2 つ: あなたの番の列の「動いている」「待機」の項目のうち、未読でない話題（既読を付けに行っても後の段の未読が変わらない物）。右腕は留められない
+          const picks = await page.evaluate((sel: string) => {
+            const w = window as unknown as Win;
+            const data = w.SA.topics.data();
+            if (data === null) return [];
+            const keys = [...document.querySelectorAll(`${sel} .c-item[data-kind="running"], ${sel} .c-item[data-kind="idle"]`)].map((el) => el.getAttribute("data-key") ?? "");
+            return keys
+              .map((key) => ({ key, t: data.topics.find((t) => key.endsWith(":" + t.id)) }))
+              .filter(({ t }) => t !== undefined && t.id.startsWith("ch:") && t.state !== "done" && t.turn === null && !w.SA.store.isUnread({ id: t.id.slice(3), last: t.last }))
+              .slice(0, 2)
+              .map(({ key, t }) => ({ key, id: t!.id.slice(3), title: t!.title }));
+          }, TURN);
+          if (picks.length < 2) throw new Error(`留められる既読の話題が ${picks.length} 個（2 個要る）`);
+          const [a, b] = picks as [{ key: string; id: string; title: string }, { key: string; id: string; title: string }];
+          const pinned: string[] = [];
+          try {
+            // 1 つ目: 列の項目から席に開き、席の見出しのピンのボタン
+            const openSeat = async (key: string): Promise<void> => {
+              await page.locator(`${TURN} .c-item[data-key="${key}"] button.c-item-main`).click();
+              await page.waitForSelector('#v3[data-view="body"] #ed textarea', { timeout: 5000 });
+              await settled(page);
+            };
+            await openSeat(a.key);
+            const seatPin = page.locator('#c-top-root [data-act="pin"] button');
+            if ((await seatPin.count()) !== 1) throw new Error("席の見出しにピンのボタンが無い");
+            if ((await seatPin.getAttribute("aria-pressed")) !== "false") say(`席のピンのボタンの aria-pressed が ${String(await seatPin.getAttribute("aria-pressed"))}（false のはず）`);
+            await seatPin.click();
+            await page.waitForSelector(`#v3-pins > section.v3-pin[data-pin="${a.id}"]`, { timeout: 5000 });
+            await settled(page);
+            pinned.push(a.id);
+            let s = await strip();
+            if (s.view !== "list") say(`席のピンのボタンの後の data-view が ${String(s.view)}（list のはず。席を閉じる）`);
+            if (s.focus !== `${a.id}:pin`) say(`席のピンのボタンの後の焦点が ${s.focus}（留めた列のピンのボタンのはず）`);
+            const pressed = await page.locator(`#v3-pins > section.v3-pin[data-pin="${a.id}"] [data-act="pin"] button`).getAttribute("aria-pressed");
+            if (pressed !== "true") say(`列のピンのボタンの aria-pressed が ${String(pressed)}（true のはず）`);
+            stripLines(s, "1 本留めた所", 1);
+            // 2 つ目: 席に開いて「…」→「ピン留めする」
+            await openSeat(b.key);
+            await page.click(TOP_MENU);
+            await page.waitForSelector("#v3-sheet[open]", { timeout: 5000 });
+            const rows = await sheetRows(page);
+            if (!rows.includes("ピン留めする")) throw new Error(`「…」の板に「ピン留めする」が無い（${rows.join("・")}）`);
+            await page.locator("#v3-sheet .more-row").filter({ hasText: "ピン留めする" }).first().click();
+            await page.waitForSelector(`#v3-pins > section.v3-pin[data-pin="${b.id}"]`, { timeout: 5000 });
+            await settled(page);
+            pinned.push(b.id);
+            s = await strip();
+            await closeNotices();
+            if (s.view !== "list") say(`「ピン留めする」の後の data-view が ${String(s.view)}（list のはず）`);
+            if (JSON.stringify(s.pins) !== JSON.stringify([a.id, b.id])) say(`列の順が ${s.pins.join("・")}（留めた順のはず）`);
+            if (s.focus !== `${b.id}:pin`) say(`「ピン留めする」の後の焦点が ${s.focus}（留めた列のピンのボタンのはず）`);
+            if (Math.abs(s.left - s.max) > 1) say(`留めた直後の帯の位置 ${s.left}（末尾の列の右端 ${s.max} のはず）`);
+            stripLines(s, "2 本留めた所", 2);
+
+            // 左端: 読み込み直すと帯は左端（位置は覚えない）
+          await load(page, "/");
+            await page.waitForSelector(`#v3-pins > section.v3-pin[data-pin="${b.id}"] .c-top`, { timeout: 5000 });
+            await settled(page);
+            s = await strip();
+            if (s.left !== 0) say(`読み込んだ時の帯の位置 ${s.left}（0 のはず）`);
+            stripLines(s, "左端", 2);
+            if (s.geo.includes(b.id)) say("左端で 2 本目の列が端まで見えている（1440 では右の外のはず）");
+            // 見えない列には既読を付けに行かない（描き直しても）・見えるようになった列には付けに行く（store.markSeen を呼んだチャンネルを覚える）
+            await page.evaluate(() => {
+              const w = window as unknown as Win;
+              const orig = w.SA.store.markSeen;
+              w.__pinMarks = [];
+              w.SA.store.markSeen = (id: string, n: number) => {
+                w.__pinMarks!.push(id);
+                return orig(id, n);
+              };
+            });
+            await page.evaluate((id: string) => (window as unknown as { SA: { app: { refresh: (tab: string) => void }; chat: { markSeenShown: () => void } } }).SA.app.refresh("ch:" + id), b.id);
+            await page.evaluate(() => (window as unknown as { SA: { chat: { markSeenShown: () => void } } }).SA.chat.markSeenShown());
+            const hidden = await page.evaluate(() => (window as unknown as Win).__pinMarks ?? []);
+            if (hidden.includes(b.id)) say("見えていない列（左端の 2 本目）に既読を付けに行った");
+            await page.mouse.move(1, 1);
+            await shot(page, `${p}-a-deck-pins-wide`);
+
+            // 右端まで送る（止まると末尾の列の右端）
+            await scrollBand("end");
+            s = await strip();
+            if (Math.abs(s.left - s.max) > 1) say(`右端まで送った後の帯の位置 ${s.left}（${s.max} のはず）`);
+            stripLines(s, "右端", 2);
+            if (!s.geo.includes(b.id)) say("右端で 2 本目の列が端まで見えていない");
+            const marked = await page.evaluate(() => (window as unknown as Win).__pinMarks ?? []);
+            if (!marked.includes(b.id)) say("送って見えるようになった 2 本目の列に既読を付けに行かない");
+            await page.mouse.move(1, 1);
+            await shot(page, `${p}-a-deck-pins-wide-end`);
+
+            // 途中まで送って止めると列の左端で止まる
+            await scrollBand(s.max / 2);
+            s = await strip();
+            if (!s.snaps.some((x) => Math.abs(x - s.left) <= 1)) say(`途中で止めた帯の位置 ${s.left}（列の左端 ${s.snaps.join("・")} のどれかのはず）`);
+            stripLines(s, "途中で止めた所", 2);
+            await scrollBand("start");
+
+            // 節「ピン留め」の行を押す（帯は左端。節が見えている）: 端まで見えている 1 本目は帯が動かず、2 本目は帯がその列へ（末尾は右端）。どちらも席は開かず、入力欄に焦点
+            const pressPinRow = async (id: string): Promise<void> => {
+              const row = page.locator(`${TURN} .c-item[data-key="pin:ch:${id}"] button.c-item-main`);
+              if ((await row.count()) === 0) throw new Error(`節「ピン留め」に ch:${id} の行が無い`);
+              await row.click();
+              await settled(page);
+            };
+            await pressPinRow(a.id);
+            s = await strip();
+            if (s.left !== 0) say(`端まで見えている列の行を押した後の帯の位置 ${s.left}（動かない 0 のはず）`);
+            if (s.focus !== `${a.id}:composer`) say(`節の行（1 本目）を押した後の焦点が ${s.focus}（その列の入力欄のはず）`);
+            await pressPinRow(b.id);
+            s = await strip();
+            if (s.view !== "list") say(`節の行（2 本目）を押した後の data-view が ${String(s.view)}（list のはず。席を開かない）`);
+            if (Math.abs(s.left - s.max) > 1) say(`節の行（2 本目）を押した後の帯の位置 ${s.left}（末尾の列の右端 ${s.max} のはず）`);
+            if (s.focus !== `${b.id}:composer`) say(`節の行（2 本目）を押した後の焦点が ${s.focus}（その列の入力欄のはず）`);
+            if ((await page.evaluate(() => location.hash)) !== "") say("節の行を押した後に住所（hash）が書かれた");
+            stripLines(s, "節の行（2 本目）を押した後", 2);
+
+            // 席を開いた時（留めていない番の話題）: 帯が狭まる。見えている列はその場の物だけ
+            await scrollBand("start");
+            await page.locator(`${TURN} .c-item[data-turn="true"] button.c-item-main`).first().click();
+            await page.waitForSelector('#v3[data-view="body"] #ed textarea', { timeout: 5000 });
+            await settled(page);
+            s = await strip();
+            if (!s.seatOpen || s.seat === null) say("番の項目を押しても席が開かない");
+            stripLines(s, "席を開いた時", 2);
+            // 右腕の枠を重ねた時: 下の席と列は既読から外れる
+            await page.click(ORB);
+            await page.waitForSelector('#v3[data-hand="open"]', { timeout: 5000 });
+            await settled(page);
+            stripLines(await strip(), "右腕の枠を重ねた時", 2);
+            await page.keyboard.press("Escape");
+            await page.waitForSelector('#v3[data-hand="closed"]', { timeout: 5000 });
+            await settled(page);
+            await page.click('#c-top-root [data-act="close"] button');
+            await page.waitForSelector('#v3[data-view="list"]', { timeout: 5000 });
+            await settled(page);
+
+            // 幅 820 で席を開いた時: 列は 292 に縮み、列の見出しははみ出さない（絵は撮らない）
+            await page.setViewportSize({ width: 820, height: VIEWPORTS.pc.viewport.height });
+            await settled(page);
+            await page.locator(`${TURN} .c-item[data-turn="true"] button.c-item-main`).first().click();
+            await page.waitForSelector('#v3[data-view="body"] #ed textarea', { timeout: 5000 });
+            await settled(page);
+            stripLines(await strip(), "幅 820 で席を開いた時", 2);
+            await page.click('#c-top-root [data-act="close"] button');
+            await page.waitForSelector('#v3[data-view="list"]', { timeout: 5000 });
+            await page.setViewportSize(VIEWPORTS.pc.viewport);
+            await settled(page);
+
+            // 外す: 1 本目は列のピンのボタン（焦点は右隣の列のピンのボタン）、2 本目は列の「…」→「ピン留めを外す」（焦点は上の帯の［探す］）
+            await page.locator(`#v3-pins > section.v3-pin[data-pin="${a.id}"] [data-act="pin"] button`).click();
+            await page.waitForSelector(`#v3-pins > section.v3-pin[data-pin="${a.id}"]`, { state: "detached", timeout: 5000 });
+            await settled(page);
+            pinned.splice(pinned.indexOf(a.id), 1);
+            s = await strip();
+            if (s.focus !== `${b.id}:pin`) say(`1 本目を外した後の焦点が ${s.focus}（右隣の列のピンのボタンのはず）`);
+            stripLines(s, "1 本外した所", 1);
+            await page.locator(`#v3-pins > section.v3-pin[data-pin="${b.id}"] [data-act="menu"] button`).click();
+            await page.waitForSelector("#v3-sheet[open]", { timeout: 5000 });
+            const colRows = await sheetRows(page);
+            if (colRows[0] !== "ピン留めを外す" || colRows.some((r) => r === "場所を変える" || r === "許可のモードを変える" || r === "ピン留めする")) say(`列の「…」の板の行が「${colRows.join("・")}」（ピン留めを外す とチャンネルの操作だけのはず）`);
+            await page.locator("#v3-sheet .more-row").filter({ hasText: "ピン留めを外す" }).first().click();
+            await page.waitForSelector(`#v3-pins > section.v3-pin[data-pin="${b.id}"]`, { state: "detached", timeout: 5000 });
+            await settled(page);
+            pinned.splice(pinned.indexOf(b.id), 1);
+            const focus = await page.evaluate(() => document.activeElement?.closest("[data-act]")?.getAttribute("data-act") ?? null);
+            if (focus !== "find") say(`最後の 1 本を外した後の焦点が ${String(focus)}（上の帯の［探す］のはず）`);
+            await closeNotices();
+            const end = await shellForm();
+            if (end !== zero) say(`外した後の #v3 の形が ${end}（留める前の ${zero} のはず）`);
+          } finally {
+            // 掃除（画面から外せなかった時も、後の段に留めた物を残さない）: サーバーの pins を全部外す（a-deck-pins の段と同じ）
+            await page.setViewportSize(VIEWPORTS.pc.viewport);
+            const swept = await page
+              .evaluate(async () => {
+                const headers = { "X-Self-Agent": "1", "Content-Type": "application/json" };
+                const res = await fetch("/api/topics", { headers: { "X-Self-Agent": "1" }, credentials: "same-origin", cache: "no-store" });
+                const body = (await res.json()) as { pins?: unknown };
+                const ids = Array.isArray(body.pins) ? body.pins.filter((id): id is string => typeof id === "string") : [];
+                for (const id of ids) await fetch("/api/topics/ch:" + id + "/pin", { method: "POST", headers, credentials: "same-origin", body: JSON.stringify({ on: false }) });
+                return ids.length;
+              })
+              .catch(() => -1);
+            if (swept !== 0 && pinned.length === 0) say(swept < 0 ? "掃除の読み取り・外しに失敗" : `画面から外した後もサーバーに留めた物が ${swept} 個残っていた（掃除で外した）`);
+            if (pinned.length > 0) say(`外せなかった話題が ${pinned.length} 個（掃除で外した）`);
+            // 途中で投げた時も、そこまでに見つけた物を残す
+            for (const line of problems) logLines.push(`[v3-${p}] ${line}`);
+          }
+          if (problems.length > 0) throw new Error(`帯と会話の列の検査で ${problems.length} 件`);
         });
       }
       // 席が開くときの動き（D5 の PR-1。ダークのスマホと PC）: 読み込み（hash）で開いた席は動かず印（data-moves）が無い。最初の操作の後に項目を押すと、

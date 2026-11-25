@@ -1997,7 +1997,8 @@
     if (!v3) return;
     if (!deckOn()) {
       if (S.deckCols === null) return;
-      fitPins(true);
+      S.deckPins = false;
+      applyPins({ show: false });
       closeFind(false);
       for (const name of ["data-deck", "data-seat", "data-find"]) v3.removeAttribute(name);
       applyInert();
@@ -2023,18 +2024,24 @@
     // 初めて流れの列になったときに、列のタスク・リマインドを polling に足して読む（スマホでも。中は 1 回だけ）
     if (first && SA.flows) SA.flows.init();
     // 留めた話題の会話の列（#507）。帯を出す・やめるが替わったら流れの列も描き直す
-    if (fitPins(full)) changed = true;
+    const pins = full ? { show: false } : pinFit(S.view === "body");
+    if ((pins.show === true) !== S.deckPins) changed = true;
+    S.deckPins = pins.show === true;
     if (!changed) {
+      applyPins(pins);
       measurePins();
       return;
     }
     S.deckCols = fit.cols;
     S.deckCurrent = current;
+    // 帯をやめるときは先に帯を片付ける。出すときは流れの列を帯の形（strip）で描いた後に帯にする（帯が送りの止まる所を決める時に、流れの列がもう帯の幅で並んでいるように）
+    if (!S.deckPins) applyPins(pins);
     if (SA.flows) {
       // 帯の間だけ strip を渡す（帯でなければ鍵を足さない）
       SA.flows.setView(Object.assign({ cols: fit.cols, current, paged: full }, S.deckPins ? { strip: true } : {}));
       SA.flows.render();
     }
+    if (S.deckPins) applyPins(pins);
     renderBand();
     // スマホと広い幅をまたいだら下のバーを描き直す（スマホは列の下のバー、広い幅は空）
     if (first || wasFull !== full) renderBottom(handMark());
@@ -2140,14 +2147,12 @@
   }
 
   /**
-   * 帯（#507）を合わせる: 留めた数が 1 以上で帯が出る幅（スマホ・席だけの幅でない）なら #v3 に data-pins と列の幅の変数を書いて pins.js に列を合わせさせ、
-   * そうでなければ書いた物を消して列を片付ける（書いていなければ何も書かない。留めた数 0 の今の形のまま）。帯を出す・やめるが替わったら true
+   * 帯（#507）を当てる。fit は pinFit の結果: show なら #v3 に data-pins と列の幅の変数を書いて pins.js に列を合わせさせ、
+   * そうでなければ書いた物を消して列を片付ける（書いていなければ何も書かない。留めた数 0 の今の形のまま）
    */
-  function fitPins(full) {
+  function applyPins(fit) {
     const v3 = refs.v3;
-    const fit = full ? { show: false } : pinFit(S.view === "body");
-    const show = fit.show === true;
-    if (show) {
+    if (fit.show === true) {
       v3.setAttribute("data-pins", "true");
       v3.style.setProperty("--c-deck-col-w", fit.colW + "px");
       v3.style.setProperty("--c-deck-conv-w", fit.convW + "px");
@@ -2156,11 +2161,10 @@
       v3.removeAttribute("data-pins");
       v3.style.removeProperty("--c-deck-col-w");
       v3.style.removeProperty("--c-deck-conv-w");
+      // 変数のほかに書いた物は無いので、空になった style の属性ごと外す（留めた数 0 の今の形に戻す）
+      if (v3.style.length === 0) v3.removeAttribute("style");
       if (SA.pins) SA.pins.sync({ show: false, fit: null, on: PINS_ON });
     }
-    const was = S.deckPins;
-    S.deckPins = show;
-    return was !== show;
   }
 
   /** 帯が出ていれば見えている列を数え直す（流れの列を描き直した後。列の位置が決まってから） */
