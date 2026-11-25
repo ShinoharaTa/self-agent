@@ -486,6 +486,7 @@ CREATE TABLE topic_pins (
 - ストア `src/store/topic-pins.ts`: `all()`・`has()`・`add()`・`remove()`・定数 `TOPIC_PIN_MAX = 4`。`add` は無ければ `max(position) + 1` で足し、在れば何もしない。`remove` は無くても成功。`all` は position 順の channelId の配列。
 - `GET /api/topics` に `pins: string[]`（生きている留めた話題 = 一覧に在って完了でない物。position 順）と `pinMax: number`（配線が無ければ `pins` は `[]`・`pinMax` は 0。画面は 0 の時ピン留めの操作を出さない）。`Topic` の項目は増えていない（`pinned` の意味も今のまま）。
 - `POST /api/topics/ch:<id>/pin` 本文 `{ on }` → 200 `{ pins, pinMax }`／400（`on` が真偽値でない・右腕）／404（引けない・一覧に無い・完了。`on: true` の時だけ）／409 `{ error: "pin_limit", max }`（生きている物が上限以上）。`on: false` はいつも成功。同じ状態への要求は 200。
+  > 注記（#514 の R5）: 右腕は 400 でなく 200（上限の外・`handPins`。§4.8・§4.11 の注記）。
 - 完了・削除でストアの行は消さない（`pins` に出ないだけ。完了から戻ると留めたまま戻る。上限を越えて生きている物が在っても切らずに返す）。
 - 差分に `src/agent/` と `topicListRows` が無い。`npm run check`・`npm test` が通る。
 
