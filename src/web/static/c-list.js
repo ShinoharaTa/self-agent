@@ -10,7 +10,7 @@ export const STOPPED_LABEL = Object.freeze({ max_turns: { text: "上限で停止
 export const TURN_LABEL = Object.freeze({ permission: "許可", question: "質問", waiting: "判断待ち", confirm: "確認", max_turns: STOPPED_LABEL.max_turns.text, failed: STOPPED_LABEL.failed.text });
 /** ?done= で出す完了の数（src/app/topics.ts の TOPICS_DONE_MAX） */
 export const DONE_MAX = 50;
-/** 右腕がまだ無いときの文（右腕の行の下に出す。docs/plan/web-ui-hand-row.md §3。shell.js の右腕の枠の文と同じ） */
+/** 右腕がまだ無いときの文（右腕の行の下に出す。docs/plan/web-ui-hand-row.md §3。この文を持つのはここだけで、流れの列の右腕の行（c-deck.js）もこれを使う） */
 export const HAND_NONE = "右腕はまだありません。Discord で /setup を実行すると、ここで頼めます。";
 const STOPPED_OTHER = Object.freeze({ text: "停止", tone: "muted" });
 const QUEUED_STATE = Object.freeze({ text: "順番待ち", tone: "muted" });

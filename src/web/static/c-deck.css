@@ -290,7 +290,7 @@
   }
 }
 
-/* ===== 上の帯（● self-agent・［探す］［右腕］［＋ 始める］［歯車］） ===== */
+/* ===== 上の帯（● self-agent・［探す］［＋ 始める］［歯車］） ===== */
 .c-band {
   box-sizing: border-box;
   display: flex;
