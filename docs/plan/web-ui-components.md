@@ -238,7 +238,7 @@
 
 1. `base.css`（リセットと寸法の目盛り。**触らない**。生成ページと共有）
 2. `tokens.css`（色・動き・重なり。**残す**。色は今のままでモック D と一致している）
-3. `c-*.css`（部品。8 ファイル: atoms・shell・list・talk・cards・composer・hand・sheet）
+3. `c-*.css`（部品。今は atoms・cards・composer・deck・list・sheet・shell・talk・term の 9 ファイルと見本の gallery。hand は #514 で消した）
 4. `legacy-views.css`（「ほか」の画面のための古い見た目。§7.4。移し終えたら消す）
 
 新しい殻は **`app.css` を読まない**（K8 から）。`shell.css` は K8 で消える。
@@ -276,7 +276,7 @@
 | `--c-bubble-pad-y` / `--c-bubble-pad-x` | 10 / 14 | — | 自分の発言の面の上下 / 左右の内側の余白（K4 は吹き出しの余白。D4 から自分の発言だけ） |
 | `--c-card-max` | 520 | — | カードの最大の幅（K5） |
 | `--c-check` | 24 | — | カードの中のチェック・ラジオの印の大きさ（K5） |
-| `--c-deck-seat-in` | 16 | — | 流れの列の席が開くときの右からのずれ（`shell.css`。D5 の PR-1）と、右腕の枠が出るときのずれ（広い幅は右から・スマホは下から。D6 の PR-4） |
+| `--c-deck-seat-in` | 16 | — | 流れの列の席が開くときの右からのずれ（`shell.css`。D5 の PR-1）と、新しく留めた会話の列が出るときの右からのずれ（`shell.css`。#507 の P5）。右腕の枠が出るときのずれ（D6 の PR-4）は #514 で枠ごと消した |
 
 - 板が下か中央かは寸法ではなく置き方なので、今の殻と同じ幅だけ（`@media (max-width: 639px)`）で `c-sheet.css` に書く。
 - 古い寸法のトークンは M8b で古い殻と一緒に消す。
@@ -378,10 +378,11 @@
     | `focusRow(id)` → boolean | その話題の行のうち `data-mark` の付いた物（群の中の行）を先に、無ければ「あなたの番」の行にフォーカス |
     | `focusList()` | 一覧の根（`tabindex="-1"` の `.c-list`）にフォーカス |
     | `scrollTop()`・`setScrollTop(n)` | 一覧の根の位置を読む・書く |
-    | `drawBar(bar)` → boolean | `bar` は `{ turns, hand, tabs, on }`。形（スマホか広い幅か）は入口が決める。`#c-bottom-root` が無ければ覚えるだけで true。例外は握って false |
-    | `focusHand()` → boolean | スマホのバーの右腕のボタンにフォーカス。無ければ false |
+    | `drawBar(bar)` → boolean | `bar` は `{ turns, tabs, on }` か null（流れの列の間は描かない）。形（スマホか広い幅か）は入口が決める。`#c-bottom-root` が無ければ覚えるだけで true。例外は握って false（右腕の `hand` は #514 で外した） |
 
-    `shell.js` は起動のときに 1 回と右腕の印を描くたびに `drawBar` を呼び、false なら件数・印・タブの無い形で 1 回だけ描き直す。
+    今の `SA.list` は `{ draw, focusRow, focusList, scrollTop, setScrollTop, drawBar }`（スマホのバーの右腕へ焦点を移す `focusHand()` は #514 で消した）。
+
+    `shell.js` は起動のときに 1 回と右腕の印を描くたびに `drawBar` を呼び（`renderBottom`）、false なら件数・タブの無い形で 1 回だけ描き直す。
 
     鍵: `#c-list-root` の `keydown` で、行（`button[data-topic]`）の上の ↑↓・Home・End を `listKey` で動かす。修飾キー（Alt・Ctrl・Meta・Shift）付きは素通し。
 - 受け入れ（K3b で確かめられる形に書き直した。その場の許可・拒否は K5 へ移した）:
@@ -409,7 +410,7 @@
 - 本番の見出しの形（#398）:
   - 新しい殻（K4 のときは `v3.html`。M8 から `index.html`）の列 2 の上は `#c-top-root` だけ（古い帯 `#v3-bar`・場所のボタン・［会話］［端末］・上の［右腕］は消した）。入口 `c-app.js` の口 `SA.top` は 3 つ: `draw(state)`（描けたか。描く前に見出しの中に在った焦点のボタンが消えたら「…」→「一覧へ」→ 最初のボタンへ）、`focus(act)`（back・place・menu・hand）、`compact()`（今の列の幅なら compact か。測るだけで覚えない・描かない。スマホは false、測れなければ null）
   - state の欄は view（none・talk・other）・title・status・note・place・views・hand・compact・menu・controls・on。作るのは `shell.js` の `topState()`。会話のチャンネルの題・状態・人格の札・「…」の行は `chat.js` の `SA.chat.head(channelId)`（DOM を作らない。古い見出しの […] と同じ行の関数を使う）
-  - ほかの画面（設定・ナレッジなど）は `views.js` の `toolbar()` が、入口が在るときは題と戻るを作らず、添え物と操作の段だけを返す（どちらも空なら隠す）。`chat.js` の `render` は入口が在るとき列 2 の見出しを作らない。右腕の列（`frame`）は今の見出しのまま → K6: 枠の `head: false` のときは作らない（右腕の見出しは `shell.js` が `SA.hand` で描く）
+  - ほかの画面（設定・ナレッジなど）は `views.js` の `toolbar()` が、入口が在るときは題と戻るを作らず、添え物と操作の段だけを返す（どちらも空なら隠す）。`chat.js` の `render` は入口が在るとき列 2 の見出しを作らない。右腕の列（`frame`）は今の見出しのまま → K6: 枠の `head: false` のときは作らない（右腕の見出しは `shell.js` が `SA.hand` で描く。#514 で `SA.hand` を消し、今は席・列の TopBar）
   - 「…」の板は今の `#v3-sheet`（古い見た目のまま）。閉じてすぐ同じ板を開き直したとき、後から届いた `close` が新しい開き手を消さないよう、板が開いていれば受け手は何もしない
   - `.c-top` は自分で字の大きさと行の高さを持つ（`.c-bottom`・`.c-list` と同じく、親の `.v3` の字に頼らない）
 - 設計との違い（#398）:
@@ -517,8 +518,8 @@
 - K2 からの申し送り: 板の中に入力欄を置く画面で、iOS のキーボードが出たときに板が持ち上がるか（`.c-sheet` は `app.css` の `dialog` の `--vvh`・`--kb` を使っていない）。→ 起きない（右腕を `.c-sheet` に入れなかった。今の `--vvh` の枠のまま。実機はオーナー）
 - K2 からの申し送り: 知らせの入れ物（`role="status"`・`role="alert"`）は暗黙に atomic なので、足すたびに全部を読み直す見立て。読み上げで確かめて決める。→ 入れ物に `aria-atomic="false"` を付けた（今の `#toast`・`#toast-alert` と同じ。読み上げでは確かめていない）。
 - 申し送り（K6 の後）:
-  - K7（殻の根）へ: 右腕の枠（`aside#v3-hand`・開閉・履歴・inert・背景）と畳んだ細い帯（D16）はまだ `shell.js` と `shell.css`。幅のトークンは `--v3-hand-w`（落ち先の形の列）と `--c-hand-w`（流れの列の形の枠。D6 の PR-2）の 2 つが在るので 1 つに（枠は #463 の D6 で残すと決めたので、D10 でやる）。口 `SA.hand` と `#c-hand-root` は殻の部品に入れば消える
-  - flip の後の片付け（K9）へ: 口が在れば通らなくなった古い道（`chat.js` の `frameHeader`・`composer()`・`frame.replyExtras`、`shell.js` の `handCards`・`handOps`、`shell.css` の `.v3-card`・`.v3-hand .ed-…`、`index.html` の `#dlg-confirm`・`#toast`・`#toast-alert`、`ui.js` の `toastDom`・`confirmDom`）は、古い殻を消す段でまとめて消す。それまでは戻り先として残す
+  - K7（殻の根）へ（注記: 下の右腕の枠・細い帯・`--v3-hand-w`・`--c-hand-w`・`SA.hand`・`#c-hand-root` は #514 で消したので、この申し送りは無くなった）: 右腕の枠（`aside#v3-hand`・開閉・履歴・inert・背景）と畳んだ細い帯（D16）はまだ `shell.js` と `shell.css`。幅のトークンは `--v3-hand-w`（落ち先の形の列）と `--c-hand-w`（流れの列の形の枠。D6 の PR-2）の 2 つが在るので 1 つに（枠は #463 の D6 で残すと決めたので、D10 でやる）。口 `SA.hand` と `#c-hand-root` は殻の部品に入れば消える
+  - flip の後の片付け（K9）へ: 口が在れば通らなくなった古い道（`chat.js` の `frameHeader`・`composer()`・`frame.replyExtras`、`shell.js` の `handCards`・`handOps`（#514 で消した）、`shell.css` の `.v3-card`・`.v3-hand .ed-…`（#514 で消した）、`index.html` の `#dlg-confirm`・`#toast`・`#toast-alert`、`ui.js` の `toastDom`・`confirmDom`）は、古い殻を消す段でまとめて消す。それまでは戻り先として残す
   - 別の issue: 押したカード・［やめる］が消えるとフォーカスが body に落ちる（形の案: カードの口が描く前後でフォーカスを見て、根の中に在った物が document から外れたら「残ったカードの最初の押せるボタン → 無ければ、タッチが主でないときは入力欄、タッチが主のときは会話の入れ物」へ。タッチのときの先はオーナーが決める。キーボードを出さない方を既定に）。右腕を初めて開いたときの焦点（#423）。`cc:` のタブ（［端末］）の古いカード・帯・入力欄（#428: `cc:` のタブは部品にしない。X2 で消す。代わりに端末の行の小さい 1 枚（札）を H3 で部品として作る。`docs/plan/terminal-handover.md` §2.2・§6）。一覧の上の見出し（銘・検索・緑の点・鐘）。知らせの場所を変える（オーナーが既定以外を選んだとき）
   - 要らなかった物: 同じ会話の根を 2 つ持つ仕組み（`set`・根 2 つ）と、板の中の入力欄の iOS のキーボードの対応
 
