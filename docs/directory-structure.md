@@ -93,5 +93,5 @@ test/mode-command.test.ts # /mode（app/commands/mode.ts）のテスト（一時
 test/models.test.ts # 話題のモデル（docs/plan/models.md の PR-1。#451）のテスト（一時 SQLite・偽 Runner・偽の query）。一覧と resolveModelKey・labelOf、v46 → v47 の移行（今ある行の model は NULL・ほかの表の定義はそのまま）、sessions の model・modelOf・setModel、PlaceSettingStore、runChannelTurn の context の model（セッションのチャンネルだけ。#inbox・#tasks・予約した依頼・NULL は入れない）、/renew（プロジェクトのセッションだけ）、Options の同一性（model が無ければ buildQueryOptions(cfg)・createProjectProfile の今までの Options とキーの順も同じ、あれば model だけ違う）、人格の runner（NULL なら人格のモデル）
 test/model-entry.test.ts # 話題を始める入口のモデル（docs/plan/models.md §3。#451 の PR-2）のテスト（一時 SQLite・偽 Gateway。場所の既定は PlaceSettingStore.set で直に入れる）。resolveTopicModel の順（明示・場所・無し・人格・一覧に無い key）と placeKeyOf（groupKeyOf と同じ字）、welcomeText・rightHandWelcomeText のモデルの行、/new の model（定義の最後・明示・場所の既定・project・人格との併用・一覧に無い値）、startTopic（by github）の場所の既定、main.ts の配線の見張り。右腕・Web・ホームパネル・取り込みは各テストのファイル
 THIRD_PARTY_LICENSES.md # 同梱したライブラリ（preact = MIT・htm = Apache-2.0）の名前・版・出どころ・ライセンスの全文
-docs/            # REQUIREMENTS.md, design/, research/, archive/, plan/（フェーズごとの実装仕様。取り込みは plan/takeover.md）
+docs/            # REQUIREMENTS.md, status.md（各設計の段がどこまで main に入ったか。段を進めた PR で直す）, commands.md（npm のコマンドの細かい説明）, design/, research/, archive/, plan/（フェーズごとの実装仕様。取り込みは plan/takeover.md）
 ```
