@@ -33,12 +33,12 @@
 | 送る（文字だけ・1,900 字。Discord にも写る） | — | `POST /api/channels/<id>/messages` | W §2 | 済 |
 | 動いているターンを見る（経過・道具の様子）・止める | running | `GET /api/running`・`POST …/turns/<seq>/abort` | W | 済 |
 | 続ける・待ちにする・締める（確認つき）・作り直す | channel の `closeDraft` | `POST /api/channels/<id>/continue`・`/renew`、`/api/sessions/<id>/wait`・`/continue`・`/close`・`/close/confirm` | W | 済（長い物は 202） |
-| 許可・質問に答える（プロジェクトのセッション） | channel の `permission` | `POST /api/cc/permissions/<id>/…`（推測: コメントで「Claude Code のチャンネルと同じカード」まで確認） | U | 済 |
+| 許可・質問に答える（プロジェクトのセッション） | channel の `permission`（id と `requestHash`。`/api/channels` と `…/turns` の `channel` に在る。`/api/topics` には無い） | `POST /api/cc/permissions/<id>/allow`・`/always`・`/deny`・`/answer`（body に `requestHash`。`SELF_AGENT_CC` が切なら 404） | U・TH | 済 |
 | モードを変える | — | `POST /api/topics/ch:<id>/mode` | U | 済 |
 | 場所を付け替える（要点を引き継ぐ）。提案を受ける・断る | `moveProposal` | `POST …/place`（202）、`/api/topics/moves/<id>/accept`・`/keep` | V3 §15 | 済 |
 | 返事を整えて出す（見出し・リスト・コード・リンク） | — | 手元（`parseBlocks`） | G | 済（表・引用・画像は記号のまま: #389） |
 | 画像・添付を送る | — | 口が無い | W §2 範囲外 | 無 |
-| 止まったターンを［もう一度送る］ | — | Web に無い（Discord 側は未確認） | #483 | 無 |
+| 止まったターンを［もう一度送る］ | — | Web にも Discord にも無い | #483 | 無 |
 | 止まった話題を開いた後の出し方 | — | — | L（L1c PR-5） | 無 |
 
 ### 1.3 話題を始める
@@ -106,19 +106,19 @@
 |---|---|
 | 待ち受け | loopback だけ。外へは `tailscale serve`（https） |
 | 認証 | `Tailscale-User-Login` が許した名前と一致。または合言葉 → `/login` → 署名つき cookie（30 日） |
-| POST の決まり | 同一オリジン + `X-Self-Agent: 1` + JSON のオブジェクト。64KB まで。止める途中は 503 |
-| 誤りの形 | `{ error }`。401・403・404・405・413・400・500・503。無効な機能の口は 404 |
+| POST の決まり | 同一オリジン + `X-Self-Agent: 1` + `Content-Type: application/json`（欠けると 403）+ JSON のオブジェクト。64KB まで。止める途中は 503 |
+| 誤りの形 | `{ error }`。401・403・404・405・413・400・500・503 と、**409**（busy・closing・`pin_limit` など。`routes/` に 28 か所）。`/login` は 429（1 分 5 回）。無効な機能の口は 404。成功は 200 のほか 201（作った）・202（長い物を受けた） |
 | CSP | `default-src 'self'`。inline の script・style・style 属性は書けない |
 | キャッシュ | API は `no-store`、ほかは `no-cache` + ETag（304） |
-| 静的ファイル | `/` = `index.html`（認証が要る）。`/static/<名前>` は認証なし。名前は 1 要素で `html・css・js・svg・png・webmanifest` だけ（下位のフォルダ・`.map`・フォント・`.json` は出せない） |
+| 静的ファイル | `/` = `index.html`（認証が要る）。`/static/<名前>` は認証なし。名前は 1 要素で `html・css・js・svg・png・webmanifest` だけ（下位のフォルダ・`.map`・フォント・`.json`・点が 2 つの名前は出せない）。`base.css`・`icons.svg` は `templates/web/site/` から出す（§5） |
 | PWA | manifest とアイコンだけ。service worker は無い |
-| **イベント** | **SSE も WebSocket も無い。全部が読み直し**（`api.js` の `SA.poll`）。状態 10 秒、一覧・通知など 60 秒、`/api/running` は動いている間 2 秒・ほかは 10 秒。隠れたタブでは止まる（音が入のときだけ 10 秒で続く）。SSE を使わない理由は W §5.4（`tailscale serve` が長い流れを通すか未確認） |
+| **イベント** | **SSE も WebSocket も無い。全部が読み直し。** タイマーは 2 か所: `api.js` の `SA.poll`（状態 10 秒・通知など 60 秒・**開いている会話のターン 5 秒（許可待ちの間は 3 秒）**・`/api/running` は動いている間 2 秒・ほかは 10 秒）と、`topics.js`（`/api/topics`。待ちか作業中が在れば 10 秒・無ければ 60 秒・最短 2 秒。描き直しと一緒に入っている）。隠れたタブでは止まる（音が入のときだけ `/api/running` が 10 秒で続く。一覧とターンは止まる）。SSE を使わない理由は W §5.4（`tailscale serve` が長い流れを通すか未確認） |
 
 ### 2.2 口（`src/web/routes/`。全 59 本）
 
 | ファイル | 口（GET は読む・POST は変える） | 作り直しの後 |
 |---|---|---|
-| `topics.ts` | `GET /api/topics`（topics・groups・turns・rightHands・reads・pins・pinMax・handPins）、`POST /api/topics`、`POST /api/topics/ch:<id>/read`・`/pin`・`/place`・`/mode`、`POST /api/topics/moves/<id>/accept`・`/keep` | そのまま（下の注 1） |
+| `topics.ts` | `GET /api/topics`（topics・groups・turns（数）・turnIds・rightHands・reads・pins・pinMax・handPins・cc）、`POST /api/topics`、`POST /api/topics/ch:<id>/read`・`/pin`・`/place`・`/mode`、`POST /api/topics/moves/<id>/accept`・`/keep` | そのまま（下の注 1） |
 | `channels.ts` | `GET /api/channels`、`GET /api/channels/<id>/turns` | turns はそのまま。`/api/channels` は注 2 |
 | `turns.ts` | `POST /api/channels/<id>/messages`、`GET /api/running`、`POST …/turns/<seq>/abort`、`POST …/continue` | そのまま |
 | `sessions.ts` | `POST /api/sessions`、`…/<id>/wait`・`/continue`・`/close`・`/close/confirm`、`POST /api/channels/<id>/renew` | そのまま |
@@ -126,7 +126,7 @@
 | `notices.ts`・`github.ts`・`knowledge.ts`・`projects.ts` | `GET /api/notices`、`GET /api/github`・`POST …/<id>/act`、`GET /api/knowledge`・`/<id>`、`GET /api/projects`・`/workspace`・`/<slug>/files`・`/file` | そのまま |
 | `status.ts`・`usage.ts`・`devlog.ts` | `GET /api/status`、`/api/usage`・`/usage/days`、`/api/devlog`・`/days` | そのまま（注 3） |
 | `cc-takeover.ts` | 取り込みの 4 本（§1.6） | そのまま |
-| `cc.ts` | リモコンの 12 本（一覧・画面・送る・許可・起動 など） | 許可に答える口は要る。ほかは X 段で消える（注 4） |
+| `cc.ts` | リモコンの 12 本（一覧・画面・送る・許可・起動 など） | 許可に答える 4 本は要る（名前も変えない: TH）。ほかは X 段で消す（一部は呼び手を確かめてから。注 4） |
 
 ### 2.3 今の画面の形に寄っている所
 
@@ -135,8 +135,8 @@
 | 注 | 所 | どう寄っているか | 扱いの案 |
 |---|---|---|---|
 | 1 | `/api/topics` の `groups`（順・「ほか」のまとめ）・`turnIds` の順 | メッセンジャー型の一覧の並びをサーバーが決めている | 使える。並びを変えたいときだけ足す |
-| 1 | `pinMax` = 4 | 列が画面に入る数から来た上限（P §6.2） | 数は §7 で訊く。口の形は変えない |
-| 2 | `/api/channels`（guilds・personas・channels） | 古い殻のサイドバーの形 | 新しい画面は `/api/topics` だけで足りる（推測） |
+| 1 | `pinMax` = 4 | オーナーに訊かずに置いた既定（P §4.4）。列の形を前提にした数 | 数は §7 で訊く。口の形は変えない |
+| 2 | `/api/channels`（guilds・personas・channels） | 古い殻のサイドバーの形 | 新しい画面は `/api/topics` と `/api/channels/<id>/turns` の `channel`（`permission`・`closeDraft`・`moveProposal`・モード）で足りる。`/api/topics` の `turn` は id を持たないので、一覧だけでは許可に答えられない（D7） |
 | 3 | `/api/status` の `env` | 設定の画面の表のため | そのまま |
 | 4 | `/api/cc/sessions/<id>` の端末の画面の写し | `cc:` のタブ専用 | 作り直しに入れない |
 | — | まだ無い `POST /api/flows/<列>/read`（D9） | 列の名前が口に入る | **形が決まるまで作らない** |
@@ -151,13 +151,13 @@
 | 種類を選ばせない／自分の番を一目で／右腕は画面では 1 人／場所なしは General／付け替えは自由（要点を引き継ぐ） | V3 §15 |
 | 番にするのは止まる物だけ。止まった話題も番に数える | V3 §15・L 決定 4 |
 | 既読・ピンはサーバーが覚える。未読の返事は通知の流れに混ざる | V3 §15・P §6.1・D §7 |
-| ピン: 並べ替え無し・`cc:` は留めない・右腕は上限の外 | P §6.2・H §1 |
+| ピン: 右腕は上限の外（並べ替え無し・`cc:` は留めない、は訊いていない既定 → §3.3） | H §1 |
 | 「（いま見ている話題: …）」を自動で前に付けない | H §1 |
 | 右腕の統括: 確かめずに配る・全部のターンを見る・回数の上限 | L 決定 1〜5 |
 | モデルは始めるときに選ぶ。場所に既定を持つ | M |
 | 音の 5 つの出来事・既定は切・隠れても鳴る | S §10 |
 | 実装の名前（道具・コマンド・env・HTTP の番号）を画面に出さない | G §11 |
-| 当たりの大きさ（触る 44px・PC 36px）、コントラスト 4.5 以上 | G §11・§8 |
+| 当たりの大きさ（触る 44px・PC 36px）、コントラスト 4.5 以上 | G §11・§2.2 |
 | PWA は https だけ・service worker 無し。範囲外 = env の編集・画像の送信・ナレッジの削除 | W §2・§11 |
 | 認証・POST の決まり・CSP | W §2 |
 
@@ -177,7 +177,7 @@
 
 | 決定 | なぜ境目か |
 |---|---|
-| ピンの上限 4 | 振る舞いだが、数は列の幅から来た |
+| ピンの上限 4・並べ替え無し・`cc:` は留めない | 振る舞いだが、オーナーに訊かずに置いた既定（P §4.4・§6.2） |
 | 「見えていれば既読」 | 列がいつも見えている前提 |
 | 「あなたの番・タスク・通知」の 3 つの分け方 | 語と分け方は振る舞い、列は組み立て |
 | 明暗の両方・エージェントは名前だけ | 見た目だが、オーナーが選んだ |
@@ -193,7 +193,7 @@
 | (b) 純粋な計算（部品ごと持ち越せば残る） | 約 140 | 14% | 約 2,900 | 部品の計算 83・音 20・文の解釈 15・`api.js` の読み直し 5・ほか 17 |
 | (c) 今の DOM・CSS・語（捨てる） | 約 540 | 55% | 約 16,400 | `web-static` の 396 件・`web-components` の 144 件 |
 | 見張り（別に持つ） | 約 30 | 3% | 約 550 | 下の表 |
-| 対象外（`web-template`） | 5 | — | 119 | LLM のページの型。Web UI ではない |
+| 共有の型（`web-template`） | 5 | — | 119 | `templates/web/site/` の `base.css`・`icons.svg` を見る。LLM が作るページと Web UI の両方が読む（§5）。残る |
 
 ファイルごと:
 
@@ -204,7 +204,7 @@
 | `web-components`（246・6,000） | 計算 83（34%）、部品の木と class 123（50%）、CSS の決まり 21、見張り 17 | (b) と (c) が半々 |
 | `web-sound`（20）・`web-render-text`（15） | 35・691 | (b) |
 | `web-vendor`（10） | 146 | 見張り |
-| `scripts/ui-shots.ts`（7,449 行・絵 61 か所）+ 作り物のサーバー 747 行 + その検査 309 行 | セレクタを書いた行が約 1,000 | 撮る仕掛けと作り物のサーバーは残せる。検査は (c) |
+| `scripts/ui-shots.ts`（7,449 行・絵 60 か所）+ 作り物のサーバー 747 行 + その検査 309 行 | セレクタを書いた行が約 1,000 | 撮る仕掛けと作り物のサーバーは残せる。検査は (c) |
 
 見張り（形が変わっても要る決まり）: 色の値を直に書かない／inline の script・style・`innerHTML` を書かない（CSP）／同梱の Preact・htm が作り直した物と一致／アイコンが作り直した物と一致／コントラスト 4.5／静的ファイルの名前の決まり／画面に出さない語／`node --check`。
 
@@ -216,18 +216,19 @@
 |---|---|
 | 量 | 静的ファイル 約 23,600 行（JS 約 16,500・CSS 約 6,800）。サーバーは `src/web/` 589 行 + `routes/` 3,336 行 |
 | 大きい物 | `app.css` 3,250、`shell.js` 2,250、`views.js` 2,150、`chat.js` 1,887、`workbench.js` 1,552、`api.js` 1,094、`c-gallery.js` 1,008、`sound.js` 907 |
-| 殻が 2 つ | 新（`index.html`・`shell.js`・`c-*.js`・`shell.css`）と旧（`classic.html`・`sidebar.js`・`workbench.js`）。`chat.js`・`views.js`・`api.js`・`ui.js`・`sound.js` は両方が使う |
+| 共有の型 | `templates/web/site/` の `base.css`（566 行）と `icons.svg`（141 行）を、両方の殻・見本・`/login` が読む。LLM が作るプロジェクトのページとも共有なので、**ここを変えるとそちらも変わる**。新しい画面は自分のトークンを別のファイルに持つか、を先に決める |
+| 殻が 2 つ | 新（`index.html`・`shell.js`・`c-*.js`・`shell.css`）と旧（`classic.html`・`sidebar.js`・`workbench.js`）。`chat.js`・`views.js`・`api.js`・`ui.js`・`sound.js` は両方が使う。新しい殻はほかに `topics.js`・`flows.js`・`pins.js`・`takeover.js` を読む |
 | 古い CSS | 新しい殻も `app.css` を読む（外すのは K8。未着手） |
 | 描き方が 2 つ | 部品（`c-*.js` 12 個。見本を除いて約 3,300 行）と、手で DOM を組む所（`el(` が `views.js` 223・`chat.js` 139・`shell.js` 31）。`cc:` のタブと「ほか」の画面は手組みのまま |
 | 境目 | 部品は入力を受けて見た目を返すだけ。`c-app.js` だけが document・window・`SA` に触り、`SA.list`・`SA.talk`・`SA.deck` など 10 の口を出す。**経路・幅・席の開け閉め・板・キーは `shell.js`** が持つ（＝組み立てと操作感は部品の外に在る）。状態は `api.js`・`topics.js`・`flows.js` |
 | ビルド無しで楽な事 | pull して再起動で出る。この機械に負荷が無い。差分が読める。CSP そのまま |
 | ビルド無しで難しい事 | 静的 JS に型チェックが無い。名前は接頭辞と検査で分ける。部品ライブラリの多くはそのまま使えない（推測）。ファイル名は 1 要素だけ |
 | 見た目の確かめ方 | ヘッドレスなので `npm run ui-shots`（作り物のサーバー + Chromium。3 つの幅）で絵を撮り、人が開いて見る。全部で約 8 分の記録（#420）。その後に縮めたが、この文書では測っていない（未確認）。機械が混むと落ちる検査が在る（#489・#511・#467） |
-| 過去の記録 | 2026-11-16 のオーナーの言葉「前の CSS のイメージを引き継いで破綻していないか」。同じ入口の中で差し替えたとき、新しい CSS が古い class を借りた（K の F1） |
+| 過去の記録 | 2026-11-16 にオーナーが、前の CSS のイメージを引き継いで破綻していないかと指摘した（K の頭の引用）。同じ入口の中で差し替えたとき、新しい CSS が古い class を借りた（K の F1） |
 
 ## 6. 進め方の案
 
-どの案でも: サーバーの口・`api.js` の読み直し・純粋な計算（音・文の解釈）・(a) のテストは持ち越す。外のサービスは増やさない（**運用コストはどれも 0 円**）。
+どの案でも: サーバーの口・`api.js` の読み直し（一覧の読み直しは `topics.js` に描き直しと一緒に入っているので、切り出しが要る）・純粋な計算（音・文の解釈）・(a) のテストは持ち越す。外のサービスは増やさない（**運用コストはどれも 0 円**）。
 
 | 見る所 | A. 今の入口の中で差し替える | B. 別の入口に新しく作り、揃ったら入れ替える | C. ビルドと部品ライブラリを入れる |
 |---|---|---|---|
@@ -244,7 +245,7 @@
 | 総合 | △ | **◎** | △ |
 
 - **A**: 捨てる物が少ない。ただし組み立てと操作感は `shell.js`（2,250 行）と `chat.js` に在り、そこを動かしながら直すのがいちばん重い。途中の画面が新旧まだらになる。
-- **B**: 新しい html に、新しい根の部品と新しい CSS だけを読ませる。今の画面は入れ替えまで手を付けない。M8 の入れ替えと同じ型で、前例が在る。弱み: 殻が一時 3 つになる（K §10 の「3 つ目の殻は作らない」を変える）。揃うまで日々の画面は良くならない。
+- **B**: 新しい html に、新しい根の部品と新しい CSS だけを読ませる。今の画面は入れ替えまで手を付けない。M8 の入れ替えと同じ型で、前例が在る。弱み: 殻が一時 3 つになる（K §10 の「3 つ目の殻は作らない」を変える）。`/static/<名前>.html` は認証なしで配られ、`/` のような `/login` への送りが効かない（API は 401 を返すので中身は出ないが、入口の扱いを B3 で決める）。揃うまで日々の画面は良くならない。
 - **C**: 型・CSS の隔離・既製の部品が使える。ただし「pull して再起動」「ビルドせず実行」を変える。K §4 で一度比べて外した案。
 
 **推薦: B。** 理由:
@@ -304,5 +305,6 @@ B に決まったときの段（案。設計判断は入れていない）:
 | | 中身 | 誰が |
 |---|---|---|
 | 決まった | 仕上げの手直しではなく組み立てから考え直す。機能と振る舞いは持ち越す前提。サーバーは対象外 | オーナー（2026-11-27） |
-| 決まっていない | 方向・進め方・§7 の 1〜8 | オーナー |
+| 決まった | §7 の問い 1 = a。組み立ての違う 2〜3 のモックを作り物のデータで作り、スマホで触って比べる（絵だけでなく操作感まで） | オーナー（2026-11-27） |
+| 決まっていない | 方向（モックを見てから）・進め方・§7 の 2〜8 | オーナー |
 | 決まっていない | §1 の各行の受け入れ条件（B1） | 設計の担当が案を書く |
