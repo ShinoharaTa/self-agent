@@ -31,6 +31,7 @@ Discord の 1 チャンネル（#inbox・#tasks と /new で作ったセッシ�
 | Web UI（tailnet の中のブラウザから使う。別ポート・`Tailscale-User-Login` 必須。PWA は §11） | `web-ui.md` | #157・#224 | 途中（W7 まで。W8 は作らない） |
 | 新しい殻（入口 `/`。古い殻は `/static/classic.html`） | `web-ui-v3.md` | #349 | 入れ替え済み（古い殻は M8b で消す） |
 | Web UI の見た目の決まり（色・型・間隔・部品・動き・言葉・a11y） | `docs/design/WEB-UI-GUIDELINES.md` | #225 | 守る決まり |
+| Web UI の作り直しの準備（持ち越す物と白紙に戻す物・進め方の案・止める段） | `web-ui-rebuild.md` | #528 | 途中（方向はオーナーとの問いで決める。**画面の段は止めている**） |
 | 見た目の磨き（UI-1〜UI-12） | `web-ui-polish.md` | #225・#248 | 済み |
 | 部品での作り直し（Preact + htm をビルドなしで同梱） | `web-ui-components.md` | #349 | 途中 |
 | 流れの列（あなたの番・タスク・通知）と席（Deck 風） | `web-ui-deck.md` | #463 | 途中 |
@@ -48,6 +49,7 @@ Discord の 1 チャンネル（#inbox・#tasks と /new で作ったセッシ�
 - 作業ジョブは保留。ジョブ用の runner（PR-J4）は作らないので、`SELF_AGENT_JOBS=1` は設定エラーのまま。Web のジョブの画面（W8）も作らない
 - ゲストの `SELF_AGENT_GUEST_GUILD_IDS` は廃止。残っていれば設定エラー
 - 端末の Claude Code のリモコンには手をかけない（`cc:` のタブは部品にしない）。消す段（X1〜X5）は使う期間の後
+- Web UI は組み立てから作り直す前提（#528）。方向が決まるまで、今の画面に段を足さない（止める段は `docs/plan/web-ui-rebuild.md` §8。サーバー側は進めてよい）
 - 右腕の丸・重ねる枠・［広げる］は無い（#514 で消した）。古い設計書に残る記述は、頭の注記を先に読む
 
 ## コマンド
