@@ -13,7 +13,7 @@ Discord の 1 チャンネル（#inbox・#tasks と /new で作ったセッシ�
 ### 動き方は 2 つ
 
 - 軽いモード: #inbox・#tasks・今までのセッション。自前のシステムプロンプトと固定のツール
-- プロジェクトのセッション（`docs/plan/unify.md`）: `/new project:<名前>` か Web の「新しいセッション」で、`SELF_AGENT_WORKSPACE_DIR` の直下のプロジェクトを cwd に、Claude Code と同じ装備（preset のシステムプロンプト・CLAUDE.md・skills・Bash）で動く。`SELF_AGENT_CC=1` と `npm run unify-setup -- --print` の link が要る（GitHub の［対応］も同じ）
+- プロジェクトのセッション（`docs/plan/unify.md`）: `/new project:<名前>` か Web の「話題を始める」で場所を選ぶと、`SELF_AGENT_WORKSPACE_DIR` の直下のプロジェクトを cwd に、Claude Code と同じ装備（preset のシステムプロンプト・CLAUDE.md・skills・Bash）で動く。`SELF_AGENT_CC=1` と `npm run unify-setup -- --print` の link が要る（GitHub の［対応］も同じ）
 
 ### 設計書
 
@@ -23,15 +23,15 @@ Discord の 1 チャンネル（#inbox・#tasks と /new で作ったセッシ�
 |---|---|---|---|
 | 人格（1 プロセスに複数の Bot・共有 DB・codex） | `personas.md` | #114 | 途中（codex のエンジンは無い） |
 | 定型チャンネル（領収書・予定など）・#inbox からの引き渡し・画像の受け取り・スキル | `routines.md` | #119 | 途中（定型チャンネルの振る舞いは無い） |
-| GitHub の通知を #github に流し、［対応］で PR・Issue ごとの話題を作る | `github-notifications.md` | #122 | 途中 |
+| GitHub の通知を #github に流し、［対応］で PR・Issue ごとの話題を作る | `github-notifications.md` | #122 | 済み（PR-G4・PR-G5 は作らない） |
 | シェル（sandbox 付きの Bash。`SELF_AGENT_SHELL=1` のときだけ） | `shell.md` | | 済み |
 | 作業ジョブ（Discord から頼むと draft PR を返す） | `coding-jobs.md` | #129 | 保留 |
 | ゲスト利用の簡易モード（他のサーバーで、ツールなしで答える） | `guest-mode.md` | #147 | 途中 |
 | 配布（npm）・入口の統一・Mac 対応 | `distribution.md` | #157 | 途中 |
 | Web UI（tailnet の中のブラウザから使う。別ポート・`Tailscale-User-Login` 必須。PWA は §11） | `web-ui.md` | #157・#224 | 途中（W7 まで。W8 は作らない） |
-| 新しい殻（入口 `/`。古い殻は `/static/classic.html`） | `web-ui-v3.md` | | 入れ替え済み（古い殻は M8b で消す） |
+| 新しい殻（入口 `/`。古い殻は `/static/classic.html`） | `web-ui-v3.md` | #349 | 入れ替え済み（古い殻は M8b で消す） |
 | Web UI の見た目の決まり（色・型・間隔・部品・動き・言葉・a11y） | `docs/design/WEB-UI-GUIDELINES.md` | #225 | 守る決まり |
-| 見た目の磨き（UI-1〜UI-12） | `web-ui-polish.md` | #248 | 済み |
+| 見た目の磨き（UI-1〜UI-12） | `web-ui-polish.md` | #225・#248 | 済み |
 | 部品での作り直し（Preact + htm をビルドなしで同梱） | `web-ui-components.md` | #349 | 途中 |
 | 流れの列（あなたの番・タスク・通知）と席（Deck 風） | `web-ui-deck.md` | #463 | 途中 |
 | 話題のピン留め（会話ごとの列） | `web-ui-pins.md` | #507 | 済み |
@@ -39,7 +39,7 @@ Discord の 1 チャンネル（#inbox・#tasks と /new で作ったセッシ�
 | 入口によらず同じエージェントにする（プロジェクトのセッション） | `unify.md` | #277 | 途中 |
 | 端末の Claude Code のセッションの管理（リモコン。CC1〜CC14・Q1〜Q5） | `claude-code-sessions.md`・`claude-code-channels.md`・`claude-code-questions.md` | #191・#236・#265 | 済み（手をかけない） |
 | リモコンをやめ、取り込みとプロジェクトのセッションを本線にする移行 | `terminal-handover.md` | #428 | 途中 |
-| 取り込み（端末の Claude Code の会話を、プロジェクトのセッションが引き継ぐ） | `takeover.md` | #341 | 済み |
+| 取り込み（端末の Claude Code の会話を、プロジェクトのセッションが引き継ぐ） | `takeover.md` | #341 | 済み（実機の確かめはまだ） |
 | 話題を始めるときにモデルを選ぶ | `models.md` | #451 | 途中 |
 | 右腕が統括として働く | `lead.md` | #457 | 途中 |
 
@@ -78,7 +78,7 @@ node src/cli.ts <sub>     # self-agent コマンドの入口（./bin/self-agent 
 | `npm run unify-setup -- --print` | プロジェクトのセッションのための `ln -s` の行を出す | 標準出力だけ |
 | `npm run make-icons` | ホーム画面のアイコンを `src/web/static/` に書き直す | 図形を変えたら走らせて commit する（`npm test` が一致を確かめる） |
 | `npm run vendor-web` | Preact と htm を `src/web/static/vendor-*.js` に書き直す | 手で直さない。版を上げたら走らせて commit する（同上） |
-| `npm run ui-shots -- --out <dir>` | 決まった画面を作り物のデータで撮る（`--only <名前の一部>`） | `<dir>` はリポジトリの外だけ。重いので `npm test` と同時に回さない |
+| `npm run ui-shots -- --out <dir>` | 決まった画面を作り物のデータで撮る（`--only <名前の一部>`） | `<dir>` はリポジトリの外だけ。機械が混むと時間を測る検査が落ちる（#489）ので、`npm test` と同時に回さない |
 
 ## ディレクトリ構成
 
@@ -103,9 +103,9 @@ node src/cli.ts <sub>     # self-agent コマンドの入口（./bin/self-agent 
 
 ## Web UI を触るとき
 
-- 部品の CSS と `shell.css` に色の値を直に書かない（トークンだけ。`npm test` が見張る）。コメントの中の `#514` のような issue の番号も色の値として当たるので書かない
+- 部品の CSS（`c-*.css`）と `shell.css` に色の値を直に書かない（トークンだけ。`npm test` が見張る）。`shell.css` はコメントごと見るので、コメントの中の `#514` のような issue の番号も当たる（`c-*.css` はコメントを剥がして見るので当たらない）
 - 見た目を変える PR は、`npm run ui-shots` の前後の絵を開いて確かめてから通す
-- `ui-shots` は日付（JST）が変わった直後に回すと落ちる段がある（#467）
+- `ui-shots` は日付（JST）が変わった直後に回すと落ちる段があった（#467。直ったかは確かめていない）
 
 ## プロンプトキャッシュの規則
 
@@ -119,5 +119,5 @@ node src/cli.ts <sub>     # self-agent コマンドの入口（./bin/self-agent 
 - プロジェクトのセッション（docs/plan/unify.md。agent/project-profile.ts）は例外: Claude Code の preset のシステムプロンプト（cwd・git の状態などの動的な節を含む）に PROJECT_APPEND を足して snapshot: true で会話ごとに固定し、settingSources（user・project・local）と CLI の既定のツールを使う。軽いモード（#inbox・#tasks・今までのセッション）の Options は変えない
 - 自前のツールは無効のときも定義し、軽いモードにもプロジェクトのセッションにも付く。ツールの定義を変えた再起動の後は、機能が無効でも全セッションの次のターンで 1 回キャッシュが外れる
 - `session_open` の引数 `model` の describe の文は後で変えない（#451）
-- プロジェクトのセッションの `PROJECT_APPEND` の変更は、新しい会話から効く
+- プロジェクトのセッションの `PROJECT_APPEND` の変更は、新しい会話から効く。軽いモードのシステムプロンプトだけの変更では、プロジェクトのセッションは外れない
 - どの変更でキャッシュが外れたかの記録は `docs/status.md` の末尾
