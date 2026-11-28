@@ -120,6 +120,34 @@ test("ensureLocalEntries: 許可サーバーが 2 つとも /setup 済みなら 
   ]);
 });
 
+test("ensureLocalEntries: Web だけの人格が 2 体なら、2 体とも違う番号で入口を作る", (t) => {
+  const HANA = persona("hana", "ハナ");
+  const env = setup(t, { personas: [SORA, HANA], isLocal: () => true });
+  assert.equal(ensureLocalEntries(env.deps), 2);
+  const sora = env.guildSettings.personaInbox(GUILD, "sora");
+  const hana = env.guildSettings.personaInbox(GUILD, "hana");
+  assert.equal(sora?.place, "local");
+  assert.equal(hana?.place, "local");
+  assert.match(sora?.channelId ?? "", LOCAL_ID);
+  assert.match(hana?.channelId ?? "", LOCAL_ID);
+  assert.notEqual(sora?.channelId, hana?.channelId);
+  assert.deepEqual(env.logs, [
+    `ローカルの入口を作りました（persona=sora、guild=${GUILD}）`,
+    `ローカルの入口を作りました（persona=hana、guild=${GUILD}）`,
+  ]);
+});
+
+test("ensureLocalEntries: 番号の無い入口の行（切り替えの日だけ在る行）には、番号と local を書き、切り替えの日は残す", (t) => {
+  const env = setup(t);
+  env.guildSettings.setInboxRotated(GUILD, "2026-10-01", NOW, "sora");
+  assert.equal(env.guildSettings.personaInbox(GUILD, "sora")?.channelId, null);
+  assert.equal(ensureLocalEntries(env.deps), 1);
+  const inbox = env.guildSettings.personaInbox(GUILD, "sora");
+  assert.match(inbox?.channelId ?? "", LOCAL_ID);
+  assert.equal(inbox?.place, "local");
+  assert.equal(inbox?.rotatedDate, "2026-10-01");
+});
+
 test("ensureLocalEntries: 述語が常に false（今の main）なら何も作らず、番号も取らず、log も出さない", (t) => {
   const env = setup(t, { isLocal: () => false });
   let taken = 0;
@@ -175,6 +203,21 @@ test("checkPersonaPlaces: 述語が true なのに入口・話題が discord、�
   }
 });
 
+test("checkPersonaPlaces: 2 つ目の人格の食い違いでも、2 つ目の許可サーバーの食い違いでも 1 文を返す", (t) => {
+  // 2 つ目の人格（mika。述語は偽）の入口が local
+  const second = setup(t);
+  ensureLocalEntries(second.deps);
+  second.guildSettings.setPersonaInbox(GUILD, "mika", second.localIds.next(), "local");
+  assert.deepEqual(checkPersonaPlaces(second.deps), [
+    "SELF_AGENT_PERSONA_MIKA_SURFACE: この人格の場所は Web に在ります。人格の場所は後から変えられません（別の id で足してください）",
+  ]);
+  // 2 つ目の許可サーバー（1 つ目は揃っている）の sora の入口が discord
+  const guild2 = setup(t, { setUp: [GUILD, GUILD_2], allowed: [GUILD, GUILD_2] });
+  guild2.guildSettings.setPersonaInbox(GUILD, "sora", guild2.localIds.next(), "local");
+  guild2.guildSettings.setPersonaInbox(GUILD_2, "sora", "500");
+  assert.deepEqual(checkPersonaPlaces(guild2.deps), [toLocalText]);
+});
+
 test("checkPersonaPlaces: 入口と話題の両方が違っても、人格ごとに文は 1 つ", (t) => {
   const env = setup(t);
   env.guildSettings.setPersonaInbox(GUILD, "sora", "500");
@@ -221,6 +264,13 @@ test("hasPlaceOtherThan: その人格の削除済みでない話題に、場所�
   assert.equal(env.topicSessions.hasPlaceOtherThan("mika", "local"), false);
   env.topicSessions.markDeleted("600");
   assert.equal(env.topicSessions.hasPlaceOtherThan("sora", "local"), false);
+  // 削除済みでなければ、進行中でなくても数える（done だけの人格・waiting だけの人格）
+  env.topicSessions.create({ channelId: "601", guildId: GUILD, title: "終わった", categoryId: "c", persona: "sora" });
+  env.topicSessions.close("601", "要約");
+  assert.equal(env.topicSessions.hasPlaceOtherThan("sora", "local"), true);
+  env.topicSessions.create({ channelId: "602", guildId: GUILD, title: "待ち", categoryId: "c", persona: "mika" });
+  env.topicSessions.setWaiting("602");
+  assert.equal(env.topicSessions.hasPlaceOtherThan("mika", "local"), true);
 });
 
 // ---- B4・B5: 入口から先の一通り ----
@@ -359,7 +409,7 @@ test("一通り: 入口を作ると GET /api/topics に #<表示名> で出て�
   assert.equal(env.local.calls[2]?.args[1], "ソラです");
 });
 
-test("一通り（右腕の session_open）: ローカルの入口から始めた話題は place local・その人格の行で、区切り 1 行・submitText 1 回。既定の Bot が切れていても Discord は 0 回", async (t) => {
+test("一通り（右腕の session_open）: ローカルの入口から始めた話題は place local・その人格の行で、区切り 1 行・submitText 1 回。Discord は 0 回", async (t) => {
   const env = wire(t, false);
   const submits: Array<Parameters<Handler["submitText"]>[0]> = [];
   const submitText = async (input: Parameters<Handler["submitText"]>[0]): Promise<SubmitTextResult> => {
@@ -429,16 +479,17 @@ test("見張り: main.ts は store の直後に、checkPersonaPlaces → 断る�
     "\nconst localIds = new LocalIdStore(db);\n",
     "\nconst localPlaces: LocalPersonaPlaces = {",
     "\nconst placeErrors = checkPersonaPlaces(localEntriesDeps);\nif (placeErrors.length > 0) {\n  for (const error of placeErrors) console.error(error);\n  process.exit(1);\n}\nensureLocalEntries(localEntriesDeps);\n",
-    "\nconst personas = new PersonaRouter({",
-    "\n  webServer = createWebServer({",
-    "\n    await staticServer.start();",
-    "\n    await webServer.start();",
-    "\nawait gateway.start(lifecycle.handlers);",
-    "\nvoid startPersonaGateways(",
   ].map((text) => {
     const at = source.indexOf(text);
     assert.ok(at >= 0, text);
     return at;
   });
   assert.deepEqual(order, [...order].sort((a, b) => a - b));
+  // 入口を作るのは、Discord の待ち受けと、main.ts の最初の .start()（配信・Web・hook の受け口など）より前
+  const ensured = source.indexOf("ensureLocalEntries(");
+  const gatewayStart = source.indexOf("await gateway.start(");
+  const firstStart = source.search(/\.start\(/);
+  assert.ok(gatewayStart >= 0 && firstStart >= 0);
+  assert.ok(ensured < gatewayStart);
+  assert.ok(ensured < firstStart);
 });
