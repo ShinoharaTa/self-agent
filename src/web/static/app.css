@@ -166,7 +166,7 @@ dialog {
   scrollbar-color: var(--border) transparent;
 }
 
-/* --vvh はスマホでだけ workbench.js が visualViewport の高さを書く（キーボードの分を除く。UI-8） */
+/* --vvh はスマホでだけ shell.js が visualViewport の高さを書く（キーボードの分を除く。UI-8） */
 .wb {
   display: grid;
   height: var(--vvh, 100dvh);
@@ -2395,7 +2395,7 @@ dialog[open]::backdrop {
   background: var(--backdrop);
 }
 
-/* 起動の最初の描画だけ動かさない（workbench.js が 1 フレームだけ付ける） */
+/* 起動の最初の描画だけ動かさない（消した古い殻（#542）が 1 フレームだけ付けていた。今は付ける物が無い） */
 .wb.no-transition * {
   transition: none !important;
 }
@@ -2662,7 +2662,7 @@ dialog[open]::backdrop {
 
   /*
    * ダイアログは下からのシート（UI-8）: 全幅・上だけ角丸・ボタンは 2 等分。出入りは translateY（出 short・消 65%）。
-   * --kb は iOS でキーボードが layout viewport を縮めないときの、その高さ（workbench.js が書く。無ければ 0）
+   * --kb は iOS でキーボードが layout viewport を縮めないときの、その高さ（shell.js が書く。無ければ 0）
    */
   dialog {
     width: 100%;
