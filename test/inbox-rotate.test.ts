@@ -1040,6 +1040,7 @@ test("history（#530 の WP4）: ローカルの入口（足した人格の #<NA
     id: "mika",
     name: "ミカ",
     discordTokenEnv: "SELF_AGENT_PERSONA_MIKA_DISCORD_TOKEN",
+    surface: "discord",
     promptFile: "/dev/null",
     model: undefined,
     engine: "claude",

@@ -48,6 +48,7 @@ const LUNA: PersonaConfig = {
   id: "luna",
   name: "LUNA",
   discordTokenEnv: "SELF_AGENT_PERSONA_LUNA_DISCORD_TOKEN",
+  surface: "discord",
   promptFile: "/dev/null",
   model: undefined,
   engine: "claude",

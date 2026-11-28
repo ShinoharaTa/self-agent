@@ -13,6 +13,10 @@ export const DEFAULT_PERSONA_ID = "default";
 export const ENGINES = ["claude", "codex"] as const;
 export type Engine = (typeof ENGINES)[number];
 
+/** 足した人格の場所（SELF_AGENT_PERSONA_<ID>_SURFACE。docs/plan/personas-web-antigravity.md §3.1）。discord = その人格の Bot・web = Bot を持たず Web だけ */
+export const PERSONA_SURFACES = ["discord", "web"] as const;
+export type PersonaSurface = (typeof PERSONA_SURFACES)[number];
+
 /** 統括のまとめ（app/lead.ts。docs/plan/lead.md の L2）で鳴らす物（SELF_AGENT_LEAD_RING）。off = 鳴らさない・all = 全部・stopped = 止まった物・long = 止まった物と 2 分以上で終わった物 */
 export const LEAD_RINGS = ["off", "all", "stopped", "long"] as const;
 export type LeadRing = (typeof LEAD_RINGS)[number];
@@ -26,8 +30,10 @@ export type PersonaConfig = {
   id: string;
   /** 表示名（20 字以内）。未設定なら id */
   name: string;
-  /** その人格の Bot のトークンの変数名（SELF_AGENT_PERSONA_<ID>_DISCORD_TOKEN）。値は Gateway が process.env から読む */
+  /** その人格の Bot のトークンの変数名（SELF_AGENT_PERSONA_<ID>_DISCORD_TOKEN）。値は Gateway が process.env から読む。surface が web でも名前は持つ（読まない） */
   discordTokenEnv: string;
+  /** 場所。web なら Discord の Bot を作らず、トークンも読まない。場所は id に付き、後から変えられない（app/local-entries.ts が起動で断る） */
+  surface: PersonaSurface;
   /** 人格の文（性格・口調・役割）のファイル。起動時に 1 回読む */
   promptFile: string;
   /** 未設定ならそのエンジンの既定（claude なら SELF_AGENT_MODEL） */
@@ -376,10 +382,15 @@ export const MAX_PERSONAS = 10;
 
 /**
  * SELF_AGENT_PERSONAS と人格ごとの変数を読む（docs/plan/personas.md §1）。エラーには変数名だけを出し、値（トークンを含む）は出さない。
- * 確かめること: id の形・重複・予約語（default）・数（MAX_PERSONAS まで）、トークンの欠け、同じトークンを 2 人格に（既定の人格の DISCORD_TOKEN を含む）、表示名の長さ、
+ * 確かめること: 既定の人格の場所（SELF_AGENT_PERSONA_DEFAULT_SURFACE は書けない）、id の形・重複・予約語（default）・数（MAX_PERSONAS まで）、
+ * 場所（_SURFACE）、トークンの欠け（web ならトークンを書けない）、同じトークンを 2 人格に（既定の人格の DISCORD_TOKEN を含む）、表示名の長さ、
  * 表示名から作るチャンネル名（#<NAME>）が空にならない・inbox・tasks・system・github・jobs と重ならない・人格どうしで重ならない、エンジン、effort
  */
 function personaList(env: NodeJS.ProcessEnv, home: () => string): PersonaConfig[] {
+  // 既定の人格は Discord の Bot で動く。書いても効かないので、SELF_AGENT_PERSONAS が無くても断る
+  if (nonEmpty(env.SELF_AGENT_PERSONA_DEFAULT_SURFACE?.trim()) !== undefined) {
+    throw new Error("SELF_AGENT_PERSONA_DEFAULT_SURFACE は使えません（既定の人格は Discord の Bot で動きます）");
+  }
   const list = nonEmpty(env.SELF_AGENT_PERSONAS);
   if (list === undefined) return [];
   const ids = list
@@ -412,12 +423,21 @@ function personaList(env: NodeJS.ProcessEnv, home: () => string): PersonaConfig[
   return ids.map((id): PersonaConfig => {
     const prefix = `SELF_AGENT_PERSONA_${id.toUpperCase()}_`;
     const discordTokenEnv = `${prefix}DISCORD_TOKEN`;
+    const surfaceName = `${prefix}SURFACE`;
+    const surfaceValue = nonEmpty(env[surfaceName]) ?? "discord";
+    const surface = PERSONA_SURFACES.find((candidate) => candidate === surfaceValue);
+    if (surface === undefined) throw new Error(`${surfaceName} は ${PERSONA_SURFACES.join(" / ")} のいずれかで指定してください`);
     // 前後の空白は比べる前に除く（空白だけなら無いものとする）
     const token = nonEmpty(env[discordTokenEnv]?.trim());
-    if (token === undefined) throw new Error(`${discordTokenEnv} が設定されていません`);
-    const sameAs = tokenOwners.get(token);
-    if (sameAs !== undefined) throw new Error(`${discordTokenEnv} と ${sameAs} に同じトークンが設定されています`);
-    tokenOwners.set(token, discordTokenEnv);
+    if (surface === "web") {
+      // Web だけの人格は Bot を持たない。トークンは読まず、同じトークンの検査（tokenOwners）にも入れない
+      if (token !== undefined) throw new Error(`${surfaceName} が web の人格に ${discordTokenEnv} は設定できません`);
+    } else {
+      if (token === undefined) throw new Error(`${discordTokenEnv} が設定されていません`);
+      const sameAs = tokenOwners.get(token);
+      if (sameAs !== undefined) throw new Error(`${discordTokenEnv} と ${sameAs} に同じトークンが設定されています`);
+      tokenOwners.set(token, discordTokenEnv);
+    }
 
     const name = nonEmpty(env[`${prefix}NAME`]) ?? id;
     if ([...name].length > PERSONA_NAME_MAX_LENGTH) {
@@ -441,7 +461,7 @@ function personaList(env: NodeJS.ProcessEnv, home: () => string): PersonaConfig[
     const engineValue = nonEmpty(env[engineName]) ?? "claude";
     const effortName = `${prefix}EFFORT`;
     const effortValue = nonEmpty(env[effortName]);
-    const base = { id, name, discordTokenEnv, promptFile, model };
+    const base = { id, name, discordTokenEnv, surface, promptFile, model };
     if (engineValue === "claude") return { ...base, engine: "claude", effort: effortLevel(effortValue, effortName) };
     if (engineValue === "codex") {
       if (effortValue !== undefined && !/^[a-z]+$/.test(effortValue)) {
@@ -800,7 +820,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ...loadCcConfig(env),
   };
   checkPortOverlap(cfg);
+  checkWebPersonas(cfg);
   return cfg;
+}
+
+/**
+ * Web だけの人格（surface が web）は Web でしか話せない。Web が無効なら、最初のその人格の変数名を出して設定エラー
+ * （話す口が無い人格を起こさない。記憶の知らせ・リマインドの跡も Web の履歴にしか書かない）
+ */
+function checkWebPersonas(cfg: Config): void {
+  const webOnly = cfg.personas.find((persona) => persona.surface === "web");
+  if (webOnly === undefined || cfg.web) return;
+  throw new Error(
+    `SELF_AGENT_PERSONA_${webOnly.id.toUpperCase()}_SURFACE=web には SELF_AGENT_WEB_PORT と SELF_AGENT_WEB_ALLOWED_LOGIN が要ります`,
+  );
 }
 
 /**

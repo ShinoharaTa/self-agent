@@ -50,6 +50,7 @@ const MIKA: PersonaConfig = {
   id: "mika",
   name: "ミカ",
   discordTokenEnv: "SELF_AGENT_PERSONA_MIKA_DISCORD_TOKEN",
+  surface: "discord",
   promptFile: "mika.md",
   model: undefined,
   engine: "claude",

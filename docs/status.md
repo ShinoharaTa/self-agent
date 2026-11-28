@@ -89,11 +89,11 @@ CC9 は済（Web の会話のサイドバーの群「Claude Code」。アクテ�
 - 2026-11-28: §6.1 の問い 1 = a（いちばん古い殻をこのまま消す）。P1 = #542。残る問いは 7 つ
 - 2026-11-28: P1 済み（#544。#542）: `classic.html`・`sidebar.js`・`workbench.js` を消し、`views.js` の殻の見分けと設定の「画面」の行、`api.js` の古い既読の鍵の読み書きを外した。`shell.js` が起動で localStorage の `self-agent-web:seen`・`self-agent-web:seen-sent` を消す。静的ファイル・検査・文書だけで、再起動は要らない。`app.css` の古い殻だけの規則は残した（Z）
 - 今は P1 まで（P0 = 文書: `web-ui-rebuild.md` の直しと `web-ui-home.md`。P1 = 上の行）。新しい入口の画面はまだ無い。段は P0〜P3・N0〜N6・S・Z と、サーバー側の V1〜V4（`web-ui-home.md` §4）。次は P2（計算の module）
-- 今の画面には段を足さない。止めていた段の扱い（解ける・吸う・閉じる・止めたまま）は `web-ui-rebuild.md` §8。上の各節に残る段の予定より、この節が勝つ。#530 の節の「WP6b・WP7・AG8 は #528 の向きが決まるまで止める」も同じ: 向きは決まり、新しい画面の段に吸う（`web-ui-rebuild.md` §8）
+- 今の画面には段を足さない。止めていた段の扱い（解ける・吸う・閉じる・止めたまま）は `web-ui-rebuild.md` §8。上の各節に残る段の予定より、この節が勝つ
 
 ## Bot を持たない人格と Antigravity のエンジン（#530）
 
-- Discord の Bot を持たない人格（Web だけ）と、話題を始めるときのモデルの一覧から選ぶ Antigravity（`agy`）のモデルの設計: `docs/plan/personas-web-antigravity.md`（#530。場所の線 WP0〜WP7・エンジンの線 AG0〜AG8）。Antigravity の人格は立てない（エンジンは話題ごと）。今は WP4 と WP5 の 2 つ目まで。WP5 の残り（門）・WP6・WP7・AG0〜AG8 はまだ
+- Discord の Bot を持たない人格（Web だけ）と、話題を始めるときのモデルの一覧から選ぶ Antigravity（`agy`）のモデルの設計: `docs/plan/personas-web-antigravity.md`（#530。場所の線 WP0〜WP7・エンジンの線 AG0〜AG8）。Antigravity の人格は立てない（エンジンは話題ごと）。今は WP5 まで（門も入った）。WP6・WP6b・WP7・AG0〜AG8 はまだ
 - WP1 は main に入った（コードの DB は v49: `sessions.place`・`persona_channels.place`（`discord` / `local`。今ある行は `discord`）・連番の表 `local_ids`。store `src/store/local-places.ts` の `LocalIdStore` がローカルの番号（先頭が `1` の数字 21 桁）を作る。再同期はローカルの話題を飛ばす）。ローカルの行を作る道はまだ無い（WP3 から）。効くのは再起動の後
 - WP1 は v49 で起動した後は戻さない（DB が v49。`migrate` はコードより新しい版の DB を開かない）。戻すなら、起動のときに取った移行の前の控え（`self-agent.db.v48.bak`）から戻すか、v49 の移行を残してほかを戻す
 - WP2 は main に入った（ローカルの Gateway `src/discord/local-gateway.ts` の `LocalGateway`。`sendMessage` は番号を返し、`send`・編集・ピン・リアクション・入力中は何もしない。`messageExists`・`channelExists` は true。管理の操作は投げる。`PersonaRouter` は `localGateway` を渡されたときだけ、`place = 'local'` の場所の `gatewayFor` にそれを返す）。`main.ts` はまだ渡さないので、誰も通らない道（WP5 の 1 つ目で必ず渡す形にした）。再起動は要らない
@@ -104,7 +104,9 @@ CC9 は済（Web の会話のサイドバーの群「Claude Code」。アクテ�
 - WP4 の 3 つ目（リマインド）: ローカルの場所で頼んだ知らせのリマインドは、頼んだ場所に出さず既定の人格の Bot で #tasks（無ければ #inbox）に注記 `頼んだ場所: 「題名」（Web）` を付けて出し（`channel_id` は変えない。`ownerConnected` に頼らない）、頼んだ場所の履歴に notice を 1 行（諦めた回も 1 行）書く。場所を引けなかった回は投稿の失敗と同じく次の tick でやり直す。`reminder_set` の結果に、ローカルの場所の知らせの型だけ `note` を足す。`main.ts` は ReminderScheduler と reminder_set に PR-1 の `placeRefs` を渡す（任意の deps）。ツールの定義・システムプロンプトは変えない（キャッシュは外れない）。依頼の型はその入口で今のまま動く。今在るリマインド（全部 Discord の場所）の文と動きは変わらない。ローカルの行を作る道はまだ通らないので動きは変わらない（本体の変更なので、効くのは再起動の後）。これで WP4 は終わり
 - WP5 の 1 つ目（振り分けの土台。門は閉じたまま）: `PersonaRouter` は持ち主と場所を 1 回で引き（入口は `entryChannel`、無ければ store の新しい細い読み `TopicSessionStore.ownerPlaceOf`。読みの回数は WP2 より前と同じ）、場所が `local` なら `gatewayFor` はローカルの Gateway、`ownerConnected` は真（Web の発言の関所 `handler.ts` が、設定に無い人格のローカルの話題を既定の Bot の接続で断らない）。`localGateway` は必須の deps で、`main.ts` は `LocalIdStore` を 1 つ作って `PersonaRouter` と `localPlaces` に渡す。まとめは Discord に投げる文が 2000 字を超えるときだけ行を減らして作り直す（2000 字以内なら今と 1 字も変わらない）。述語は常に false のままで、今在る行は全部 Discord なので動きは変わらない（本体の変更なので、効くのは再起動の後）。**ローカルの行ができた後は戻さない**（戻すとローカルの番号が本物の Discord に行く）
 - WP5 の 2 つ目（起動のとき。門は閉じたまま）: `src/app/local-entries.ts`。`main.ts` は store の直後（Discord・Web の待ち受けより前）に `checkPersonaPlaces`（述語と、設定に在る足した人格の入口（番号の在る行）・削除済みでない話題（store の `TopicSessionStore.hasPlaceOtherThan`）の場所が食い違えば、両向きとも人格ごとに 1 文を出して exit 1。人格の場所は id に付き、後から変えられない）→ `ensureLocalEntries`（`/setup` 済みの許可サーバーごとに、述語が true の人格の入口が無ければローカルの番号で `place = 'local'` の行を作り、log に 1 行）。`/setup` の応答は変えない。述語は常に false のままで、今在る行は全部 Discord なので、検査は通り入口は作らない（動きも log も変わらない。効くのは再起動の後）。門（PR-3）と対で入れる（門の後、食い違った行を守るのはこの検査だけ）
-- WP6b（どの会話でも `<#番号>` を題名に替える）・WP7（画面で人格を選ぶ）と AG8（画面のモデルの一覧に Antigravity を出す）は #528 の向きが決まるまで止める（`docs/plan/web-ui-rebuild.md` §8）
+- WP5 の 3 つ目（門）: `SELF_AGENT_PERSONA_<ID>_SURFACE`（`discord` 既定 / `web`）を読む（`PersonaConfig.surface`。`web` はトークン不要で、書くと設定エラー。知らない値・`SELF_AGENT_PERSONA_DEFAULT_SURFACE` も設定エラー。`web` の人格が在るのに Web が無効でも設定エラー）。`main.ts` は Discord の Bot を `surface` が `discord` の人格だけに作り（Client・#system の接続の知らせ・終わるときに止める Bot の一覧から外れる）、Web だけの人格の runtime はローカルの Gateway（振り分けと同じ 1 つ）で接続はいつも真（`personaBot`）、述語 `isLocalPersona` は設定の `surface` から答える（`webPersonaPredicate`）。`/new` の `persona` の選択肢と作るときの検査は Discord の人格だけ。`/api/status`・`GET /api/channels` は変えない（Web だけの人格も「接続中の Bot」と出る。WP6 で `surface`）。`_SURFACE` を書かない設定では何も変わらない。効くのは再起動の後（v49 への最初の移行も同じ再起動）。#530 で戻して良いのはこの PR だけ（設計書 §3.4 の 2）
+- 門のコードを戻す（PR-3 の revert）前に、Web だけの人格を `SELF_AGENT_PERSONAS` から外す。ローカルの入口が在る人格を Discord の人格として起動すると、起動の検査が断る
+- WP6b（どの会話でも `<#番号>` を題名に替える）・WP7（画面で人格を選ぶ）と AG8（画面のモデルの一覧に Antigravity を出す）は、#528 の新しい画面の段に吸う（`docs/plan/web-ui-rebuild.md` §8）
 - AG0（この機械での実測。サブスクの枠を使う）は、オーナーが `agy` を入れてサインインした後に、回して良いかを訊いてから
 
 ## プロンプトキャッシュが外れた変更の記録
