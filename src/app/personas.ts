@@ -9,6 +9,7 @@ import type { Gateway, InteractionResponder, OutgoingMessage } from "../discord/
 import type { GuildSettingsStore } from "../store/guild-settings.ts";
 import type { ChannelPlace, LocalIdStore } from "../store/local-places.ts";
 import type { TopicSessionStore } from "../store/topic-sessions.ts";
+import { channelPlaceOf } from "./place-refs.ts";
 
 /** 既定の人格の表示（表示名の変数が無いので、/sessions・/usage ではこの名前で出す） */
 export const DEFAULT_PERSONA_LABEL = "既定の人格";
@@ -97,7 +98,7 @@ export class PersonaRouter {
 
   /** チャンネルの場所。persona_channels（入口）→ sessions（セッション）の順に引き、どちらにも無ければ discord */
   private placeOf(channelId: string): ChannelPlace {
-    return this.deps.guildSettings.entryChannel(channelId)?.place ?? this.deps.topicSessions.get(channelId)?.place ?? "discord";
+    return channelPlaceOf(this.deps, channelId);
   }
 
   /** チャンネルの持ち主の Bot が Discord に接続しているか */
