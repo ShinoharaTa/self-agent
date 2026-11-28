@@ -3,6 +3,7 @@ import { normalizeChannelName } from "../../discord/channel-name.ts";
 import type { Gateway, OutgoingMessage } from "../../discord/gateway.ts";
 import type { GuildChannelField, GuildSettingsStore, SessionState } from "../../store/guild-settings.ts";
 import type { CommandHandler } from "../interactions.ts";
+import type { LocalPersonaPlaces } from "../personas.ts";
 import type { KeyedSerialQueue } from "../queue.ts";
 
 const HOME_CATEGORY_NAME = "self-agent";
@@ -81,6 +82,8 @@ export type SetupDeps = {
   guildSettings: GuildSettingsStore;
   /** 同じサーバーの /setup・/new を 1 つずつ実行する（key は layoutQueueKey） */
   queue: KeyedSerialQueue;
+  /** 場所がローカルの人格（docs/plan/personas-web-antigravity.md §3.1）。その人格の #<NAME> は作らない。無ければ今と同じ */
+  localPlaces?: Pick<LocalPersonaPlaces, "isLocalPersona">;
   log: (message: string) => void;
 };
 
@@ -105,7 +108,8 @@ function describeError(error: unknown): string {
  * 足した人格（cfg.personas）があれば、#tasks の後にその人格の #<NAME> を self-agent カテゴリに作る（作るのは既定の人格の Bot。ホームパネルは置かない）。
  * cfg.github が true なら、#system の後に #github を作る（false なら作らず、既にあるものも触らない）。
  * cfg.jobs が true なら、その後に #jobs を作る（同じく false なら作らず触らない）。
- * cfg.cc が true なら、状態カテゴリの後にカテゴリ「Claude Code」を作る（同じく。中のチャンネルを戻すのは scheduler.ts の再同期）
+ * cfg.cc が true なら、状態カテゴリの後にカテゴリ「Claude Code」を作る（同じく。中のチャンネルを戻すのは scheduler.ts の再同期）。
+ * 場所がローカルの人格（localPlaces の述語か、入口の行の place が local）は丸ごと飛ばす（Discord に訊かず・作らず・番号を上書きせず、結果にも入れない）
  */
 export async function ensureGuildLayout(
   guildId: string,
@@ -113,6 +117,7 @@ export async function ensureGuildLayout(
     cfg?: SetupDeps["cfg"];
     gateway: Pick<SetupDeps["gateway"], "createCategory" | "createTextChannel" | "channelExists" | "moveChannel">;
     guildSettings: GuildSettingsStore;
+    localPlaces?: SetupDeps["localPlaces"];
   },
 ): Promise<SetupResult> {
   const { gateway, guildSettings } = deps;
@@ -153,8 +158,10 @@ export async function ensureGuildLayout(
       // #<NAME> は #tasks の後、#system の前に作る
       if (field === "systemChannelId") {
         for (const persona of personas) {
+          const inbox = guildSettings.personaInbox(guildId, persona.id);
+          if (deps.localPlaces?.isLocalPersona(persona.id) === true || inbox?.place === "local") continue;
           await ensure(
-            guildSettings.personaInbox(guildId, persona.id)?.channelId,
+            inbox?.channelId,
             () =>
               gateway.createTextChannel(guildId, {
                 name: personaInboxName(persona),

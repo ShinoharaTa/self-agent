@@ -23,6 +23,7 @@ import {
 import { renewedText } from "../src/app/session-renew.ts";
 import { CcChannelStore } from "../src/store/cc-channels.ts";
 import type { PersonaConfig } from "../src/config.ts";
+import { LocalIdStore } from "../src/store/local-places.ts";
 import { PlaceSettingStore } from "../src/store/place-settings.ts";
 import type { CloseDraft, TopicSessionStore } from "../src/store/topic-sessions.ts";
 import { channelRoutes } from "../src/web/routes/channels.ts";
@@ -112,7 +113,7 @@ async function until(condition: () => boolean): Promise<void> {
 async function setup(
   t: TestContext,
   steps: (topicSessions: TopicSessionStore) => Array<RunResult | Error | ((input: RunInput) => RunResult)> = () => [],
-  options: { projectSessions?: ProjectSessionGate } = {},
+  options: { projectSessions?: ProjectSessionGate; isLocalPersona?: (personaId: string) => boolean } = {},
 ) {
   const db = tempDb(t);
   const stores = createStores(db, () => NOW);
@@ -185,6 +186,7 @@ async function setup(
       history,
       ...(options.projectSessions === undefined ? {} : { projectSessions: options.projectSessions }),
       placeSettings,
+      ...(options.isLocalPersona === undefined ? {} : { localPlaces: { isLocalPersona: options.isLocalPersona, ids: new LocalIdStore(db) } }),
       log,
     }),
   ];
@@ -236,6 +238,22 @@ test("POST /api/sessions: 足した人格はチャンネル名 <NAME>-<題名>�
   assert.deepEqual(env.mikaGateway.sent, [{ channelId: "9001", text: welcomeText("相談"), replyToId: undefined }]);
   assert.equal(env.topicSessions.personaOf("9001"), "mika");
   assert.deepEqual(env.logs, [`Web からセッションを作りました（guild=${GUILD}、人格 mika）`]);
+});
+
+test("POST /api/sessions（#530 の WP3）: 場所がローカルの人格はチャンネルを作らず、ローカルの番号で place local・category_id local の行を作る。最初の投稿もしない", async (t) => {
+  const env = await setup(t, undefined, { isLocalPersona: (id) => id === "mika" });
+  const res = await call(env.server, "POST", "/api/sessions", { guildId: GUILD, title: "相談", persona: "mika" });
+  assert.equal(res.status, 201);
+  const channelId = String(res.json.channelId);
+  assert.match(channelId, /^1\d{20}$/);
+  assert.deepEqual(env.gateway.callsOf("createTextChannel"), []);
+  assert.deepEqual(env.gateway.sent, []);
+  assert.deepEqual(env.mikaGateway.sent, []);
+  const row = env.topicSessions.get(channelId);
+  assert.equal(row?.place, "local");
+  assert.equal(row?.categoryId, "local");
+  assert.equal(row?.title, "相談");
+  assert.equal(env.topicSessions.personaOf(channelId), "mika");
 });
 
 test("POST /api/sessions: サーバー・人格・題名の形が違えば 400、空の題名は 400 empty_title、/setup 前は 409、Bot が未接続なら 503。どれも作らない", async (t) => {
@@ -619,7 +637,7 @@ test("POST /api/sessions: モデルは選ばせず場所の既定（general）�
   env.placeSettings.set("general", { label: null, model: "sonnet" });
   const res = await call(env.server, "POST", "/api/sessions", { guildId: GUILD, title: "冬の旅行", model: "opus" });
   assert.equal(res.status, 201);
-  const channelId = (res.json as { channelId: string }).channelId;
+  const channelId = String(res.json.channelId);
   assert.equal(env.topicSessions.modelOf(channelId), "claude-sonnet-5-5");
   assert.equal(env.gateway.sent.at(-1)?.text, welcomeText("冬の旅行", undefined, "claude-sonnet-5-5"));
   const mika = await call(env.server, "POST", "/api/sessions", { guildId: GUILD, title: "相談", persona: "mika" });

@@ -70,6 +70,8 @@ export type SessionRouteDeps = Pick<ChannelRouteDeps, "cfg" | "resolveChannel"> 
     projectSessions?: ProjectSessionGate;
     /** 場所の既定のモデル（docs/plan/models.md §3。POST /api/sessions は選ばせず、場所の既定だけ） */
     placeSettings?: NewSessionDeps["placeSettings"];
+    /** 場所がローカルの人格（docs/plan/personas-web-antigravity.md §3.1）。無ければ今と同じ */
+    localPlaces?: NewSessionDeps["localPlaces"];
     log: (message: string) => void;
   };
 
