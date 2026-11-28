@@ -39,6 +39,7 @@ const MIKA: PersonaConfig = {
   id: "mika",
   name: "Mika",
   discordTokenEnv: "SELF_AGENT_PERSONA_MIKA_DISCORD_TOKEN",
+  surface: "discord",
   promptFile: "/home/tester/.config/self-agent/personas/mika.md",
   model: undefined,
   engine: "claude",
@@ -277,6 +278,41 @@ test("/new persona: その人格のセッションを `<NAME>-<題名>` で作�
     [["ch-2", welcomeText("家計簿")]],
   );
   assert.deepEqual(responder.replies.at(-1), { text: "<#ch-1> を作りました", ephemeral: true });
+});
+
+test("/new（#530 の WP5）: Web だけの人格（surface が web）は persona の選択肢に出ず、Web だけの人格しか無ければ人格 0 と同じ定義。その id では作らない", async (t) => {
+  const env = setup(t);
+  const SORA: PersonaConfig = { ...MIKA, id: "sora", name: "Sora", surface: "web" };
+  const create = (personas: PersonaConfig[]) =>
+    createNewSessionCommand({
+      cfg: { personas },
+      gateway: env.admin,
+      personas: env.personas,
+      guildSettings: env.guildSettings,
+      topicSessions: env.topicSessions,
+      queue: new KeyedSerialQueue(1),
+      log: env.log,
+    });
+  const mixed = create([MIKA, SORA]);
+  assert.deepEqual(
+    mixed.def.options?.find((option) => option.name === "persona"),
+    {
+      type: "string",
+      name: "persona",
+      description: "話す相手（省略すると既定の人格）",
+      choices: [{ name: "Mika", value: "mika" }],
+    },
+  );
+  assert.deepEqual(mixed.def, create([MIKA]).def);
+  assert.deepEqual(create([SORA]).def, create([]).def);
+  assert.deepEqual(
+    create([SORA]).def.options?.map((option) => option.name),
+    ["title", "model"],
+  );
+  // 作るときの検査も同じ一覧（古い選択肢などで Web だけの人格の id が来ても、Discord に作らない）
+  await assert.rejects(mixed.handle(command("new", { title: "旅行の計画", persona: "sora" }), new FakeResponder()), /\/new の人格が設定にありません/);
+  assert.deepEqual(env.admin.callsOf("createTextChannel"), []);
+  assert.deepEqual(env.admin.sent, []);
 });
 
 test("session_open: #<NAME> から呼ばれたらその人格のセッションを作り、最初の投稿はその人格の Bot。1 日の上限は全人格で合算、同じ題名は人格ごと", async (t) => {

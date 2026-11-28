@@ -536,6 +536,7 @@ test("SELF_AGENT_PERSONAS: 足した人格ごとに変数を読み、未設定�
       id: "aoi",
       name: "aoi",
       discordTokenEnv: "SELF_AGENT_PERSONA_AOI_DISCORD_TOKEN",
+      surface: "discord",
       promptFile: "/home/tester/.config/self-agent/personas/aoi.md",
       model: undefined,
       engine: "claude",
@@ -545,6 +546,7 @@ test("SELF_AGENT_PERSONAS: 足した人格ごとに変数を読み、未設定�
       id: "kai2",
       name: "カイ",
       discordTokenEnv: "SELF_AGENT_PERSONA_KAI2_DISCORD_TOKEN",
+      surface: "discord",
       promptFile: "/srv/personas/kai.md",
       model: "gpt-x",
       engine: "codex",
@@ -658,6 +660,153 @@ test("SELF_AGENT_PERSONAS が無ければ人格の変数は読まない（今と
   });
   assert.deepEqual(config.personas, []);
   assert.equal(config.codexHome, undefined);
+});
+
+/** Web を有効にする 2 つの変数（Web だけの人格に要る） */
+const WEB_ON = { SELF_AGENT_WEB_PORT: "8791", SELF_AGENT_WEB_ALLOWED_LOGIN: "owner@example.com" };
+
+/** 設定エラーの文が error に合い、値（dummy-secret の付くトークン・知らない場所の値）を含まない */
+function assertConfigError(env: Record<string, string>, error: RegExp, label: string): void {
+  assert.throws(
+    () => loadConfig(env),
+    (thrown: unknown) => {
+      assert.ok(thrown instanceof Error, label);
+      assert.match(thrown.message, error, label);
+      assert.ok(!thrown.message.includes("dummy-secret"), label);
+      assert.ok(!thrown.message.includes("phone"), label);
+      return true;
+    },
+    label,
+  );
+}
+
+test("SELF_AGENT_PERSONA_<ID>_SURFACE（#530 の WP5）: 7 つの書き方を 1 つずつ。文に値・トークンを出さない", () => {
+  const base = { HOME: "/home/tester", DISCORD_TOKEN: "dummy-secret-default", ...WEB_ON };
+  const token = { SELF_AGENT_PERSONA_AOI_DISCORD_TOKEN: "dummy-secret-aoi" };
+  const aoi = { ...base, SELF_AGENT_PERSONAS: "aoi" };
+  // 1. 無し・トークン在り: 今と同じ（discord）
+  assert.equal(loadConfig({ ...aoi, ...token }).personas[0]?.surface, "discord");
+  // 2. 無し・トークン無し: 今と同じ文で止まる
+  assertConfigError(aoi, /^SELF_AGENT_PERSONA_AOI_DISCORD_TOKEN が設定されていません$/, "無し・トークン無し");
+  // 3. discord: 無しと同じ（discord でもトークンが要る）
+  assert.deepEqual(loadConfig({ ...aoi, ...token, SELF_AGENT_PERSONA_AOI_SURFACE: "discord" }).personas, loadConfig({ ...aoi, ...token }).personas);
+  assertConfigError(
+    { ...aoi, SELF_AGENT_PERSONA_AOI_SURFACE: "discord" },
+    /^SELF_AGENT_PERSONA_AOI_DISCORD_TOKEN が設定されていません$/,
+    "discord・トークン無し",
+  );
+  // 4. web・トークン無し: 通る。トークンの変数名は持つ（読まない）
+  assert.deepEqual(loadConfig({ ...aoi, SELF_AGENT_PERSONA_AOI_SURFACE: "web" }).personas, [
+    {
+      id: "aoi",
+      name: "aoi",
+      discordTokenEnv: "SELF_AGENT_PERSONA_AOI_DISCORD_TOKEN",
+      surface: "web",
+      promptFile: "/home/tester/.config/self-agent/personas/aoi.md",
+      model: undefined,
+      engine: "claude",
+      effort: undefined,
+    },
+  ]);
+  // 空白だけのトークンは無いものとする（今のトークンの読みと同じ）
+  assert.equal(loadConfig({ ...aoi, SELF_AGENT_PERSONA_AOI_SURFACE: "web", SELF_AGENT_PERSONA_AOI_DISCORD_TOKEN: "  " }).personas[0]?.surface, "web");
+  // 5. web・トークン在り
+  assertConfigError(
+    { ...aoi, ...token, SELF_AGENT_PERSONA_AOI_SURFACE: "web" },
+    /^SELF_AGENT_PERSONA_AOI_SURFACE が web の人格に SELF_AGENT_PERSONA_AOI_DISCORD_TOKEN は設定できません$/,
+    "web・トークン在り",
+  );
+  // 6. 知らない値（大文字・前後の空白も知らない値）
+  for (const value of ["phone", "Web", " web"]) {
+    assertConfigError(
+      { ...aoi, SELF_AGENT_PERSONA_AOI_SURFACE: value },
+      /^SELF_AGENT_PERSONA_AOI_SURFACE は discord \/ web のいずれかで指定してください$/,
+      `知らない値 ${JSON.stringify(value)}`,
+    );
+  }
+  // 7. 既定の人格の場所は書けない。SELF_AGENT_PERSONAS が無くても見る
+  const defaultError = /^SELF_AGENT_PERSONA_DEFAULT_SURFACE は使えません（既定の人格は Discord の Bot で動きます）$/;
+  for (const value of ["web", "discord"]) {
+    assertConfigError({ ...base, SELF_AGENT_PERSONA_DEFAULT_SURFACE: value }, defaultError, `既定 ${value}`);
+    assertConfigError({ ...aoi, ...token, SELF_AGENT_PERSONA_DEFAULT_SURFACE: value }, defaultError, `既定 ${value}・人格在り`);
+  }
+  // 空なら書いていないものとする
+  assert.deepEqual(loadConfig({ ...base, SELF_AGENT_PERSONA_DEFAULT_SURFACE: "" }).personas, []);
+});
+
+test("SELF_AGENT_PERSONA_<ID>_SURFACE=web（#530 の WP5）: 同じトークンの検査に掛からず、ゲストのトークンとの検査も投げない", () => {
+  const base = { HOME: "/home/tester", DISCORD_TOKEN: "dummy-secret-default", ...WEB_ON };
+  // Web だけの人格が 2 体（どちらもトークン無し）と、その後ろの Discord の人格
+  const config = loadConfig({
+    ...base,
+    SELF_AGENT_PERSONAS: "aoi,kai,mika",
+    SELF_AGENT_PERSONA_AOI_SURFACE: "web",
+    SELF_AGENT_PERSONA_KAI_SURFACE: "web",
+    SELF_AGENT_PERSONA_MIKA_DISCORD_TOKEN: "dummy-secret-mika",
+  });
+  assert.deepEqual(
+    config.personas.map((persona) => [persona.id, persona.surface]),
+    [
+      ["aoi", "web"],
+      ["kai", "web"],
+      ["mika", "discord"],
+    ],
+  );
+  // Discord の人格どうしの同じトークンは今と同じく断る（間に Web だけの人格が在っても）
+  assertConfigError(
+    {
+      ...base,
+      SELF_AGENT_PERSONAS: "mika,aoi,kai",
+      SELF_AGENT_PERSONA_MIKA_DISCORD_TOKEN: "dummy-secret-mika",
+      SELF_AGENT_PERSONA_AOI_SURFACE: "web",
+      SELF_AGENT_PERSONA_KAI_DISCORD_TOKEN: "dummy-secret-mika",
+    },
+    /^SELF_AGENT_PERSONA_KAI_DISCORD_TOKEN と SELF_AGENT_PERSONA_MIKA_DISCORD_TOKEN に同じトークンが設定されています$/,
+    "Discord の人格どうし",
+  );
+  // ゲストが有効でも、Web だけの人格のトークンの変数（値が無い）とは比べて投げない
+  const guest = loadConfig({
+    ...base,
+    SELF_AGENT_PERSONAS: "aoi",
+    SELF_AGENT_PERSONA_AOI_SURFACE: "web",
+    SELF_AGENT_GUEST_DISCORD_TOKEN: "dummy-secret-guest",
+    SELF_AGENT_GUEST_API_KEY: "dummy-secret-key",
+  });
+  assert.equal(guest.guest, true);
+  assert.equal(guest.personas[0]?.surface, "web");
+});
+
+test("SELF_AGENT_PERSONA_<ID>_SURFACE=web（#530 の WP5）: Web が無効（ポートだけ・ログインだけ・両方無し）なら最初の Web だけの人格の名前で止まる。有効なら通る", () => {
+  const webOnly = {
+    HOME: "/home/tester",
+    SELF_AGENT_PERSONAS: "mika,aoi,kai",
+    SELF_AGENT_PERSONA_MIKA_DISCORD_TOKEN: "dummy-secret-mika",
+    SELF_AGENT_PERSONA_AOI_SURFACE: "web",
+    SELF_AGENT_PERSONA_KAI_SURFACE: "web",
+  };
+  const error = /^SELF_AGENT_PERSONA_AOI_SURFACE=web には SELF_AGENT_WEB_PORT と SELF_AGENT_WEB_ALLOWED_LOGIN が要ります$/;
+  const cases: Array<[string, Record<string, string>]> = [
+    ["ポートだけ", { SELF_AGENT_WEB_PORT: "8791" }],
+    ["ログインだけ", { SELF_AGENT_WEB_ALLOWED_LOGIN: "owner@example.com" }],
+    ["両方無し", {}],
+  ];
+  for (const [label, web] of cases) assertConfigError({ ...webOnly, ...web }, error, label);
+  assert.equal(loadConfig({ ...webOnly, ...WEB_ON }).web, true);
+});
+
+test("SELF_AGENT_PERSONA_<ID>_SURFACE を書かなければ（#530 の WP5）、Web が無効でも今と同じに通り、人格はどれも discord", () => {
+  const config = loadConfig({
+    HOME: "/home/tester",
+    SELF_AGENT_PERSONAS: "aoi,kai",
+    SELF_AGENT_PERSONA_AOI_DISCORD_TOKEN: "dummy-aoi",
+    SELF_AGENT_PERSONA_KAI_DISCORD_TOKEN: "dummy-kai",
+    SELF_AGENT_WEB_PORT: "8791",
+  });
+  assert.equal(config.web, false);
+  assert.deepEqual(
+    config.personas.map((persona) => persona.surface),
+    ["discord", "discord"],
+  );
 });
 
 const CC_TOKEN = "c".repeat(32);

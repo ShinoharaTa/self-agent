@@ -20,7 +20,14 @@ import {
   personaReconnectedNotice,
   startPersonaGateways,
 } from "../src/app/persona-status.ts";
-import { commandResponse, PersonaRouter, POSTED_BY_OWNER_REPLY } from "../src/app/personas.ts";
+import {
+  commandResponse,
+  discordPersonas,
+  PersonaRouter,
+  personaBot,
+  POSTED_BY_OWNER_REPLY,
+  webPersonaPredicate,
+} from "../src/app/personas.ts";
 import { MOVED_NOTE, OWNER_UNREACHABLE_NOTE, ReminderScheduler } from "../src/app/reminders.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
 import { Scheduler } from "../src/app/scheduler.ts";
@@ -351,12 +358,75 @@ test("Web の発言（submitText）: 設定に無い人格のローカルの話�
   );
 });
 
-test("見張り: main.ts は LocalIdStore を 1 つだけ作り、PersonaRouter にその番号のローカルの Gateway を渡す", () => {
+test("見張り: main.ts は LocalIdStore とローカルの Gateway を 1 つずつ作り、その Gateway を PersonaRouter と Web だけの人格の runtime（personaBot）に渡す", () => {
   const source = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
   assert.equal(source.match(/new LocalIdStore\(/g)?.length, 1);
+  // ローカルの Gateway はその番号で 1 つだけ（振り分けと人格の runtime で別の物を作らない）
+  assert.equal(source.match(/new LocalGateway\(/g)?.length, 1);
+  assert.match(source, /\nconst localGateway = new LocalGateway\(localIds\);\n/);
   const router = source.match(/new PersonaRouter\(\{[\s\S]*?\n\}\);/)?.[0];
   assert.ok(router !== undefined);
-  assert.match(router, /\n {2}localGateway: new LocalGateway\(localIds\),\n/);
+  assert.match(router, /\n {2}localGateway,\n/);
+  const runtimes = source.match(/\nconst personaRuntimes: PersonaRuntime\[\] = \[[\s\S]*?\n\];\n/)?.[0];
+  assert.ok(runtimes !== undefined);
+  assert.match(runtimes, /\n {2}\.\.\.config\.personas\.map\(/);
+  assert.match(runtimes, /\.\.\.personaBot\(persona, personaGateways\.find\(\(bot\) => bot\.persona\.id === persona\.id\)\?\.gateway, localGateway\),/);
+  assert.ok(source.indexOf("\nconst localGateway = ") < source.indexOf("\nconst personaRuntimes: "));
+});
+
+// ---- 門（#530 の WP5 の 3 つ目）: 設定の surface から Bot の側と述語を作る ----
+
+function surfacePersona(id: string, surface: "discord" | "web") {
+  return { id, name: id, surface };
+}
+
+test("personaBot: web は渡したローカルの Gateway で接続はいつも真（Bot を渡されても使わない）。discord はその Bot とその接続。discord で Bot 無しは投げる", (t) => {
+  const db = tempDb(t);
+  const local = new LocalGateway(new LocalIdStore(db));
+  let up = false;
+  const bot = Object.assign(new FakeGateway(), { connected: () => up });
+
+  const web = personaBot(surfacePersona("sora", "web"), undefined, local);
+  assert.equal(web.gateway, local);
+  assert.equal(web.connected(), true);
+  const webWithBot = personaBot(surfacePersona("sora", "web"), bot, local);
+  assert.equal(webWithBot.gateway, local);
+  assert.equal(webWithBot.connected(), true);
+
+  const discord = personaBot(surfacePersona("mika", "discord"), bot, local);
+  assert.equal(discord.gateway, bot);
+  assert.equal(discord.connected(), false);
+  up = true;
+  assert.equal(discord.connected(), true);
+
+  assert.throws(() => personaBot(surfacePersona("mika", "discord"), undefined, local), /^Error: 人格 mika の Bot がありません$/);
+});
+
+test("discordPersonas: Bot・接続の知らせ（PersonaStatus）に渡す一覧は surface が discord の人格だけ（順は設定のまま）。Web だけの人格しか無ければ空", () => {
+  const personas = [surfacePersona("aoi", "discord"), surfacePersona("sora", "web"), surfacePersona("mika", "discord")];
+  assert.deepEqual(
+    discordPersonas(personas).map((persona) => persona.id),
+    ["aoi", "mika"],
+  );
+  assert.deepEqual(discordPersonas([surfacePersona("sora", "web")]), []);
+  assert.deepEqual(discordPersonas([]), []);
+});
+
+test("webPersonaPredicate: surface が web の人格の id だけ真。discord の人格・既定の人格・設定に無い id は偽", () => {
+  const isLocal = webPersonaPredicate([surfacePersona("aoi", "discord"), surfacePersona("sora", "web"), surfacePersona("hana", "web")]);
+  assert.deepEqual(
+    ["sora", "hana", "aoi", "default", "nobody"].map((id) => [id, isLocal(id)]),
+    [
+      ["sora", true],
+      ["hana", true],
+      ["aoi", false],
+      ["default", false],
+      ["nobody", false],
+    ],
+  );
+  // _SURFACE を書かない設定（全部 discord）なら、どの id も偽（今と同じ）
+  const none = webPersonaPredicate([surfacePersona("aoi", "discord"), surfacePersona("mika", "discord")]);
+  assert.deepEqual(["aoi", "mika", "default"].map(none), [false, false, false]);
 });
 
 test("2 つの Bot が同じ発言を受け取ると、持ち主の Bot の分だけがターンになり、返信は持ち主の Bot から出る", async (t) => {

@@ -8,11 +8,11 @@ import { createChannelResolver } from "../src/app/access.ts";
 import type { Handler, SubmitTextResult } from "../src/app/handler.ts";
 import { createHandler, WEB_ECHO_PREFIX } from "../src/app/handler.ts";
 import { checkPersonaPlaces, ensureLocalEntries, type LocalEntriesDeps } from "../src/app/local-entries.ts";
-import { PersonaRouter } from "../src/app/personas.ts";
+import { discordPersonas, PersonaRouter, personaBot, webPersonaPredicate } from "../src/app/personas.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
 import { createRightHand } from "../src/app/right-hand.ts";
 import type { TopicsResult } from "../src/app/topics.ts";
-import type { PersonaConfig } from "../src/config.ts";
+import { loadConfig, type PersonaConfig } from "../src/config.ts";
 import { LocalGateway } from "../src/discord/local-gateway.ts";
 import { LocalIdStore } from "../src/store/local-places.ts";
 import { PlaceSettingStore } from "../src/store/place-settings.ts";
@@ -37,6 +37,7 @@ function persona(id: string, name: string): PersonaConfig {
     id,
     name,
     discordTokenEnv: `SELF_AGENT_PERSONA_${id.toUpperCase()}_DISCORD_TOKEN`,
+    surface: "discord",
     promptFile: "/dev/null",
     model: undefined,
     engine: "claude",
@@ -467,6 +468,171 @@ test("一通り（右腕の session_open）: ローカルの入口から始め�
   assert.ok(logs.every((line) => !line.includes(channelId) && !line.includes(env.entryId)), logs.join("\n"));
 });
 
+test("一通り（設定から。#530 の WP5 の門）: _SURFACE=web の env で loadConfig → 述語 → 入口 → 発言。Bot は Discord の人格だけに作り、ローカルの Gateway に来たのは入口の番号への echo・入力中・返事だけ", async (t) => {
+  const workspaceDir = tempDir(t);
+  const config = loadConfig({
+    HOME: "/home/tester",
+    DISCORD_TOKEN: "dummy-default",
+    SELF_AGENT_OWNER_ID: "123456789012345678",
+    SELF_AGENT_ALLOWED_GUILD_IDS: GUILD,
+    SELF_AGENT_WORKSPACE_DIR: workspaceDir,
+    SELF_AGENT_WEB_PORT: "8791",
+    SELF_AGENT_WEB_ALLOWED_LOGIN: LOGIN,
+    SELF_AGENT_PERSONAS: "mika,sora",
+    SELF_AGENT_PERSONA_MIKA_DISCORD_TOKEN: "dummy-mika",
+    SELF_AGENT_PERSONA_MIKA_NAME: "ミカ",
+    SELF_AGENT_PERSONA_SORA_SURFACE: "web",
+    SELF_AGENT_PERSONA_SORA_NAME: "ソラ",
+  });
+  const db = tempDb(t);
+  const stores = createStores(db, () => NOW);
+  stores.guildSettings.setChannel(GUILD, "inboxChannelId", "100");
+  stores.guildSettings.setChannel(GUILD, "tasksChannelId", "101");
+  stores.guildSettings.setStateCategory(GUILD, "active", 1, "active-1");
+  // main.ts と同じ: 述語は設定の surface から、入口は起動の検査の後に作る
+  const localIds = new LocalIdStore(db);
+  const logs: string[] = [];
+  const localEntriesDeps = {
+    cfg: config,
+    guildSettings: stores.guildSettings,
+    topicSessions: stores.topicSessions,
+    localPlaces: { isLocalPersona: webPersonaPredicate(config.personas), ids: localIds },
+    log: (line: string) => void logs.push(line),
+  };
+  assert.deepEqual(checkPersonaPlaces(localEntriesDeps), []);
+  assert.equal(ensureLocalEntries(localEntriesDeps), 1);
+  assert.deepEqual(logs, [`ローカルの入口を作りました（persona=sora、guild=${GUILD}）`]);
+  const entryId = stores.guildSettings.personaInbox(GUILD, "sora")!.channelId!;
+  assert.match(entryId, LOCAL_ID);
+  assert.equal(stores.guildSettings.personaInbox(GUILD, "mika"), undefined);
+
+  // main.ts と同じ: Bot は surface が discord の人格だけ。runtime は設定の全部の人格から、Bot の側は personaBot
+  const allow = ["send", "sendMessage", "editMessage", "startTyping"] as const;
+  const defaultBot = recording(
+    new FakeGateway({ allow, record: ["createCategory", "createTextChannel", "channelExists", "countChannelsIn"], messageIdPrefix: "5000" }),
+  );
+  const bots = discordPersonas(config.personas).map((persona) => ({
+    persona,
+    bot: recording(Object.assign(new FakeGateway({ allow, messageIdPrefix: "6000" }), { connected: () => true })),
+  }));
+  assert.deepEqual(
+    bots.map(({ persona }) => persona.id),
+    ["mika"],
+  );
+  const local = recording(new LocalGateway(localIds));
+  const runners = new Map([
+    ["default", new FakeRunner([])],
+    ["mika", new FakeRunner([])],
+    [
+      "sora",
+      new FakeRunner([
+        { ok: true, text: "ソラです", sessionId: "session-1", usage: turnUsage(10, 0, 0), durationMs: 1000, toolCalls: 0, contextTokens: 10 },
+      ]),
+    ],
+  ]);
+  const personas = new PersonaRouter({
+    personas: [
+      { id: "default", name: "default", engine: "claude", runner: runners.get("default")!, gateway: defaultBot.gateway, connected: () => true },
+      ...config.personas.map((persona) => ({
+        id: persona.id,
+        name: persona.name,
+        engine: "claude" as const,
+        runner: runners.get(persona.id)!,
+        ...personaBot(persona, bots.find((bot) => bot.persona.id === persona.id)?.bot.gateway, local.gateway),
+      })),
+    ],
+    guildSettings: stores.guildSettings,
+    topicSessions: stores.topicSessions,
+    localGateway: local.gateway,
+  });
+  assert.equal(personas.ownerConnected(entryId), true);
+  const resolveChannel = createChannelResolver(config, stores.guildSettings, stores.topicSessions);
+  const handler = createHandler({
+    cfg: config,
+    resolveChannel,
+    gateway: personas.ownerPosts(),
+    runner: runners.get("default")!,
+    personas,
+    ...stores,
+    channelOps: new RecordingChannelOps(),
+    queue: new KeyedSerialQueue(2),
+    now: () => NOW,
+    history: stores.history,
+    ownerConnected: (channelId) => personas.ownerConnected(channelId),
+    log: () => undefined,
+  });
+  const server = createWebServer({
+    host: "127.0.0.1",
+    port: 0,
+    allowedLogin: LOGIN,
+    staticDir: tempDir(t),
+    templateSiteDir: tempDir(t),
+    routes: [
+      ...topicRoutes({
+        cfg: config,
+        guildSettings: stores.guildSettings,
+        topicSessions: stores.topicSessions,
+        history: stores.history,
+        personas,
+        handler,
+        places: { workspaceDir, protectedDirs: [] },
+        home: "/home/owner",
+        now: () => NOW,
+      }),
+      ...turnRoutes({ cfg: config, guildSettings: stores.guildSettings, topicSessions: stores.topicSessions, resolveChannel, handler, now: () => NOW, log: () => undefined }),
+    ],
+    stopping: () => false,
+    now: () => NOW,
+    log: () => undefined,
+  });
+  await server.start();
+  t.after(() => server.close());
+
+  const listed = await call(server, "GET", "/api/topics");
+  assert.equal(listed.status, 200);
+  const entry = (listed.json as unknown as TopicsResult).topics.find((topic) => topic.id === `ch:${entryId}`);
+  assert.equal(entry?.title, "#ソラ");
+  assert.equal(entry?.persona, "ソラ");
+
+  const posted = await call(server, "POST", `/api/channels/${entryId}/messages`, { text: "こんにちは" });
+  assert.equal(posted.status, 202);
+  for (let i = 0; i < 100 && stores.history.list(entryId, { limit: 10 }).length < 2; i++) await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(
+    stores.history.list(entryId, { limit: 10 }).map((row) => [row.kind, row.text, row.persona]),
+    [
+      ["owner", "こんにちは", "sora"],
+      ["agent", "ソラです", "sora"],
+    ],
+  );
+  assert.deepEqual(
+    [...runners].map(([id, runner]) => [id, runner.inputs.length]),
+    [
+      ["default", 0],
+      ["mika", 0],
+      ["sora", 1],
+    ],
+  );
+  // ローカルの Gateway に来た物の一覧（どの番号に何が来たか）。宛先はどれも入口の番号で、返事は echo（ローカルの番号）への返信
+  const replyTo = local.calls[2]?.args[2];
+  assert.match(String(replyTo), LOCAL_ID);
+  assert.notEqual(replyTo, entryId);
+  assert.deepEqual(
+    local.calls.map((entry) => [entry.method, ...entry.args]),
+    [
+      ["sendMessage", entryId, { text: `${WEB_ECHO_PREFIX}\nこんにちは` }],
+      ["startTyping", entryId],
+      ["send", entryId, "ソラです", replyTo, undefined],
+    ],
+  );
+  // Discord の偽 Gateway（既定・mika）には何も来ない
+  assert.deepEqual(defaultBot.calls, []);
+  assert.deepEqual(defaultBot.gateway.calls, []);
+  assert.deepEqual(
+    bots.map(({ persona, bot }) => [persona.id, bot.calls]),
+    [["mika", []]],
+  );
+});
+
 // ---- 配線の見張り ----
 
 test("見張り: main.ts は store の直後に、checkPersonaPlaces → 断るなら exit 1 → ensureLocalEntries の順で、同じ localPlaces（localIds）を使い、Discord・Web の待ち受けより前", () => {
@@ -492,4 +658,33 @@ test("見張り: main.ts は store の直後に、checkPersonaPlaces → 断る�
   assert.ok(gatewayStart >= 0 && firstStart >= 0);
   assert.ok(ensured < gatewayStart);
   assert.ok(ensured < firstStart);
+});
+
+/** source の start の字の後の最初の `{` から、括弧の釣り合う `}` までの塊 */
+function braceBlock(source: string, start: string): string {
+  const at = source.indexOf(start);
+  assert.ok(at >= 0, start);
+  const open = source.indexOf("{", at);
+  let depth = 0;
+  for (let i = open; i < source.length; i++) {
+    if (source[i] === "{") depth += 1;
+    if (source[i] === "}") depth -= 1;
+    if (depth === 0) return source.slice(open, i + 1);
+  }
+  assert.fail(`閉じていない: ${start}`);
+}
+
+test("見張り（#530 の WP5 の門）: main.ts は Bot を surface が discord の人格だけから作り、述語は設定の surface から答え、4 つの塊に同じ localPlaces を渡す", () => {
+  const source = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+  // (1) 人格の Bot（Client・接続の知らせ・止める一覧の元）は、surface で絞ってから作る
+  assert.equal(source.match(/\nconst personaGateways = /g)?.length, 1);
+  assert.match(source, /\nconst personaGateways = discordPersonas\(config\.personas\)\.map\(/);
+  assert.doesNotMatch(source, /personaGateways = config\.personas\.map\(/);
+  // (2) 述語は常に false ではなく、設定の surface から答える
+  assert.doesNotMatch(source, /isLocalPersona: \(\) => false/);
+  assert.match(source, /\nconst localPlaces: LocalPersonaPlaces = \{ isLocalPersona: webPersonaPredicate\(config\.personas\), ids: localIds \};\n/);
+  // (3) /new・/setup（createCommands）・ホームパネル（createComponents）・話題を始める口（topicStart）・Web（createWebServer）が同じ localPlaces を見る
+  for (const start of ["\nconst commands = createCommands(", "  components: createComponents(", "\nconst topicStart = ", "  webServer = createWebServer("]) {
+    assert.match(braceBlock(source, start), /\n\s+localPlaces,\n/, start);
+  }
 });

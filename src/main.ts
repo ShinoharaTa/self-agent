@@ -53,7 +53,14 @@ import { ReminderScheduler } from "./app/reminders.ts";
 import { createRightHand } from "./app/right-hand.ts";
 import { Scheduler, TICK_INTERVAL_MS } from "./app/scheduler.ts";
 import { PersonaStatus, startPersonaGateways } from "./app/persona-status.ts";
-import { type LocalPersonaPlaces, PersonaRouter, type PersonaRuntime } from "./app/personas.ts";
+import {
+  discordPersonas,
+  type LocalPersonaPlaces,
+  PersonaRouter,
+  type PersonaRuntime,
+  personaBot,
+  webPersonaPredicate,
+} from "./app/personas.ts";
 import { createPlaceRefs } from "./app/place-refs.ts";
 import { createShutdown } from "./app/shutdown.ts";
 import { ShellState, shellRefresher } from "./app/shell-state.ts";
@@ -220,9 +227,9 @@ const guildSettings = new GuildSettingsStore(db, now);
 const topicSessions = new TopicSessionStore(db, now);
 // ローカルの番号（docs/plan/personas-web-antigravity.md §3.1）。振り分けのローカルの Gateway と、話題・入口を作る所が同じ 1 つを使う
 const localIds = new LocalIdStore(db);
-// 場所がローカルの人格（Web だけ。docs/plan/personas-web-antigravity.md §3.1）。まだ無いので述語は常に false（WP5 で config の _SURFACE につなぐ）。
+// 場所がローカルの人格（Web だけ。docs/plan/personas-web-antigravity.md §3.1）。述語は設定の SELF_AGENT_PERSONA_<ID>_SURFACE=web の人格で真。
 // 起動のときの検査と入口作り・/new・ホームパネル・POST /api/topics・右腕の session_open・POST /api/sessions・/setup が同じ 1 つを見る
-const localPlaces: LocalPersonaPlaces = { isLocalPersona: () => false, ids: localIds };
+const localPlaces: LocalPersonaPlaces = { isLocalPersona: webPersonaPredicate(config.personas), ids: localIds };
 // 人格の場所は id に付き、後から変えられない。述語と今在る入口・話題の場所が食い違えば起動しない（両向き）。
 // 揃っていれば、/setup 済みのサーバーに Web だけの人格の入口（ローカルの番号）を作る。どちらも Discord・Web の待ち受けより前
 const localEntriesDeps = { cfg: config, guildSettings, topicSessions, localPlaces, log };
@@ -297,11 +304,12 @@ const projectsDir = join(realWorkDir, "projects");
 const diskQuota = new DiskQuota({ workDir: realWorkDir, projectsDir, now });
 
 // 人格ごとの Bot（docs/plan/personas.md）。既定の人格は DISCORD_TOKEN で、管理の操作（カテゴリ・チャンネル・ピン留め・#system・再同期・コマンドの登録）もこの Bot が行う。
-// 足した人格は SELF_AGENT_PERSONA_<ID>_DISCORD_TOKEN（値は start で読む）で、自分のチャンネルの返事・途中経過・ボタンだけを投稿する
+// 足した人格は SELF_AGENT_PERSONA_<ID>_DISCORD_TOKEN（値は start で読む）で、自分のチャンネルの返事・途中経過・ボタンだけを投稿する。
+// Web だけの人格（surface が web）には Bot を作らない（Client・接続の知らせ・終わるときに止める一覧のどれにも入らない）
 const gateway = new DiscordGateway(config.allowedGuildIds);
 // #system への知らせ（シェルの状態・人格の Bot の接続・GitHub の取得の失敗・削除の確認・ゲスト）は既定の人格の Bot で、notices に記録してから投稿する
 const notify = createSystemNotifier({ guildSettings, gateway, notices, log });
-const personaGateways = config.personas.map((persona) => ({
+const personaGateways = discordPersonas(config.personas).map((persona) => ({
   persona,
   gateway: new DiscordGateway(config.allowedGuildIds, { persona: persona.id, tokenEnv: persona.discordTokenEnv }),
 }));
@@ -393,9 +401,11 @@ const projectSessions: ProjectSessionGate | undefined =
 if (config.personas.some((persona) => persona.engine === "codex")) {
   log("codex のエンジンはまだ無いため、codex の人格も Claude で動かします");
 }
+// 場所がローカルのチャンネルの Gateway（Discord に何も送らない）。振り分けと、Web だけの人格の runtime が同じ 1 つを使う
+const localGateway = new LocalGateway(localIds);
 const personaRuntimes: PersonaRuntime[] = [
   { id: DEFAULT_PERSONA_ID, name: DEFAULT_PERSONA_ID, engine: "claude", runner, gateway, connected: () => gateway.connected() },
-  ...personaGateways.map(({ persona, gateway: personaGateway }): PersonaRuntime => {
+  ...config.personas.map((persona): PersonaRuntime => {
     const modelAndEffort =
       persona.engine === "claude"
         ? { model: persona.model ?? config.model, effort: persona.effort ?? config.effort }
@@ -416,8 +426,8 @@ const personaRuntimes: PersonaRuntime[] = [
       name: persona.name,
       engine: "claude",
       runner: personaRunner,
-      gateway: personaGateway,
-      connected: () => personaGateway.connected(),
+      // Web だけの人格はローカルの Gateway・接続はいつも真。Discord の人格はその Bot
+      ...personaBot(persona, personaGateways.find((bot) => bot.persona.id === persona.id)?.gateway, localGateway),
     };
   }),
 ];
@@ -427,7 +437,7 @@ const personas = new PersonaRouter({
   personas: personaRuntimes,
   guildSettings,
   topicSessions,
-  localGateway: new LocalGateway(localIds),
+  localGateway,
 });
 const ownerPosts = personas.ownerPosts();
 // ナレッジベースと記憶のツール: kb_delete の確認と記憶の変更の知らせは run のチャンネルに、その持ち主の Bot で投稿する。
