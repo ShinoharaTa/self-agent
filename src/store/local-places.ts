@@ -20,7 +20,8 @@ const LOCAL_ID_SEQUENCE_DIGITS = 20;
 
 /**
  * ローカルの番号（チャンネルにもメッセージにも同じ連番を使う）。先頭が 1 の数字 21 桁で、Discord の ID（20 桁まで）と重ならない。
- * 連番は local_ids の AUTOINCREMENT（取った行はすぐ消すが、番号は使い直さない）
+ * 連番は local_ids の AUTOINCREMENT（取った行はすぐ消す）。番号を使い直さないのは、トランザクションの外で取ったときだけ
+ * （中で取って巻き戻ると、同じ番号がもう一度出る）。なので next はトランザクションの中では投げる
  */
 export class LocalIdStore {
   private readonly db: DatabaseSync;
@@ -29,8 +30,9 @@ export class LocalIdStore {
     this.db = db;
   }
 
-  /** 新しい番号を 1 つ取る。続けて取ると違う値 */
+  /** 新しい番号を 1 つ取る。続けて取ると違う値。トランザクションの中で呼ぶと投げる */
   next(): string {
+    if (this.db.isTransaction) throw new Error("ローカルの番号はトランザクションの外で取ってください");
     const row = this.db.prepare("INSERT INTO local_ids DEFAULT VALUES RETURNING id").get();
     const id = Number(row!.id);
     this.db.prepare("DELETE FROM local_ids WHERE id = ?").run(id);

@@ -137,10 +137,10 @@ export class GuildSettingsStore {
 
   /**
    * 足した人格の #<NAME> のチャンネルの ID を保存する（/setup）。行が無ければ作る。
-   * place を渡したときだけ場所も書く（省略すれば、新しい行は discord・既にある行は今の場所のまま）
+   * 場所も番号と一緒に必ず書く（省略すれば discord。番号だけ変わって場所が前のまま残る行を作らない）
    */
-  setPersonaInbox(guildId: string, persona: string, channelId: string, place?: ChannelPlace): void {
-    this.setPersonaChannel(guildId, "inbox", place === undefined ? { channel_id: channelId } : { channel_id: channelId, place }, persona);
+  setPersonaInbox(guildId: string, persona: string, channelId: string, place: ChannelPlace = "discord"): void {
+    this.setPersonaChannel(guildId, "inbox", { channel_id: channelId, place }, persona);
   }
 
   /** その入口のチャンネル（persona_channels の行）の持ち主の人格の id。入口のチャンネルでなければ undefined */
