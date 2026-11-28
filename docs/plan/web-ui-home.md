@@ -251,7 +251,7 @@ Antigravity のモデルの行とエンジンの表示（AG8）／［要約な�
 |---|---|---|---|---|
 | P0 | 1 | 文書（台帳の直し + この文書） | 無 | 無 |
 | P1 | 1 | いちばん古い殻を消す（M8b。#542）。済み（#544） | 問い 1（答えた: a） | 無 |
-| P2 | 2 | 計算の module（a ターン・既読・分け方・ピン／b 文の解釈） | 無（P1 と並べられる） | 無 |
+| P2 | 2 | 計算の module（a ターン・既読・分け方・ピン／b 文の解釈）。a 済み（#549） | 無（P1 と並べられる） | 無 |
 | P3 | 1 | データ層 | P2a | 無 |
 | N0 | 2 | a 入口・トークン・見張り／b タブ・経路・押して入る仕掛け・設定・`ui-shots` | P1。問い 2・3 | 無 |
 | N1 | 5 | 会話: a 読む／b 送る／c 動いている・止める／d カード／e 音 | P2・P3・N0。問い 6（d） | 無 |
@@ -307,8 +307,8 @@ N4 は N1〜N3 と並べて進められる（触るファイルが別）。
 **A に決めた**（統括・2026-11-28。§6.2 の 4）。
 
 **P2a `n-calc.js`**（純粋な計算。document・window・時計に触らない）
-- 写す物: `api.js` の `mergeTurns`・`realTurns`・`backoff`・`turnsPath`。`mergeSeen` は P1 で `api.js` から消した。要るなら git の履歴（P1 の前）から写す。`flows.js` の流れの分け方。`pins.js` のピンの計算（列の幅の計算は写さない）。`topics.js` の数え方（`counts`・止まった番の数）。
-- 足す物: §3.2 の既読の判定（入力 = 表のタブ・重なりの有無・最後の行が見えているか・`visibilityState`）。§3.3 の 3 つのタブの分け方と数の印。
+- 写す物: `api.js` の `mergeTurns`・`realTurns`・`backoff`・`turnsPath`。`c-deck.js` の流れの分け方（`turnItems`・`runningItems`・`idleItems`・`taskItems`・`reminderItems`・`feedItems`。`flows.js` は状態と配線だけ）。`topics.js` のピンの計算（`pins`・`pinMax`・`hand`・`handChannel`・`handPinnable`・`handPinned`。`pins.js` は会話の列の DOM だけ。列の幅の計算は写さない）。`topics.js` の数え方（`counts`・止まった番の数）。`mergeSeen` は写さない（混ぜる相手だった localStorage の古い既読は P1 で消えた。新しい入口は既読を手元のファイルに持たず、サーバーとの突き合わせは下の `mergeReads` が受ける）。
+- 足す物: §3.2 の既読の判定（入力 = 表のタブ・重なりの有無・最後の行が見えているか・`visibilityState`）。§3.3 の 3 つのタブの分け方と数の印。サーバーの既読の取り込み（`mergeReads`）。§3.1 のピンの 1 段（`pinStrip`）。
 - 受け入れ: Node で import できる。写した関数ごとに、古い関数（今の検査の読み込み方で読む）と同じ入力で同じ答えになる検査。足した関数は §3 の表の場合ごとの検査。`n-calc.js` に `document`・`window`・`SA`・`Date.now`・`setTimeout` の字が無い。
 
 **P2b `n-text.js`**（文の解釈）
