@@ -191,9 +191,16 @@ export function createLead(deps: LeadDeps): Lead {
       log("まとめの残りの数を取れませんでした");
       counts = null;
     }
-    // 履歴の文はいつも `<#ID>`。Discord に投げる文だけ refOf で書く
+    // 履歴の文はいつも `<#ID>`。Discord に投げる文だけ refOf で書く（書けなければ `<#ID>` のまま投げる）
     const text = leadText(events, counts);
-    const posted = deps.refOf === undefined ? text : leadText(events, counts, deps.refOf);
+    let posted = text;
+    if (deps.refOf !== undefined) {
+      try {
+        posted = leadText(events, counts, deps.refOf);
+      } catch {
+        log("まとめの場所の書き方を引けませんでした");
+      }
+    }
     const ownerUserId = deps.ownerUserId;
     // 鳴らし方は出す時点の設定を 1 回だけ読む
     const ringSetting = deps.settings().ring;
