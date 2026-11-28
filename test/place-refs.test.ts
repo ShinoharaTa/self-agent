@@ -25,7 +25,8 @@ const LOCAL_ENTRY = "100000000000000000002";
 const LOCAL_ENTRY_GONE = "100000000000000000003";
 /** 記号入りの題名（Discord の Markdown・チャンネルの参照の字を含む） */
 const LOCAL_TITLE = "<#999> 家計簿_*の話";
-const LOCAL_REF = "「\\<\\#999\\> 家計簿\\_\\*の話」（Web）";
+const LOCAL_TITLE_ESCAPED = "\\<\\#999\\> 家計簿\\_\\*の話";
+const LOCAL_REF = `「${LOCAL_TITLE_ESCAPED}」（Web）`;
 
 function setup(t: TestContext) {
   const db = tempDb(t);
@@ -216,19 +217,45 @@ test("まとめ: ローカルの話題が混ざっても、並び（止まった
   assert.equal("mentionUserId" in quiet.posts[0]!.message, false);
 });
 
+test("まとめ: refOf が投げても落とさない。投稿は 1 回で文は履歴の文（<#ID>）と同じ・履歴 1 行・log 1 行", async (t) => {
+  const { run, posts, rows, logs } = leadSetup(t, {
+    refOf: () => {
+      throw new Error("引けません");
+    },
+  });
+  await run([event(LOCAL_TOPIC), event(DISCORD_TOPIC)]);
+  assert.equal(posts.length, 1);
+  const history = rows();
+  assert.equal(history.length, 1);
+  assert.equal(posts[0]!.message.text, history[0]!.text);
+  assert.ok(posts[0]!.message.text.includes(`<#${DISCORD_TOPIC}>`));
+  assert.deepEqual(logs, ["まとめの場所の書き方を引けませんでした"]);
+});
+
 // ---- 一覧（T8・T9） ----
 
 test("sessionLine: ローカルの話題は <# が無く、題名と「Web・」が在る。Discord の話題は今と同じ字", (t) => {
   const env = setup(t);
   const local = env.topicSessions.get(LOCAL_TOPIC)!;
   const discord = env.topicSessions.get(DISCORD_TOPIC)!;
-  assert.equal(sessionLine(local, NOW, "ミカ"), `${LOCAL_TITLE}（ミカ・Web・最終 1 時間以内）`);
-  assert.equal(sessionLine(local, NOW), `${LOCAL_TITLE}（Web・最終 1 時間以内）`);
+  assert.equal(sessionLine(local, NOW, "ミカ"), `${LOCAL_TITLE_ESCAPED}（ミカ・Web・最終 1 時間以内）`);
+  assert.equal(sessionLine(local, NOW), `${LOCAL_TITLE_ESCAPED}（Web・最終 1 時間以内）`);
+  // 行頭に来る題名の見出し・引用・箇条書き・チャンネルの参照の字は逃がす
+  for (const [title, escaped] of [
+    ["# 見出し", "\\# 見出し"],
+    ["> 引用", "\\> 引用"],
+    ["- 箇条", "\\- 箇条"],
+    ["<#999> 参照", "\\<\\#999\\> 参照"],
+  ] as const) {
+    assert.equal(sessionLine({ ...local, title }, NOW, "ミカ"), `${escaped}（ミカ・Web・最終 1 時間以内）`, title);
+  }
+  // Discord の行の題名は今と同じく逃がさない
+  assert.equal(sessionLine({ ...discord, title: "# 見出し" }, NOW), `<#${DISCORD_TOPIC}> # 見出し（最終 1 時間以内）`);
   assert.equal(sessionLine(discord, NOW, "ミカ"), `<#${DISCORD_TOPIC}> Discord の話題（ミカ・最終 1 時間以内）`);
   assert.equal(sessionLine(discord, NOW), `<#${DISCORD_TOPIC}> Discord の話題（最終 1 時間以内）`);
   // /sessions とホームパネルの本文（sessionListText）も同じ行
   const text = sessionListText(env.topicSessions, GUILD, ["active"], NOW, [{ id: "mika", name: "ミカ" }]);
-  assert.ok(text.includes(`\n${LOCAL_TITLE}（ミカ・Web・最終 1 時間以内）`));
+  assert.ok(text.includes(`\n${LOCAL_TITLE_ESCAPED}（ミカ・Web・最終 1 時間以内）`));
   assert.ok(text.includes(`\n<#${DISCORD_TOPIC}> Discord の話題（ミカ・最終 1 時間以内）`));
   assert.ok(!text.includes(`<#${LOCAL_TOPIC}>`));
 });
