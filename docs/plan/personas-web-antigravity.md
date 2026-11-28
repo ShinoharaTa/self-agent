@@ -651,7 +651,7 @@ self-agent が自分でしない事: `agy` を入れる・サインインする�
   - `/new` の `persona` の選択肢に出ない。#system に接続の知らせが出ない
   - 既定の人格のシステムプロンプトとツールの定義が、変更の前とバイト単位で同じ
   - 実機: Claude で動く Web だけの人格の入口で 2 ターン話し、`session_open` で話題を 1 つ作り、終わりのまとめが右腕の #inbox に題名で出て、Web の右腕には札で出る
-  - 申し送り（WP2 のレビュー。WP5 の 1 つ目で入れた）: `ownerConnected`（`src/app/personas.ts:101`）は場所を見ない。設定に無い人格のローカルの場所は、既定の Bot が切れていると Web の発言が `bot_disconnected` で断られる（`src/app/handler.ts:637`）ので、`gatewayFor` と同じく場所を先に見る。`localGateway` を渡すと `gatewayFor` 1 回の DB の読みが 2 回から 4 回になる（途中経過の編集ごと）ので、持ち主と場所を 1 回で引く形にする。→ 場所が `local` なら `ownerConnected` は真。持ち主と場所は 1 回の引き（入口は `entryChannel`、話題は `TopicSessionStore.ownerPlaceOf`。`get` は使わない）で、読みは入口 1 回・話題と知らない番号 2 回（WP2 より前と同じ）。`localGateway` は必須の deps にした（`test/personas.test.ts`）
+  - 申し送り（WP2 のレビュー。WP5 の 1 つ目で入れた）: WP2 の時点の `ownerConnected` は場所を見ず、設定に無い人格のローカルの場所は、既定の Bot が切れていると Web の発言が `bot_disconnected` で断られた（`src/app/handler.ts:637`）。`localGateway` を渡すと `gatewayFor` 1 回の DB の読みが 2 回から 4 回になった（途中経過の編集ごと）。→ 今の `ownerConnected`（`src/app/personas.ts:101`）は `gatewayFor` と同じく場所を先に見て、`local` なら真。持ち主と場所は 1 回の引き（入口は `entryChannel`、話題は `TopicSessionStore.ownerPlaceOf`。`get` は使わない）で、読みは入口 1 回・話題と知らない番号 2 回（WP2 より前と同じ）。`localGateway` は必須の deps にした（`test/personas.test.ts`）
   - 申し送り（WP3 の 2 つ目のレビュー）: 設定（述語）と入口の行の `place` が食い違うと、`/setup` はどちらでも飛ばすだけ。Discord → Web だけに替えた人格（述語 true・行 `discord`）は、古い `#<NAME>` が Discord に残り、行も `discord` のままで、以後の話題だけローカルにできる。Web だけ → Bot を足した人格（述語 false・行 `local`。WP5 を戻したときも同じ）は、`#<NAME>` がいつまでも作られず、`/setup` の応答は「すべて揃っています」になり、以後の話題は Discord にできる。場所の切り替えをどう扱うか（断る・行を直す）を WP5 で決める
   - 申し送り（同）: `localPlaces` は任意の deps なので、新しい呼び手が渡し忘れると Web だけの人格の話題を黙って Discord に作る。門を開けるときに必須にするか、`main.ts` の配線をテストで固定する。`startTopic`（`session_open`・`POST /api/topics` の道）にローカルの人格を渡すテストはまだ無い（区切りの履歴と `submitText` に進む。最初に届くのは WP5）
   - 申し送り（WP3。WP4 の 3 つ目で直した）: 知らせの型のリマインドは WP4 で `place` の枝にしたので、ローカルの場所で頼んだ物が #tasks に出るのが決めで、`ownerConnected` を直しても変わらない（`test/local-reminders.test.ts`）。`src/app/reminders.ts` の `ownerConnected` を訊く 2 か所に、ローカルの番号は来ない。`ownerConnected` を直した後に変わるのは Web の発言の関所（`src/app/handler.ts:637`）だけ
@@ -661,6 +661,11 @@ self-agent が自分でしない事: `agy` を入れる・サインインする�
   - 申し送り（WP4 の 3 つ目のレビュー）: 同じく Web が無効だと、ローカルの場所で頼んだリマインドの跡（出せた回・諦めた回の notice）は書かれない（#tasks には出る）
   - 申し送り（同）: 設定から外した人格のローカルの入口に残る依頼の型のリマインドは、右腕の #tasks で既定の人格として動く（Discord の入口と同じ今の落とし先。`resolveChannel` は設定に在る人格の入口だけを #inbox と同じ種類にする）
   - 申し送り（同）: 実機で、`kb_delete`・`cc_send` を Web だけの人格に頼んだとき、返事が「右腕から頼んで」になるかを見る（投げた `kb_delete` がモデルにどう見えるかは SDK 任せで、動かして確かめていない）
+  - 申し送り（WP5 の 1 つ目のレビュー）: PR-2・PR-3 のテストは、ローカルの Gateway に記録の包みを被せて「来た物の一覧」で見る。Discord の偽 Gateway が空なだけでは、ローカルに吸われた送信が見えない（`localGateway` を必須にしたので、テストの振り分けはいつもローカルの Gateway を持つ）
+  - 申し送り（同）: PR-3 の後、Web だけの人格が持つ Discord の行（食い違い）への送信は、その人格の runtime の Gateway（ローカル）に行き、黙って捨てられる。守りは PR-2 の起動の検査だけなので、PR-2 と PR-3 は対で入れる
+  - 申し送り（同）: PR-3 で Web だけの人格の runtime にもローカルの Gateway を渡すなら、`PersonaRouter` に渡す物と 1 つの定数にまとめ、`main.ts` の見張り（`test/personas.test.ts`）の字も一緒に直す
+  - 申し送り（同）: ローカルの場所の `ownerConnected` はいつも真なので、リマインドのテスト（`test/local-reminders.test.ts` の T22）の connected の次元は差を生まない。守っているのは「頼んだ場所を候補に入れない」と「ローカルの Gateway に 0 回」で、この 2 つは後で消さない
+  - 申し送り（同）: リマインドに `places` を渡し忘れた呼び手が出ると、ローカルの場所の知らせはローカルの Gateway に「出せた」事になる（Discord にも履歴にも出ない）。今は `main.ts` の見張りが在る
 - WP6
   - Web だけの人格の `persona` を付けると、その人格のローカルの話題ができる。既定の Bot が切れていても 201。知らない `persona` は 400。`place` や `model` と一緒なら 400。`persona` 無しは今と同じ（Bot が切れていれば 503）
   - ローカルの話題・入口の `link` は `null`。Discord の話題の `link` は今と同じ。`GET /api/reminders` の `link`（`src/web/routes/reminders.ts:49`）もローカルの場所は `null`

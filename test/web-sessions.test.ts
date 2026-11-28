@@ -23,6 +23,7 @@ import {
 import { renewedText } from "../src/app/session-renew.ts";
 import { CcChannelStore } from "../src/store/cc-channels.ts";
 import type { PersonaConfig } from "../src/config.ts";
+import type { Gateway } from "../src/discord/gateway.ts";
 import { LocalGateway } from "../src/discord/local-gateway.ts";
 import { LocalIdStore } from "../src/store/local-places.ts";
 import { PlaceSettingStore } from "../src/store/place-settings.ts";
@@ -107,6 +108,22 @@ async function until(condition: () => boolean): Promise<void> {
   assert.fail("待っている状態になりませんでした");
 }
 
+/** 本物の LocalGateway に、呼び出し（メソッドの名前）を全部記録する包みを被せる */
+function recordingLocalGateway(local: LocalGateway): { gateway: Gateway; calls: string[] } {
+  const calls: string[] = [];
+  const gateway = new Proxy(local, {
+    get(target, property, receiver) {
+      const value: unknown = Reflect.get(target, property, receiver);
+      if (typeof value !== "function") return value;
+      return (...args: unknown[]) => {
+        calls.push(String(property));
+        return (value as (...a: unknown[]) => unknown).apply(target, args);
+      };
+    },
+  });
+  return { gateway, calls };
+}
+
 /**
  * /setup 済みのサーバー 111（#inbox 100・#tasks 101・mika の #<NAME> 102・進行中カテゴリ 500）と、許可しているが /setup 前の 222。
  * セッション 200（進行中）・201（完了）・202（削除済み）・203（許可していないサーバー）・204（mika の進行中）。会話のターンは steps の順
@@ -142,6 +159,8 @@ async function setup(
   gateway.alive.add("500");
   const mikaGateway = new FakeGateway({ allow: ["send", "sendMessage", "editMessage"] });
   const connected = { value: true };
+  // ローカルの場所への送信は記録する（Discord の偽 Gateway が空なだけでは、ローカルに吸われた送信が見えない）
+  const local = recordingLocalGateway(new LocalGateway(new LocalIdStore(db)));
   const personas = new PersonaRouter({
     personas: [
       { id: "default", name: "default", engine: "claude", runner: {} as AgentRunner, gateway, connected: () => connected.value },
@@ -149,7 +168,7 @@ async function setup(
     ],
     guildSettings,
     topicSessions,
-    localGateway: new LocalGateway(new LocalIdStore(db)),
+    localGateway: local.gateway,
   });
   const cfg = { allowedGuildIds: [GUILD, GUILD_NOT_SET_UP], personas: [MIKA], publicBaseUrl: undefined, inboxChannelId: undefined };
   const resolveChannel = createChannelResolver(cfg, guildSettings, topicSessions);
@@ -208,7 +227,7 @@ async function setup(
   /** そのチャンネルの履歴の行（種類と本文） */
   const rows = (channelId: string) => history.list(channelId, { limit: 50 }).map((row) => ({ kind: row.kind, text: row.text, persona: row.persona }));
   const openTasks = () => tasks.list({ status: "open", limit: 50 }).map((task) => ({ title: task.title, due: task.due }));
-  return { db, server, gateway, mikaGateway, connected, runner, turnQueue, channelOps, rotations, rotator, logs, rows, openTasks, turn, placeSettings, ...stores };
+  return { db, server, gateway, mikaGateway, localCalls: local.calls, connected, runner, turnQueue, channelOps, rotations, rotator, logs, rows, openTasks, turn, placeSettings, ...stores };
 }
 
 test("POST /api/sessions: 既定の人格の Bot で進行中カテゴリにチャンネルを作り、最初の投稿をして 201 と channelId・link。log は Web から", async (t) => {
@@ -251,6 +270,7 @@ test("POST /api/sessions（#530 の WP3）: 場所がローカルの人格はチ
   assert.deepEqual(env.gateway.callsOf("createTextChannel"), []);
   assert.deepEqual(env.gateway.sent, []);
   assert.deepEqual(env.mikaGateway.sent, []);
+  assert.deepEqual(env.localCalls, []);
   const row = env.topicSessions.get(channelId);
   assert.equal(row?.place, "local");
   assert.equal(row?.categoryId, "local");
