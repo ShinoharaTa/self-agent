@@ -306,7 +306,7 @@ M0 は今の画面のまま直す 1 PR（同じ「待ちの見え方」の論点
 | M7（済。M7a・M7b） | 既読をサーバーに（§3.3） | S | スマホと PC で未読が揃う | M7b は revert。M7a は戻さない（DB が v44） |
 | M8-0（済） | 新しい殻の直し 3 つ（popstate の順・スマホのナレッジ・設定のキーの表。#381） | S | 切り替えの前に新しい殻のスマホで困らない | revert |
 | M8（済） | 切り替え（`/` を新しい殻に。古い殻は `/static/classic.html` に 1 段残す）と文書（§10） | S | 新しい画面が既定 | html の入れ替えを戻す |
-| M8b | 古い殻を消す（`classic.html`・`sidebar.js`・`workbench.js`・使わなくなった CSS・localStorage の `self-agent-web:seen`・`seen-sent`、`views.js` の `isV3Shell` の分岐と設定の `shellLink`。§15 の M8 の「M8b の前に決める物」を先に片付ける） | M | なし | revert |
+| M8b（済。#542・#544。使わなくなった CSS は残した: `web-ui-home.md` の Z） | 古い殻を消す（`classic.html`・`sidebar.js`・`workbench.js`・使わなくなった CSS・localStorage の `self-agent-web:seen`・`seen-sent`、`views.js` の `isV3Shell` の分岐と設定の `shellLink`。§15 の M8 の「M8b の前に決める物」を先に片付ける） | M | なし | revert |
 | M9 | 見る物「変更」（§8） | L | 会話の横で変更を読める | revert |
 
 **切り替え方の推薦**: env の旗（サーバーで出し分け）ではなく、**入口の html を並べて置く**（F10。`/static/v3.html`）。再起動も設定も要らず、オーナーがスマホと PC で両方を見比べられ、各段を単独で戻せる。一気に替えるのは、M2〜M7 が 1 つの大きい PR になりレビューできないので採らない。
