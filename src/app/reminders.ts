@@ -11,6 +11,7 @@ import type { FireUpdate, Reminder, ReminderStore } from "../store/reminders.ts"
 import type { TaskStore } from "../store/tasks.ts";
 import type { TopicSessionStore } from "../store/topic-sessions.ts";
 import type { ChannelKind, ResolveChannel } from "./access.ts";
+import type { PlaceRefs } from "./place-refs.ts";
 import { MESSAGE_MAX_LENGTH } from "./commands/sessions.ts";
 import { clip } from "./commands/tasks.ts";
 import { MAX_TURNS_REPLY } from "./commands/turn-controls.ts";
@@ -106,6 +107,18 @@ export const MOVED_NOTE = "（元のチャンネルが無いため、ここに�
 export const OWNER_UNREACHABLE_NOTE = "（元のチャンネルの Bot に接続できないため、ここに出しました）";
 
 /**
+ * 頼んだ場所がローカル（Web だけ。docs/plan/personas-web-antigravity.md §3.2）なので #tasks・#inbox に出したときの注記。
+ * ref は placeRefs.refOf の字（`「題名」（Web）`・`「人格の表示名」（Web）`）
+ */
+export function localPlaceNote(ref: string): string {
+  return `頼んだ場所: ${ref}`;
+}
+/** ローカルの場所の履歴に書く行の末尾（出せた回） */
+export const LOCAL_POSTED_NOTE = "（Discord に知らせました）";
+/** ローカルの場所の履歴に書く行の末尾（投稿に 30 回失敗した・投稿先が無いため諦めた回） */
+export const LOCAL_GAVE_UP_NOTE = "（Discord に知らせられませんでした）";
+
+/**
  * 予約した依頼のターンの prompt の本文（日時ヘッダの後ろ）。例: `予約した依頼（#3・毎日 8:00）:\n今日のタスクを出して`。
  * 遅れたときは late（例: `8:00 の予定から 25 分遅れ`）を括弧の中に足す
  */
@@ -157,6 +170,12 @@ export type ReminderSchedulerDeps = {
    * （既定の人格の Bot）に出す。無ければすべて既定の人格
    */
   personas?: Pick<PersonaRouter, "ownerOf" | "ownerConnected">;
+  /**
+   * 頼んだ場所がローカル（Web だけ）か、と Discord に出す文の中での書き方。ローカルの場所の知らせは頼んだ場所に出さず、
+   * #tasks・#inbox（既定の人格の Bot）に localPlaceNote の注記で出し、頼んだ場所の履歴に 1 行書く（channel_id は変えない）。
+   * 無ければ（引くのに失敗したら）今までどおり
+   */
+  places?: Pick<PlaceRefs, "isLocal" | "refOf">;
   /** 予約した依頼を動かすチャンネル（#inbox・#tasks）か */
   resolveChannel: ResolveChannel;
   /** 発言のターンと同じキュー（key は channelId）。予約した依頼のターンはセッション以外のジョブとして入れる */
@@ -184,8 +203,11 @@ type Occurrence = {
   count: number;
 };
 
-/** unreachable は、頼んだチャンネルの持ち主（足した人格）の Bot に接続できない・投稿できなかったため、ほかのチャンネルに出したか */
-type PostResult = { kind: "posted"; channelId: string; messageId: string; unreachable: boolean } | { kind: "nowhere" };
+/**
+ * unreachable は、頼んだチャンネルの外に出したが channel_id は変えないか（持ち主（足した人格）の Bot に接続できない・投稿できなかった、
+ * または頼んだ場所がローカル）。local は、頼んだ場所がローカルのため外に出したか（頼んだ場所の履歴に 1 行書く）
+ */
+type PostResult = { kind: "posted"; channelId: string; messageId: string; unreachable: boolean; local: boolean } | { kind: "nowhere" };
 
 export class ReminderScheduler {
   private readonly deps: ReminderSchedulerDeps;
@@ -299,9 +321,10 @@ export class ReminderScheduler {
     const update = this.nextUpdate(reminder, occurrence, now);
 
     const key = `${id}:${reminder.fireSeq}`;
+    const localRef = this.localRefOf(reminder);
     let result: PostResult;
     try {
-      result = await this.post(reminder, (note) => this.message(reminder, taskTitle, occurrence, now, note));
+      result = await this.post(reminder, localRef, (note) => this.message(reminder, taskTitle, occurrence, now, note));
     } catch (error) {
       const failures = (this.failures.get(key) ?? 0) + 1;
       if (failures < REMINDER_MAX_ATTEMPTS) {
@@ -313,12 +336,14 @@ export class ReminderScheduler {
       this.failures.delete(key);
       this.giveUp(reminder, occurrence, now);
       log(`リマインドの投稿に ${REMINDER_MAX_ATTEMPTS} 回失敗したため、この回を諦めました（#${id}、guild=${reminder.guildId}）: ${describeError(error)}`);
+      if (localRef !== undefined) this.recordLocalNotice(reminder, taskTitle, LOCAL_GAVE_UP_NOTE);
       return;
     }
     this.failures.delete(key);
     if (result.kind === "nowhere") {
       this.giveUp(reminder, occurrence, now);
       log(`リマインドの投稿先が無いため、この回を諦めました（#${id}、guild=${reminder.guildId}）`);
+      if (localRef !== undefined) this.recordLocalNotice(reminder, taskTitle, LOCAL_GAVE_UP_NOTE);
       return;
     }
 
@@ -335,13 +360,54 @@ export class ReminderScheduler {
       }
       return;
     }
-    // 元のチャンネルが無くて移したときは以後も移した先に出す。持ち主の Bot に接続できなかった回は、この回だけほかに出して channel_id は変えない
+    // 頼んだ場所がローカルなら、Discord に出した跡をその場所の履歴に残す（投稿が落ちた回・止められた回は書かない）
+    if (result.local) this.recordLocalNotice(reminder, taskTitle, LOCAL_POSTED_NOTE);
+    // 元のチャンネルが無くて移したときは以後も移した先に出す。持ち主の Bot に接続できなかった回・頼んだ場所がローカルの回は、ほかに出して channel_id は変えない
     const moved = result.channelId !== reminder.channelId && !result.unreachable;
     if (moved) reminders.moveChannel(id, result.channelId);
     const lateMinutes = Math.floor((now.getTime() - occurrence.at.getTime()) / MINUTE_MS);
     log(`リマインドを知らせました（#${id}、guild=${reminder.guildId}、遅れ ${lateMinutes} 分）`);
     // 移したときは前のチャンネルが無いので、前の回のボタンは外せない
     if (!moved) await this.clearPreviousButtons(reminder, taskTitle);
+  }
+
+  /**
+   * 頼んだ場所がローカルなら、Discord に出す文の中での書き方（refOf）。削除済みの話題・Discord の場所・places が無ければ undefined。
+   * 場所を引く所が投げたら log を 1 行出して undefined（今までどおりの道で出す）
+   */
+  private localRefOf(reminder: Reminder): string | undefined {
+    const { places, topicSessions, log } = this.deps;
+    if (places === undefined) return undefined;
+    try {
+      // 削除済みの話題は、ローカルでも今までどおり（MOVED_NOTE で出して付け替える）
+      if (topicSessions.get(reminder.channelId)?.state === "deleted") return undefined;
+      return places.isLocal(reminder.channelId) ? places.refOf(reminder.channelId) : undefined;
+    } catch (error) {
+      log(`リマインドの場所を引けなかったため、今までどおりに出します（#${reminder.id}）: ${describeError(error)}`);
+      return undefined;
+    }
+  }
+
+  /** ローカルの場所の履歴に、DB から作り直した本文 + suffix の notice を 1 行書く（ボタンは無い）。失敗は log だけ */
+  private recordLocalNotice(reminder: Reminder, taskTitle: string | undefined, suffix: string): void {
+    const { history, personas, log } = this.deps;
+    if (history === undefined) return;
+    try {
+      recordHistory(
+        history,
+        {
+          guildId: reminder.guildId,
+          channelId: reminder.channelId,
+          kind: "notice",
+          source: "system",
+          persona: personas?.ownerOf(reminder.channelId) ?? DEFAULT_PERSONA_ID,
+          text: [...reminderBaseLines(reminder, taskTitle), suffix].join("\n"),
+        },
+        log,
+      );
+    } catch (error) {
+      log(`リマインドの履歴を書けませんでした（#${reminder.id}）: ${describeError(error)}`);
+    }
   }
 
   /**
@@ -562,7 +628,7 @@ export class ReminderScheduler {
     taskTitle: string | undefined,
     occurrence: Occurrence,
     now: Date,
-    /** 頼んだチャンネル以外に出したときの注記（MOVED_NOTE・OWNER_UNREACHABLE_NOTE） */
+    /** 頼んだチャンネル以外に出したときの注記（localPlaceNote・MOVED_NOTE・OWNER_UNREACHABLE_NOTE） */
     note: string | undefined,
   ): OutgoingMessage {
     const { cfg } = this.deps;
@@ -592,19 +658,25 @@ export class ReminderScheduler {
    * 投稿に失敗して channelExists が false なら次の候補へ。あるのに失敗した・確かめられなければ投げる（この回はやり直す）。
    * 足した人格が持ち主のチャンネルは、その Bot が接続していない・投稿に失敗したら、やり直さずに次の候補へ（注記は OWNER_UNREACHABLE_NOTE。
    * channel_id は変えないので、次の回はまた持ち主の Bot で頼んだチャンネルに出す）。
-   * どれも無ければ nowhere
+   * 頼んだ場所がローカル（localRef がある）なら、頼んだ場所は候補に入れず #tasks・#inbox だけに localPlaceNote の注記で出す
+   * （持ち主の Bot の接続は訊かない。channel_id は変えない）。どれも無ければ nowhere
    */
-  private async post(reminder: Reminder, build: (note: string | undefined) => OutgoingMessage): Promise<PostResult> {
+  private async post(
+    reminder: Reminder,
+    localRef: string | undefined,
+    build: (note: string | undefined) => OutgoingMessage,
+  ): Promise<PostResult> {
     const { guildSettings, topicSessions, gateway, personas, log } = this.deps;
+    const local = localRef !== undefined;
     const candidates: string[] = [];
-    if (topicSessions.get(reminder.channelId)?.state !== "deleted") candidates.push(reminder.channelId);
+    if (!local && topicSessions.get(reminder.channelId)?.state !== "deleted") candidates.push(reminder.channelId);
     const settings = guildSettings.get(reminder.guildId);
     for (const channelId of [settings?.tasksChannelId, settings?.inboxChannelId]) {
       if (channelId !== null && channelId !== undefined && channelId !== reminder.channelId && !candidates.includes(channelId)) {
         candidates.push(channelId);
       }
     }
-    let unreachable = false;
+    let unreachable = local;
     for (const channelId of candidates) {
       const byOtherPersona = personas !== undefined && personas.ownerOf(channelId) !== DEFAULT_PERSONA_ID;
       if (byOtherPersona && !personas.ownerConnected(channelId)) {
@@ -612,10 +684,17 @@ export class ReminderScheduler {
         unreachable = true;
         continue;
       }
-      const note = channelId === reminder.channelId ? undefined : unreachable ? OWNER_UNREACHABLE_NOTE : MOVED_NOTE;
+      const note =
+        channelId === reminder.channelId
+          ? undefined
+          : localRef !== undefined
+            ? localPlaceNote(localRef)
+            : unreachable
+              ? OWNER_UNREACHABLE_NOTE
+              : MOVED_NOTE;
       try {
         const messageId = await gateway.sendMessage(channelId, build(note));
-        return { kind: "posted", channelId, messageId, unreachable };
+        return { kind: "posted", channelId, messageId, unreachable, local };
       } catch (error) {
         if (byOtherPersona) {
           log(`リマインドのチャンネルの Bot で投稿できなかったため、ほかのチャンネルに出します（#${reminder.id}）: ${describeError(error)}`);

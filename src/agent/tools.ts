@@ -13,6 +13,7 @@ import {
   parseRule,
   wallClockToUtc,
 } from "../app/recurrence.ts";
+import type { PlaceRefs } from "../app/place-refs.ts";
 import { formatDate } from "../app/time.ts";
 import { verifiedProjectDir } from "./disk.ts";
 import type { HistoryOutcome } from "../store/history.ts";
@@ -218,6 +219,8 @@ export type ReminderToolDeps = {
   log: (message: string) => void;
   /** in_past の判定と次の回の計算の今。省略すると今（テストで差し替える） */
   now?: () => Date;
+  /** run のチャンネルがローカル（Web だけ）か。ローカルの場所の notify の created に note を足す。無ければ足さない */
+  places?: Pick<PlaceRefs, "isLocal">;
 };
 
 /** cc_list の 1 件（docs/plan/claude-code-sessions.md §5.3。時刻は timeZone の YYYY-MM-DD HH:MM） */
@@ -287,6 +290,8 @@ export const REMINDER_LIMIT_MESSAGE =
 /** prompt の active が上限に達しているときの message */
 export const REMINDER_PROMPT_LIMIT_MESSAGE =
   `prompt は ${REMINDER_PROMPT_MAX_ACTIVE} 件までです。要らないものを reminder_cancel で止めてください`;
+/** ローカルの場所（Web だけ）で notify を作ったときの created の note */
+export const REMINDER_LOCAL_PLACE_NOTE = "この場所は Web だけなので、時刻になったら右腕の #tasks（無ければ #inbox）に知らせます";
 
 /** project_open をセッション以外（#inbox・#tasks）・context の無いターンで呼んだときの message */
 export const PROJECT_OPEN_NOT_AVAILABLE_MESSAGE =
@@ -795,6 +800,15 @@ export function createReminderToolHandlers(
         nextAt,
       });
       log(`reminder_set: created（#${created.id}、${kind}）`);
+      // ローカルの場所の notify は #tasks・#inbox に出る（src/app/reminders.ts）。場所を引けなければ note を付けない（作った物は変えない）
+      let local = false;
+      if (kind === "notify" && deps.places !== undefined) {
+        try {
+          local = deps.places.isLocal(context.channelId);
+        } catch (error) {
+          log(`reminder_set: 場所を引けませんでした（#${created.id}）: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
       return textResult({
         result: "created",
         id: created.id,
@@ -803,6 +817,7 @@ export function createReminderToolHandlers(
         next: show(nextAt),
         repeat: repeatOf(rule),
         task,
+        ...(local ? { note: REMINDER_LOCAL_PLACE_NOTE } : {}),
       });
     },
     reminderList(): TextToolResult {
