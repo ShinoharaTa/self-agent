@@ -518,6 +518,22 @@ test("moveTopic: 断る順（not_session・closed・persona・closing・busy・c
   }
 });
 
+test("moveTopic（#530 の WP3）: ローカルの話題（足した人格の物）は persona で断り、topic を書き換えない。並べた Discord の話題は今と同じに書き換える", async (t) => {
+  const env = setup(t, { steps: [ok(NOTE)] });
+  const local = "100000000000000000001";
+  env.topicSessions.create({ channelId: local, guildId: "guild-1", title: TITLE, categoryId: "local", persona: "mika", place: "local" });
+  env.sessions.set(local, "session-local");
+
+  assert.deepEqual(await moveTopic({ ...env.input(), channelId: local }, env.deps, env.onAccepted), { result: "persona" });
+  assert.deepEqual(env.topicCalls, []);
+  assert.deepEqual(env.accepted, []);
+  assert.equal(env.rows().length, 0);
+  assert.equal(env.runner.inputs.length, 0);
+
+  assert.equal((await moveTopic(env.input(), env.deps)).result, "moved");
+  assert.deepEqual(env.topicCalls, [{ channelId: "topic-1", topic: `${TITLE}（alpha）` }]);
+});
+
 test("moveTopic: 許可を待っているターンがある話題は busy", async (t) => {
   const env = setup(t, { steps: [ok(NOTE)] });
   env.running.push({ channelId: "topic-1", waitingPermission: true });

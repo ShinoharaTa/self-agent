@@ -1,10 +1,11 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { setImmediate as flush } from "node:timers/promises";
-import type { MoveTarget } from "../src/app/channel-ops.ts";
+import { ChannelOpsQueue, type MoveTarget } from "../src/app/channel-ops.ts";
 import { deletePrompt } from "../src/app/commands/delete.ts";
 import { ccDeletePrompt } from "../src/cc/channels.ts";
 import { CcChannelStore } from "../src/store/cc-channels.ts";
+import { PersonaRouter } from "../src/app/personas.ts";
 import { createSystemNotifier } from "../src/app/system-notice.ts";
 import {
   DELETE_PROMPT_BATCH_LIMIT,
@@ -18,9 +19,12 @@ import {
   TICK_INTERVAL_MS,
 } from "../src/app/scheduler.ts";
 import type { OutgoingMessage } from "../src/discord/gateway.ts";
+import { LocalGateway } from "../src/discord/local-gateway.ts";
+import { LocalIdStore } from "../src/store/local-places.ts";
 import { createStores, tempDb } from "./helpers/db.ts";
 import { FakeGateway } from "./helpers/gateway.ts";
 import { RecordingChannelOps, RecordingQueue } from "./helpers/recording.ts";
+import { FakeRunner } from "./helpers/runner.ts";
 
 const NOW = new Date("2026-10-02T12:00:00.000Z");
 const HOUR_MS = 60 * 60 * 1000;
@@ -846,6 +850,94 @@ test("再同期（#530 の WP1）: ローカルの話題は親カテゴリの一
   assert.deepEqual(env.sent(), []);
   assert.equal(env.logs.length, 2);
   for (const line of env.logs) assert.ok(!line.includes("topic-") && !line.includes("10000000"), line);
+});
+
+test("待ちへの移動（#530 の WP3）: 放置したローカルの話題は待ちになるが、本物の移動の列から Discord を呼ばず、知らせも既定の Bot に送らない。並べた Discord の話題は今と同じに移して知らせる", async (t) => {
+  const db = tempDb(t);
+  const clock = { now: ago(13 * HOUR_MS) };
+  const { topicSessions, guildSettings, sessions, seeds } = createStores(db, () => clock.now);
+  const gateway = new FakeGateway({
+    allow: ["listChannelParents", "isInGuild"],
+    record: ["sendMessage", "getParentId", "moveChannel", "channelExists", "countChannelsIn", "createCategory"],
+  });
+  guildSettings.setChannel("guild-1", "systemChannelId", "system-1");
+  for (const state of ["active", "waiting", "done"] as const) {
+    guildSettings.setStateCategory("guild-1", state, 1, `${state}-1`);
+    gateway.alive.add(`${state}-1`);
+    gateway.parents.set(`${state}-1`, null);
+  }
+  const local = "100000000000000000001";
+  topicSessions.create({ channelId: local, guildId: "guild-1", title: local, categoryId: "local", persona: "mika", place: "local" });
+  topicSessions.create({ channelId: "topic-1", guildId: "guild-1", title: "topic-1", categoryId: "active-1" });
+  gateway.parents.set("topic-1", "active-1");
+  clock.now = NOW;
+  const logs: string[] = [];
+  const log = (line: string): void => void logs.push(line);
+  const channelOps = new ChannelOpsQueue({ gateway, guildSettings, topicSessions, gapMs: 0, timers: { sleep: async () => {} }, log });
+  const personas = new PersonaRouter({
+    personas: [{ id: "default", name: "default", engine: "claude", runner: new FakeRunner([]), gateway, connected: () => true }],
+    guildSettings,
+    topicSessions,
+    localGateway: new LocalGateway(new LocalIdStore(db)),
+  });
+  const scheduler = new Scheduler({
+    cfg: { allowedGuildIds: ["guild-1"], idleHours: 12, deleteAfterDays: 30 },
+    topicSessions,
+    guildSettings,
+    sessions,
+    seeds,
+    channelOps,
+    gateway,
+    notify: createSystemNotifier({ guildSettings, gateway, log }),
+    personas,
+    inboxRotator: new RecordingRotator(),
+    pruneDevLogs: () => {},
+    pruneProjectTrash: async () => {},
+    pruneWorkDir: async () => {},
+    turnQueue: new RecordingQueue(2),
+    now: () => clock.now,
+    timers: new FakeTimers(),
+    log,
+  });
+
+  await scheduler.tick();
+  for (let i = 0; i < 10; i++) await flush();
+  await channelOps.idle();
+
+  assert.equal(topicSessions.get(local)?.state, "waiting");
+  assert.equal(topicSessions.get(local)?.categoryId, "local");
+  assert.equal(topicSessions.get("topic-1")?.state, "waiting");
+  const touchedLocal = gateway.calls.filter((call) => "channelId" in call && call.channelId === local);
+  assert.deepEqual(touchedLocal, []);
+  // Discord の話題は今と同じ（知らせ 1 回・移動 1 回）
+  assert.deepEqual(
+    gateway.callsOf("sendMessage").map((call) => ("channelId" in call ? call.channelId : null)),
+    ["topic-1"],
+  );
+  assert.deepEqual(gateway.moves(), [["topic-1", "waiting-1"]]);
+  assert.equal(topicSessions.get("topic-1")?.categoryId, "waiting-1");
+});
+
+test("削除の確認（#530 の WP3）: 古いローカルの完了の話題が limit 件より多くても確認を出さず、その後ろの Discord の話題に 1 回出す", async (t) => {
+  const env = setup(t);
+  const local = Array.from({ length: DELETE_PROMPT_BATCH_LIMIT + 2 }, (_, index) => `1${String(index + 1).padStart(20, "0")}`);
+  for (const channelId of local) {
+    env.clock.now = ago(60 * DAY_MS);
+    env.topicSessions.create({ channelId, guildId: "guild-1", title: channelId, categoryId: "local", place: "local" });
+    env.topicSessions.close(channelId, "要約");
+  }
+  env.clock.now = NOW;
+  env.closeAt("topic-1", ago(40 * DAY_MS));
+
+  await env.scheduler.tick();
+
+  assert.deepEqual(env.sent(), [{ channelId: "system-1", message: deletePrompt(env.topicSessions.get("topic-1")!, 30) }]);
+  assert.equal(env.topicSessions.get("topic-1")?.deletePromptMessageId, "message-1");
+  for (const channelId of local) {
+    assert.equal(env.topicSessions.get(channelId)?.deletePromptMessageId, null, channelId);
+    assert.equal(env.topicSessions.get(channelId)?.state, "done", channelId);
+  }
+  assert.deepEqual(env.channelOps.moves, []);
 });
 
 test("再同期: 一覧を取っている間に作られたセッションは削除済みにせず、状態が変わったセッションは今の状態で判断する", async (t) => {

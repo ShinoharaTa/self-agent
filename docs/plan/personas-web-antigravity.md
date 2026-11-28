@@ -179,7 +179,11 @@ Web には通知（Web Push）が無い【事実: `src` に実装が無い】。
 1. **再同期が消す**（`src/app/scheduler.ts:229-248`）。飛ばす処理は、ローカルの行を作れるようになる PR より前に main に入れる
 2. **戻せなくなる点**。WP1 は v49 で起動した時点から戻せない（`src/store/db.ts` の `migrate` は、コードより新しい版の DB を開かずに投げる）。再起動の後は戻さない。戻すなら、起動のときに取った移行の前の控え（`.bak`）から戻すか、v49 の移行を残してほかを戻す（ローカルの行ができた後に飛ばす処理だけを戻すと、1 と同じ事が起きる）。門を開けた後に戻して良いのは門を開けた PR（WP5）だけ
 3. **設定から人格を外したとき**。`PersonaRouter.ownerOf` は、設定に無い人格の場所を既定の人格の物として扱う（`src/app/personas.ts:65-68`）。だからローカルかどうかは DB の列で決める
-4. **管理の操作にローカルの番号が渡る**。呼ぶ所は `channel-ops.ts`・`categories.ts`・`topic-move.ts`・`commands/delete.ts`・`session-ops.ts`・`reminders.ts`・`commands/setup.ts`・`main.ts`
+4. **管理の操作にローカルの番号が渡る**。関所を入れる所は `channel-ops.ts`（移す）・`commands/delete.ts`（消す）・`session-ops.ts`（作る）・`commands/setup.ts`（入口）と、`store/topic-sessions.ts` の `listDeleteDue`（削除の確認。呼び手で飛ばすと古い順の先頭に居座って件数の上限を埋めるので、SQL で外す）。ほかはローカルの番号が届かないので関所を足さない:
+   - `categories.ts`: 渡るのはカテゴリの番号だけ。呼び手は `channel-ops.ts` と `session-ops.ts` で、どちらも関所で止まる
+   - `topic-move.ts`: 足した人格の話題は検査の 3 が `persona` で断る。ローカルの話題は必ず足した人格の物
+   - `reminders.ts`: `channelExists` は直前の送信が投げた後にだけ来る。ローカルの場所への送信はローカルの Gateway で、投げない
+   - `main.ts` の配線: topic の書き換え・リマインド・取り込み・GitHub の話題は、どれも上の理由か、既定の人格の Discord の場所だけを扱う
 5. **Discord にだけ出て、履歴に無い文**（§3.3）
 6. **`<#ID>` の文**。まとめ・`session_open` の返事・入口の引き継ぎの要約（`src/app/inbox-rotate.ts`）。どれも `<#ID>` のまま持ち、見せる側で替える（§3.3 の 1・5）
 
@@ -564,7 +568,7 @@ self-agent が自分でしない事: `agy` を入れる・サインインする�
 |---|---|---|---|---|
 | WP1 | DB（次の番号）: `sessions.place`・`persona_channels.place`・連番の表。store。再同期がローカルを飛ばす | 再 | | |
 | WP2 | ローカルの Gateway（部品とテスト）。`PersonaRouter` が `place` を先に見て振り分ける | | | |
-| WP3 | 管理の操作の関所: 作る・移す・消す・トピック・数え上げが、ローカルで Discord を呼ばない。`/setup` が Web だけの人格を飛ばす | | | |
+| WP3 | 管理の操作の関所: 作る・移す・消す・トピック・数え上げが、ローカルで Discord を呼ばない。`/setup` が Web だけの人格を飛ばす。PR を 2 つに分ける（1 = 今在る操作の関所、2 = 作る道と `/setup`）。削除の確認を出さない（§3.3 の 2）は WP4 から前倒しして 1 に入れる | | | |
 | WP4 | 文と知らせ（§3.3 の 1〜4・6）: まとめの 2 つの文・削除の確認を出さない・記憶の変更の知らせを履歴に・`kb_delete`・`/sessions` などの題名・リマインドの扱い | | | |
 | WP5 | 門を開ける: `_SURFACE`、起動の配線、入口を無ければ作る、#system と `/new` から外す、`docs/environment.md`。**確かめは、Claude で動く Web だけの人格を 1 体足して行う** | 再 | 手（名前・人格の文・env） | 枠（Claude。確かめの数ターン） |
 | WP6 | Web API: `POST /api/topics` が `persona` を受ける（ローカルは 503 の関所を通さない）。ローカルの `link` は `null`。一覧・`/api/channels`・`/api/status` に `surface`。完了したローカルの話題を消す口。`web-ui-rebuild.md` の約束の節に足す | 再 | | |
@@ -615,11 +619,13 @@ self-agent が自分でしない事: `agy` を入れる・サインインする�
   - 待ち・完了・進行中にしても `moveChannel` が呼ばれず、DB の状態だけ変わる。消すと `deleteChannel` が呼ばれない
   - カテゴリの空きの数え上げにローカルの話題が入らない
   - Web だけの人格が在る設定で `/setup` を打っても、その人格の入口のために `createTextChannel` が呼ばれず、`persona_channels` の行が変わらない
+  - PR を 2 つに分ける（1 = 今在る操作の関所: 移す・消す・削除の確認、2 = 作る道と `/setup`）
+  - 削除の確認を出さない（§3.3 の 2）は、WP4 から WP3 の 1 つ目に前倒しした（門の前に要る）。完了から N 日経ったローカルの話題は `listDeleteDue` に出ず、その後ろの Discord の話題には今と同じに出る
   - 申し送り（WP2 のレビュー）: 関所は呼び手の側に作る。移動は `channelOps.enqueueMove` が要で、入れる所は `src/app/session-state.ts:55`・`src/app/session-ops.ts:554`・`src/app/scheduler.ts:258`。抜けると本物の Discord に 21 桁の番号が渡り、`src/app/channel-ops.ts:105` は Unknown Channel を log なしで捨てる。Discord が 21 桁の番号に何を返すか（10003 か 50035 か）は【未確認】
 - WP4
   - ローカルの話題のまとめ: 履歴の行は `終わりました: <#` で始まり（`isLeadText` が真）、Discord に投げた文には `<#` が無く、題名が在る。Discord の話題のまとめは 2 つとも今と同じ
   - まとめの投稿（Discord）に失敗したら、履歴の行も書かない（今と同じ。ローカルの話題のまとめも、既定の Bot が落ちている間は Web の右腕に出ない）
-  - 完了から N 日経ったローカルの話題について、#system に削除の確認が出ない。Discord の話題には今と同じに出る
+  - 完了から N 日経ったローカルの話題について、#system に削除の確認が出ない。Discord の話題には今と同じに出る（WP3 で入れた）
   - ローカルの場所で記憶を変えると、その場所の履歴に notice の行が 1 つでき、Discord の偽 Gateway には何も行かない
   - ローカルの場所の `kb_delete` は、消さずに失敗を返す
   - ローカルの話題への Web の発言 1 つで、履歴に owner の行と agent の行ができる。返事の中の `<#ID>` は書き換わらない

@@ -124,6 +124,45 @@ test("[削除する]: 完了のままなら保留してチャンネルを削除�
   }
 });
 
+test("[削除する]（#530 の WP3）: ローカルの話題（place = 'local'）は Discord のチャンネルを消さず、DB の片付けと応答・log は Discord の話題と同じ。並べた Discord の話題は今と同じに消す", async (t) => {
+  const env = setup(t);
+  const local = "100000000000000000001";
+  env.clock.now = CLOSED_AT;
+  env.topicSessions.create({ channelId: local, guildId: "guild-1", title: "ローカルの相談", categoryId: "local", place: "local" });
+  env.topicSessions.close(local, "ローカルの要約");
+  env.topicSessions.setDeletePrompt(local, "message-9");
+  env.sessions.set(local, "sdk-local");
+  env.seeds.set(local, "seed-local");
+  env.clock.now = NOW;
+
+  const calls = await env.run(press("yes", local, "message-9"));
+
+  assert.deepEqual(calls, [
+    { method: "deferUpdate" },
+    { method: "update", message: { text: deletedText("ローカルの相談"), components: [] } },
+  ]);
+  assert.deepEqual(env.gateway.deleted, []);
+  const session = env.topicSessions.get(local);
+  assert.equal(session?.state, "deleted");
+  assert.equal(session?.deletedAt, NOW.toISOString());
+  assert.equal(session?.summary, "ローカルの要約");
+  assert.equal(env.sessions.get(local), undefined);
+  assert.equal(env.seeds.get(local), undefined);
+  assert.deepEqual(env.channelOps.cancelled, [local]);
+  assert.equal(env.logs.length, 1);
+  assert.ok(!env.logs[0]!.includes(local));
+  // ほかの話題の会話と seed は残る
+  assert.equal(env.sessions.get("topic-1"), "sdk-1");
+  assert.equal(env.seeds.get("topic-1"), "seed-1");
+
+  // Discord の話題は今と同じ（チャンネルを 1 回消す）
+  await env.run(fromPrompt("削除する"));
+  assert.deepEqual(env.gateway.deleted, ["topic-1"]);
+  assert.equal(env.topicSessions.get("topic-1")?.state, "deleted");
+  assert.equal(env.logs.length, 2);
+  assert.equal(env.logs[0], env.logs[1]);
+});
+
 const STALE = [{ method: "update", message: { text: STALE_TEXT, components: [] } }];
 
 test("古い確認（進行中・待ちに戻った・閉じ直した後の前の確認・押されたメッセージが分からない・記録と違う・[残す] の後）の [削除する]・[残す] は「この確認は古くなっています」に書き換えてボタンを外すだけ（DB は変えない）", async (t) => {

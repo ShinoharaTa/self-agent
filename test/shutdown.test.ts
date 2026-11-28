@@ -655,7 +655,7 @@ test("実行中のチャンネルの移動は終わるまで待ってから gate
       createCategory: async () => assert.fail("想定外の呼び出し"),
     },
     guildSettings,
-    topicSessions: { setCategory: () => {} },
+    topicSessions: { get: () => undefined, setCategory: () => {} },
     gapMs: 2000,
     // 間隔は空け終わらない（次の移動は始まらない）
     timers: { sleep: () => new Promise<void>(() => {}) },

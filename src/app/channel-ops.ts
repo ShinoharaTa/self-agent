@@ -24,8 +24,8 @@ const REAL_TIMERS: ChannelOpsTimers = {
 export type ChannelOpsDeps = {
   gateway: Pick<Gateway, "getParentId" | "moveChannel" | "channelExists" | "countChannelsIn" | "createCategory">;
   guildSettings: GuildSettingsStore;
-  /** 移動したら sessions の category_id（今置いているカテゴリ）を更新する */
-  topicSessions: Pick<TopicSessionStore, "setCategory">;
+  /** 移動したら sessions の category_id（今置いているカテゴリ）を更新する。ローカルの話題か（列 place）もここで見る */
+  topicSessions: Pick<TopicSessionStore, "get" | "setCategory">;
   /** 操作の間隔（SELF_AGENT_CHANNEL_OP_GAP_MS） */
   gapMs: number;
   timers?: ChannelOpsTimers;
@@ -54,9 +54,10 @@ export class ChannelOpsQueue {
 
   /**
    * 移動を列に入れる（すぐ返る）。同じチャンネルの未実行の移動があれば、この目的地で置き換える。
-   * 実行時に Discord 上の今の親がもう目的地なら何もしない
+   * 実行時に Discord 上の今の親がもう目的地なら何もしない。ローカルの話題（place = 'local'）は積まない（Discord に無い。category_id は local のまま）
    */
   enqueueMove(channelId: string, target: MoveTarget): void {
+    if (this.deps.topicSessions.get(channelId)?.place === "local") return;
     // 既にあれば列の位置はそのままで中身だけ置き換わる
     this.pending.set(channelId, { channelId, target });
     void this.drain();

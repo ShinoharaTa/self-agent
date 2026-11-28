@@ -477,6 +477,29 @@ test("TopicSessionStore.listDeleteDue: 完了で閉じた時刻が指定時刻�
   assert.deepEqual(ids("2026-10-02T00:00:59.999Z", 10), []);
 });
 
+test("TopicSessionStore.listDeleteDue（#530 の WP3）: ローカルの話題（place = 'local'）は完了から日が経っても出さない。Discord の話題は今と同じに出す", (t) => {
+  const db = tempDb(t);
+  const at = { now: new Date("2026-10-02T00:00:00.000Z") };
+  const store = new TopicSessionStore(db, () => at.now);
+  const closeAt = (channelId: string, iso: string, place: "discord" | "local"): void => {
+    at.now = new Date(iso);
+    store.create({ ...NEW_SESSION, channelId, ...(place === "local" ? { categoryId: "local", place } : {}) });
+    store.close(channelId, "要約");
+  };
+  closeAt("100000000000000000001", "2026-10-02T00:00:00.000Z", "local");
+  closeAt("100000000000000000002", "2026-10-02T00:01:00.000Z", "local");
+  closeAt("topic-a", "2026-10-02T00:02:00.000Z", "discord");
+  closeAt("100000000000000000003", "2026-10-02T00:03:00.000Z", "local");
+  closeAt("topic-b", "2026-10-02T00:04:00.000Z", "discord");
+
+  const ids = (limit: number): string[] =>
+    store.listDeleteDue(new Date("2026-10-02T00:10:00.000Z"), limit).map((session) => session.channelId);
+
+  assert.deepEqual(ids(10), ["topic-a", "topic-b"]);
+  // ローカルの話題は limit に数えない
+  assert.deepEqual(ids(1), ["topic-a"]);
+});
+
 test("openDb: v8 の DB を v9 に上げても既存のセッションは残り、削除の確認と削除した時刻は null。以後は記録できる", (t) => {
   const path = join(tempDir(t), "self-agent.db");
 

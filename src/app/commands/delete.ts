@@ -139,7 +139,8 @@ export function createDeleteComponent(deps: DeleteDeps): ComponentHandler {
       }
       const current = second.session;
       // 失敗したら（権限など）何も変えずに投げる。確認メッセージのボタンは残るので、押し直せる
-      await gateway.deleteChannel(channelId);
+      // ローカルの話題（place = 'local'）は Discord にチャンネルが無いので消さない（DB の片付けは同じ）
+      if (current.place !== "local") await gateway.deleteChannel(channelId);
       // 削除できたら DB を更新する（await を挟まない）。要約は sessions に残す
       topicSessions.markDeleted(channelId);
       sessions.delete(channelId);
