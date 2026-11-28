@@ -583,7 +583,7 @@
     toast(text, {
       label: "開く",
       run: () => {
-        if (isV3Shell() && SA.topics) SA.topics.load();
+        if (SA.topics) SA.topics.load();
         else SA.store.load.channels();
         SA.app.open("ch:" + channelId);
       },
@@ -1826,33 +1826,12 @@
     ["Enter / Shift+Enter", "送る / 改行（タッチの端末では Enter で改行）"],
     ["Ctrl+Enter / ⌘+Enter", "送る"],
   ];
-  // 古い殻（workbench.js）のキー（M8b で消す）
-  const KEYS_CLASSIC = [
-    ["Ctrl+K / Ctrl+P", "移動（画面）"],
-    ["Ctrl+Shift+P", "コマンド"],
-    ["Ctrl+B", "サイドバーの表示"],
-    ["Ctrl+J", "パネルの表示"],
-    ["Alt+W", "タブを閉じる"],
-    ["Alt+数字", "その番号のタブ（1 から 9）"],
-    ["Esc", "パレット・ドロワーを閉じる"],
-  ];
   // 新しい殻（shell.js の onKey・onListKey）のキー
   const KEYS_V3 = [
     ["Ctrl+K / ⌘+K", "話題を絞り込む"],
     ["↑ / ↓ / Home / End", "一覧の行を移る"],
     ["Esc", "絞り込み・重ねた右腕を閉じる"],
   ];
-
-  /** 新しい殻（index.html の根 #v3）で描いているか。描くときに呼ぶ（M8b で分岐ごと消す） */
-  function isV3Shell() {
-    return document.getElementById("v3") !== null;
-  }
-
-  /** 新しい殻と古い殻（/static/classic.html）を行き来するリンク。同じ窓で素の URL を開く（M8。M8b で消す） */
-  function shellLink() {
-    const v3 = isV3Shell();
-    return el("a", { class: "btn btn-ghost btn-sm", href: v3 ? "/static/classic.html" : "/", text: v3 ? "前の画面を開く" : "新しい画面を開く" });
-  }
 
   function renderSettings(container) {
     const theme = SA.app.theme();
@@ -1872,12 +1851,12 @@
       scroll([
         el("div", { class: "two-col" }, [
           section("この画面の表示", [
-            el("ul", { class: "kv-list" }, [kv("テーマ", seg), kv("画面", shellLink())]),
+            el("ul", { class: "kv-list" }, [kv("テーマ", seg)]),
             el("p", { class: "meta", text: "表示と音の設定はこのブラウザにだけ残ります。" }),
           ]),
           soundSection,
           // キーボードは ≤639px で隠し、代わりにスマホの操作（Enter の扱いは chat.js の指の端末の判定によるので、条件に触れる文にする）
-          el("div", { class: "hide-sm" }, [section("キーボード", [el("ul", { class: "kv-list" }, KEYS_COMMON.concat(isV3Shell() ? KEYS_V3 : KEYS_CLASSIC).map(([k, v]) => kv(el("kbd", { text: k }), v)))])]),
+          el("div", { class: "hide-sm" }, [section("キーボード", [el("ul", { class: "kv-list" }, KEYS_COMMON.concat(KEYS_V3).map(([k, v]) => kv(el("kbd", { text: k }), v)))])]),
           el("div", { class: "show-sm" }, [
             section("スマホの操作", [
               el("p", { class: "meta", text: "送るのは入力欄の [送る] です。タッチの端末では Enter は改行で、Ctrl+Enter（⌘+Enter）でも送れます。" }),
@@ -1966,7 +1945,7 @@
     ]);
   }
 
-  // ===== 知らせ（スマホの鈴で開くタブ。PC はパネルの「知らせ」。行は workbench.js の noticeLine を共用） =====
+  // ===== 知らせ（スマホの鈴で開くタブ。PC はパネルの「知らせ」。行は shell.js の noticeLine（SA.app.noticeLine）を共用） =====
   function renderNotices(container) {
     const data = store.notices;
     if (data === null) {
