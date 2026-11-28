@@ -1,6 +1,6 @@
 # Web UI の組み直し（メッセンジャー型・プロジェクトの担当・右腕）設計（#349）
 
-> 注記（2026-11-28。#528）: 今の殻の設計。新しい入口は `docs/plan/web-ui-home.md`（`docs/archive/` へ動かすのは入れ替えの後の Z）。
+> 注記（2026-11-28。#528）: 今の殻の設計。新しい入口は `docs/plan/web-ui-home.md`（`docs/archive/` へ動かすのは入れ替えの後の Z）。残りの段の扱いは `docs/plan/web-ui-rebuild.md` §8。
 
 v1（2026-11-14）。前提: `docs/plan/web-ui.md`（W1〜W7）、`web-ui-polish.md`、`unify.md`（U1）、`claude-code-channels.md`（CC9〜CC14）、`docs/design/WEB-UI-GUIDELINES.md`。未マージの取り込み（#342〜#348）と進行状況（#338）の上には載せない（当たる所は §13）。
 
