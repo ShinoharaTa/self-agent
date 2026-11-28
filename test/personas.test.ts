@@ -28,6 +28,8 @@ import { createSystemNotifier } from "../src/app/system-notice.ts";
 import { runChannelTurn } from "../src/app/turn.ts";
 import { DiscordGateway } from "../src/discord/discord-gateway.ts";
 import type { Gateway, IncomingMessage, Interaction } from "../src/discord/gateway.ts";
+import { LocalGateway } from "../src/discord/local-gateway.ts";
+import { LocalIdStore } from "../src/store/local-places.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { createStores, tempDb } from "./helpers/db.ts";
 import { FakeGateway, type GatewayMethod } from "./helpers/gateway.ts";
@@ -158,6 +160,64 @@ test("PersonaRouter: 持ち主は persona_channels → sessions.persona の順�
   assert.equal(env.personas.admin, env.defaultGateway);
   assert.equal(env.personas.turnPersona("topic-m").runner, env.mikaRunner);
   assert.equal(env.personas.turnPersona("unknown").runner, env.defaultRunner);
+});
+
+/** setup の人格と store に、ローカルの Gateway を渡した（渡さない）振り分け。ローカルの話題と入口は、設定に無い人格 gone と mika のもの */
+function localSetup(t: TestContext, withLocal: boolean) {
+  const env = setup(t);
+  env.topicSessions.create({
+    channelId: "local-topic",
+    guildId: "guild-1",
+    title: "外した人格のローカルの話題",
+    categoryId: "local",
+    persona: "gone",
+    place: "local",
+  });
+  env.topicSessions.create({ channelId: "local-mika", guildId: "guild-1", title: "ミカのローカルの話題", categoryId: "local", persona: "mika", place: "local" });
+  env.guildSettings.setPersonaInbox("guild-1", "gone", "local-entry", "local");
+  const localGateway = new LocalGateway(new LocalIdStore(env.db));
+  const router = new PersonaRouter({
+    personas: env.personas.all,
+    guildSettings: env.guildSettings,
+    topicSessions: env.topicSessions,
+    ...(withLocal ? { localGateway } : {}),
+  });
+  return { ...env, router, localGateway };
+}
+
+test("PersonaRouter.gatewayFor: place = 'local' の話題・入口は、持ち主の人格が設定に無くてもローカルの Gateway（ownerPosts も同じ。持ち主の引き方は変えない）", async (t) => {
+  const env = localSetup(t, true);
+  for (const id of ["local-topic", "local-mika", "local-entry"]) assert.equal(env.router.gatewayFor(id), env.localGateway, id);
+  // 送信はローカルの Gateway に届き、Discord の Bot には何も来ない
+  assert.match(await env.router.ownerPosts().sendMessage("local-mika", { text: "返事" }), /^1\d{20}$/);
+  await env.router.ownerPosts().send("local-topic", "返事");
+  assert.deepEqual(env.mika.called, []);
+  assert.deepEqual(env.mikaFake.sent, []);
+  // ownerOf・turnPersona・ownerConnected は今と同じ（connected は WP5）
+  assert.deepEqual(["local-topic", "local-mika", "local-entry"].map((id) => env.router.ownerOf(id)), ["default", "mika", "default"]);
+  assert.equal(env.router.turnPersona("local-mika").runner, env.mikaRunner);
+  assert.equal(env.router.ownerConnected("local-mika"), true);
+});
+
+test("PersonaRouter.gatewayFor: place = 'discord' の場所は、ローカルの Gateway を渡しても今と同じ持ち主の Bot", (t) => {
+  const env = localSetup(t, true);
+  env.guildSettings.setChannel("guild-1", "inboxChannelId", "inbox-1");
+  env.topicSessions.create({ channelId: "topic-x", guildId: "guild-1", title: "外した人格", categoryId: "active-1", persona: "gone" });
+  const ids = ["inbox-1", "topic-m", "topic-d", "topic-x", "unknown"];
+  assert.deepEqual(
+    ids.map((id) => env.router.gatewayFor(id)),
+    ids.map((id) => env.personas.gatewayFor(id)),
+  );
+  assert.equal(env.router.gatewayFor("topic-m"), env.mika.gateway);
+  assert.equal(env.router.gatewayFor("topic-x"), env.defaultGateway);
+  assert.equal(env.router.admin, env.defaultGateway);
+});
+
+test("PersonaRouter.gatewayFor: ローカルの Gateway を渡さない振り分けは、place = 'local' の場所でも今と同じ持ち主の Bot", (t) => {
+  const env = localSetup(t, false);
+  assert.equal(env.router.gatewayFor("local-topic"), env.defaultGateway);
+  assert.equal(env.router.gatewayFor("local-mika"), env.mika.gateway);
+  assert.equal(env.router.gatewayFor("local-entry"), env.defaultGateway);
 });
 
 test("2 つの Bot が同じ発言を受け取ると、持ち主の Bot の分だけがターンになり、返信は持ち主の Bot から出る", async (t) => {
