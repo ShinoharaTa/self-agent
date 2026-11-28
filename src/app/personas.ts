@@ -5,7 +5,7 @@
 // ローカルの場所（place = 'local'。docs/plan/personas-web-antigravity.md §3.1）の gatewayFor は localGateway を返し、ownerConnected は真。
 // 持ち主と場所は 1 回の引き（入口は persona_channels、無ければ sessions）で一緒に読む
 import type { AgentRunner } from "../agent/runner.ts";
-import { DEFAULT_PERSONA_ID, type Engine } from "../config.ts";
+import { DEFAULT_PERSONA_ID, type Engine, type PersonaConfig } from "../config.ts";
 import type { Gateway, InteractionResponder, OutgoingMessage } from "../discord/gateway.ts";
 import type { GuildSettingsStore } from "../store/guild-settings.ts";
 import type { ChannelPlace, LocalIdStore } from "../store/local-places.ts";
@@ -28,12 +28,37 @@ export type PersonaRuntime = TurnPersona & {
 
 /**
  * 場所がローカルの人格（Web だけ。docs/plan/personas-web-antigravity.md §3.1）の見分けと、ローカルの番号。
- * 話題を作る所（session-ops.ts の createTopicSession）と /setup が見る。WP5 で config の _SURFACE につなぐ
+ * 話題を作る所（session-ops.ts の createTopicSession）と /setup が見る。述語は設定の surface から答える（webPersonaPredicate）
  */
 export type LocalPersonaPlaces = {
   isLocalPersona: (personaId: string) => boolean;
   ids: Pick<LocalIdStore, "next">;
 };
+
+/** 足した人格のうち、Discord の Bot を持つもの（surface が discord）。Bot の Client・接続の知らせ・/new の選択肢はこれだけから作る */
+export function discordPersonas<T extends Pick<PersonaConfig, "surface">>(personas: readonly T[]): T[] {
+  return personas.filter((persona) => persona.surface === "discord");
+}
+
+/** LocalPersonaPlaces の述語: 設定の surface が web の人格の id なら真。設定に無い id は偽 */
+export function webPersonaPredicate(personas: readonly Pick<PersonaConfig, "id" | "surface">[]): (personaId: string) => boolean {
+  const ids = new Set(personas.filter((persona) => persona.surface === "web").map((persona) => persona.id));
+  return (personaId) => ids.has(personaId);
+}
+
+/**
+ * 足した人格の runtime の Bot の側。web はローカルの Gateway で、接続はいつも真（Discord を通らない）。
+ * discord はその人格の Bot と、その Bot の接続。discord なのに Bot が無ければ投げる（黙ってローカルや既定の Bot に倒さない）
+ */
+export function personaBot(
+  persona: Pick<PersonaConfig, "id" | "surface">,
+  bot: (Gateway & { connected: () => boolean }) | undefined,
+  localGateway: Gateway,
+): Pick<PersonaRuntime, "gateway" | "connected"> {
+  if (persona.surface === "web") return { gateway: localGateway, connected: () => true };
+  if (bot === undefined) throw new Error(`人格 ${persona.id} の Bot がありません`);
+  return { gateway: bot, connected: () => bot.connected() };
+}
 
 /** 持ち主の Bot で行う投稿（返事・途中経過・入力中表示・リマインド・記憶の知らせ・kb_delete の確認） */
 export type OwnerPosts = Pick<Gateway, "send" | "sendMessage" | "editMessage" | "startTyping">;

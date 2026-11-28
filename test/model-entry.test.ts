@@ -36,6 +36,7 @@ const MIKA = {
   id: "mika",
   name: "ミカ",
   discordTokenEnv: "SELF_AGENT_PERSONA_MIKA_DISCORD_TOKEN",
+  surface: "discord" as const,
   promptFile: "/dev/null",
   model: undefined,
   engine: "claude" as const,

@@ -556,6 +556,7 @@ function persona(id: string, name: string): PersonaConfig {
     id,
     name,
     discordTokenEnv: `SELF_AGENT_PERSONA_${id.toUpperCase()}_DISCORD_TOKEN`,
+    surface: "discord",
     promptFile: `personas/${id}.md`,
     model: undefined,
     engine: "claude",

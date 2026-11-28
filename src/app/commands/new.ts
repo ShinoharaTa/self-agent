@@ -5,7 +5,7 @@ import type { GuildSettingsStore } from "../../store/guild-settings.ts";
 import type { PlaceSettingStore } from "../../store/place-settings.ts";
 import type { TopicSessionStore } from "../../store/topic-sessions.ts";
 import type { CommandHandler } from "../interactions.ts";
-import type { LocalPersonaPlaces, PersonaRouter } from "../personas.ts";
+import { discordPersonas, type LocalPersonaPlaces, type PersonaRouter } from "../personas.ts";
 import type { KeyedSerialQueue } from "../queue.ts";
 import { listProjects } from "../../cc/starter.ts";
 import {
@@ -51,7 +51,7 @@ export function sessionOwnerOf(
 }
 
 export type NewSessionDeps = {
-  /** personas は足した人格（/new の persona の選択肢）。無ければ今と同じ（引数なし・すべて既定の人格） */
+  /** personas は足した人格（そのうち surface が discord のものが /new の persona の選択肢）。無ければ今と同じ（引数なし・すべて既定の人格） */
   cfg?: Partial<Pick<Config, "personas">>;
   gateway: Pick<Gateway, "createCategory" | "createTextChannel" | "channelExists" | "countChannelsIn" | "send">;
   /** 最初の投稿をするチャンネルの持ち主の Bot。無ければ gateway（既定の人格の Bot） */
@@ -173,7 +173,8 @@ export function newCommandDef(personas: readonly Pick<PersonaConfig, "id" | "nam
  * project があれば、足した人格との組み合わせ・共有の link が済んでいない・使えない名前を本人にだけ断ってから、プロジェクトのセッションを作る
  */
 export function createNewSessionCommand(deps: NewSessionDeps): CommandHandler {
-  const personas = deps.cfg?.personas ?? [];
+  // Web だけの人格（surface が web）は選択肢に出さず、作るときの検査も同じ一覧で断る（Discord に話題を作らない）
+  const personas = discordPersonas(deps.cfg?.personas ?? []);
   // 選択肢は登録のときに 1 回読む（後で増えたものは再起動まで出ない。文字列で受けたときと同じく、作るときに検証し直す）
   const projects = deps.projectSessions === undefined ? [] : listProjects(deps.projectSessions.places);
   return {
