@@ -94,6 +94,7 @@ CC9 は済（Web の会話のサイドバーの群「Claude Code」。アクテ�
 - WP1 は main に入った（コードの DB は v49: `sessions.place`・`persona_channels.place`（`discord` / `local`。今ある行は `discord`）・連番の表 `local_ids`。store `src/store/local-places.ts` の `LocalIdStore` がローカルの番号（先頭が `1` の数字 21 桁）を作る。再同期はローカルの話題を飛ばす）。ローカルの行を作る道はまだ無い（WP3 から）。効くのは再起動の後
 - WP1 は v49 で起動した後は戻さない（DB が v49。`migrate` はコードより新しい版の DB を開かない）。戻すなら、起動のときに取った移行の前の控え（`self-agent.db.v48.bak`）から戻すか、v49 の移行を残してほかを戻す
 - WP2 は main に入った（ローカルの Gateway `src/discord/local-gateway.ts` の `LocalGateway`。`sendMessage` は番号を返し、`send`・編集・ピン・リアクション・入力中は何もしない。`messageExists`・`channelExists` は true。管理の操作は投げる。`PersonaRouter` は `localGateway` を渡されたときだけ、`place = 'local'` の場所の `gatewayFor` にそれを返す）。`main.ts` はまだ渡さないので、誰も通らない道。再起動は要らない
+- WP3 の 1 つ目（今在る操作の関所）: 移す（`ChannelOpsQueue.enqueueMove` は `place = 'local'` の話題を列に積まない）・消す（［削除する］はローカルの話題で `deleteChannel` を呼ばず、DB の片付けだけ）・削除の確認（`listDeleteDue` がローカルの話題を外す。§3.3 の 2 を WP4 から前倒し）。ローカルの行を作る道はまだ無いので動きは変わらない（本体の変更なので、効くのは再起動の後）。作る道と `/setup` は WP3 の 2 つ目
 - WP6b（どの会話でも `<#番号>` を題名に替える）・WP7（画面で人格を選ぶ）と AG8（画面のモデルの一覧に Antigravity を出す）は #528 の向きが決まるまで止める（`docs/plan/web-ui-rebuild.md` §8）
 - AG0（この機械での実測。サブスクの枠を使う）は、オーナーが `agy` を入れてサインインした後に、回して良いかを訊いてから
 

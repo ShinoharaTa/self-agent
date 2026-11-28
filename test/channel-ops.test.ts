@@ -328,3 +328,61 @@ test("cancel: そのチャンネルの未実行の移動を捨て、他のチャ
   );
 });
 
+
+test("ローカルの話題（#530 の WP3。place = 'local'）は列に積まない: どの状態の移動でも Discord を呼ばず、category_id は local のまま。後の Discord の話題は今と同じに移す", async (t) => {
+  const { gateway, clock, guildSettings, topicSessions, logs, queue } = setup(t);
+  guildSettings.setStateCategory("guild-1", "waiting", 1, "waiting-1");
+  guildSettings.setStateCategory("guild-1", "active", 1, "active-1");
+  const local = "100000000000000000001";
+  topicSessions.create({ channelId: local, guildId: "guild-1", title: "x", categoryId: "local", place: "local" });
+
+  for (const state of ["waiting", "done", "active"] as const) {
+    queue.enqueueMove(local, { kind: "state", guildId: "guild-1", state });
+    await clock.advance(GAP_MS * 2);
+    await queue.idle();
+  }
+  queue.enqueueMove(local, { kind: "category", categoryId: "home-1" });
+  await clock.advance(GAP_MS * 2);
+  await queue.idle();
+
+  assert.deepEqual(gateway.callsOf("getParentId", "moveChannel", "channelExists", "countChannelsIn", "createCategory"), []);
+  assert.equal(topicSessions.get(local)?.categoryId, "local");
+  // 間隔も空けない（列に入っていない）
+  assert.deepEqual(clock.sleeps, []);
+  assert.deepEqual(logs, []);
+
+  // Discord の話題は今と同じ（問い合わせて 1 回移す）
+  topicSessions.create({ channelId: "topic-1", guildId: "guild-1", title: "x", categoryId: "active-1" });
+  gateway.parents.set("topic-1", "active-1");
+  queue.enqueueMove("topic-1", DONE);
+  await settle();
+
+  assert.deepEqual(gateway.moves(), [["topic-1", "done-1"]]);
+  assert.equal(topicSessions.get("topic-1")?.categoryId, "done-1");
+});
+
+test("ローカルの話題（#530 の WP3）を Discord の話題の間に積んでも、Discord の話題の移動は今と同じ順・同じ回数で、間隔はその分だけ", async (t) => {
+  const { gateway, clock, topicSessions, queue } = setup(t);
+  const local = "100000000000000000001";
+  topicSessions.create({ channelId: local, guildId: "guild-1", title: "x", categoryId: "local", place: "local" });
+  for (const channelId of ["topic-1", "topic-2"]) {
+    topicSessions.create({ channelId, guildId: "guild-1", title: "x", categoryId: "active-1" });
+    gateway.parents.set(channelId, "active-1");
+  }
+
+  queue.enqueueMove("topic-1", DONE);
+  queue.enqueueMove(local, DONE);
+  queue.enqueueMove("topic-2", DONE);
+  await clock.advance(GAP_MS * 10);
+
+  assert.deepEqual(gateway.moves(), [
+    ["topic-1", "done-1"],
+    ["topic-2", "done-1"],
+  ]);
+  assert.equal(
+    gateway.calls.some((call) => "channelId" in call && call.channelId === local),
+    false,
+  );
+  assert.deepEqual(clock.sleeps, [GAP_MS, GAP_MS]);
+  assert.equal(topicSessions.get(local)?.categoryId, "local");
+});

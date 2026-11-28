@@ -351,12 +351,13 @@ export class TopicSessionStore {
   }
 
   /**
-   * 完了で、閉じた時刻が before 以前（ちょうどを含む）で、削除の確認をまだ投稿していないセッションを、閉じた時刻の古い順に limit 件まで
+   * 完了で、閉じた時刻が before 以前（ちょうどを含む）で、削除の確認をまだ投稿していないセッションを、閉じた時刻の古い順に limit 件まで。
+   * ローカルの話題（place = 'local'）には削除の確認を出さない（SQL で外す。呼び手で飛ばすと古い順の先頭に居座って limit を埋める）
    */
   listDeleteDue(before: Date, limit: number): TopicSession[] {
     return this.db
       .prepare(
-        "SELECT * FROM sessions WHERE state = 'done' AND closed_at <= ? AND delete_prompt_message_id IS NULL " +
+        "SELECT * FROM sessions WHERE state = 'done' AND closed_at <= ? AND delete_prompt_message_id IS NULL AND place <> 'local' " +
           "ORDER BY closed_at, channel_id LIMIT ?",
       )
       .all(before.toISOString(), limit)

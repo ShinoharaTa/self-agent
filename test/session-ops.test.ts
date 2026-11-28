@@ -2,10 +2,12 @@ import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readdirSync, realpathSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
+import { setImmediate as flush } from "node:timers/promises";
 import type { RunResult } from "../src/agent/runner.ts";
 import { createSessionToolHandlers } from "../src/agent/tools.ts";
 import { TITLE_MAX_LENGTH } from "../src/app/commands/new.ts";
 import { createChannelResolver } from "../src/app/access.ts";
+import { ChannelOpsQueue } from "../src/app/channel-ops.ts";
 import { ensureGuildLayout } from "../src/app/commands/setup.ts";
 import { createHandler, type Handler, type SubmitTextResult } from "../src/app/handler.ts";
 import type { RotateNowResult } from "../src/app/inbox-rotate.ts";
@@ -185,6 +187,58 @@ test("waitSession・continueSession: 結果の種類と、変えたときだけ 
   env.deps.topicSessions.markDeleted("topic-1");
   assert.equal(waitSession("guild-1", "topic-1", env.deps), "closed");
   assert.equal(continueSession("guild-1", "topic-1", env.deps), "deleted");
+});
+
+test("waitSession・continueSession・閉じる（#530 の WP3）: ローカルの話題は状態だけ変わり、本物の移動の列から Discord を 1 度も呼ばない。Discord の話題は今と同じに 3 回移す", async (t) => {
+  const env = setup(t, [ok("閉じました"), ok("閉じました")]);
+  const gateway = new FakeGateway({ record: ["getParentId", "moveChannel", "channelExists", "countChannelsIn", "createCategory"] });
+  for (const state of ["active", "waiting", "done"] as const) {
+    env.deps.guildSettings.setStateCategory("guild-1", state, 1, `${state}-1`);
+    gateway.alive.add(`${state}-1`);
+  }
+  gateway.parents.set("topic-1", "active-1");
+  const channelOps = new ChannelOpsQueue({
+    gateway,
+    guildSettings: env.deps.guildSettings,
+    topicSessions: env.deps.topicSessions,
+    gapMs: 0,
+    timers: { sleep: async () => {} },
+    log: (line) => env.logs.push(line),
+  });
+  const deps = { ...env.deps, channelOps };
+  const settle = async (): Promise<void> => {
+    for (let i = 0; i < 10; i++) await flush();
+    await channelOps.idle();
+  };
+  const local = "100000000000000000001";
+  deps.topicSessions.create({ channelId: local, guildId: "guild-1", title: "ローカル", categoryId: "local", place: "local" });
+  deps.turn.sessions.set(local, "session-local");
+
+  assert.equal(waitSession("guild-1", local, deps), "waited");
+  await settle();
+  assert.equal(deps.topicSessions.get(local)?.state, "waiting");
+  assert.equal(continueSession("guild-1", local, deps), "continued");
+  await settle();
+  assert.equal(deps.topicSessions.get(local)?.state, "active");
+  assert.deepEqual(await closeSession("guild-1", local, deps, env.onAccepted), { result: "finalized", summary: "閉じました" });
+  await settle();
+  assert.equal(deps.topicSessions.get(local)?.state, "done");
+  assert.equal(deps.topicSessions.get(local)?.categoryId, "local");
+  assert.deepEqual(gateway.callsOf("getParentId", "moveChannel", "channelExists", "countChannelsIn", "createCategory"), []);
+
+  // Discord の話題は今と同じ
+  assert.equal(waitSession("guild-1", "topic-1", deps), "waited");
+  await settle();
+  assert.equal(continueSession("guild-1", "topic-1", deps), "continued");
+  await settle();
+  assert.deepEqual(await closeSession("guild-1", "topic-1", deps, env.onAccepted), { result: "finalized", summary: "閉じました" });
+  await settle();
+  assert.deepEqual(gateway.moves(), [
+    ["topic-1", "waiting-1"],
+    ["topic-1", "active-1"],
+    ["topic-1", "done-1"],
+  ]);
+  assert.equal(deps.topicSessions.get("topic-1")?.categoryId, "done-1");
 });
 
 test("closeSession: セッションでない・閉じているなら受け付けない。失敗は failed、候補が無ければ finalized", async (t) => {
