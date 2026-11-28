@@ -1,6 +1,6 @@
 # Discord の Bot を持たない人格（Web だけ）と、話題ごとに選ぶ Antigravity のモデル（#530）
 
-- 状態: 2026-11-28 の時点。オーナーの答え 7 つ（§1.1）と PR #531 のレビューを入れた。§9 の問いは未決
+- 状態: 2026-11-28 の時点。オーナーの答え 7 つ（§1.1）と PR #531 のレビュー（2 回）を入れた。§9 の問いは未決
 - 関連: #114（`docs/plan/personas.md`）・#451（`docs/plan/models.md`）・#457（`docs/plan/lead.md`）・#528（`docs/plan/web-ui-rebuild.md`）・#483・`docs/plan/distribution.md`
 - 読んだ物: コードは main の `ec663eb` で読んだ。調べ物は同じ日の公開の文書（出典は §11）。レビューで食い違いを指された 4 つは、公式のページの原文（markdown）を開き直して確かめた（§4.3）。`agy` は入れていないし、動かしていない（実測は AG0）
 - 印の意味: 【事実】= コードか公式の文書で確かめた / 【推測】= 読んだ物からの見立て / 【未確認】= 確かめられなかった
@@ -79,7 +79,7 @@
 
 - 右腕は「人格」の行ではない。既定の人格の #inbox を、一覧が `rightHands` に「右腕」の題で入れている（`src/web/routes/topics.ts:429-439`）
 - 統括のまとめ（L2）は、どの人格の話題の物も既定の人格の #inbox に出る（`src/app/lead.ts:190`）。本文は `終わりました: <#チャンネルID>` の形（`src/app/lead.ts:72-83`）
-- まとめは、同じ文を Discord に投げてから履歴に書く（`src/app/lead.ts:183-193`）。Web はその履歴の行の頭（`終わりました: <#`・`止まりました: <#`）でまとめと見分け（`isLeadText`。`src/app/lead.ts:72-73・119-121`）、右腕の未読の印を付ける（`src/web/routes/topics.ts:216`）。今の殻は、右腕の会話の中でだけ `<#ID>` を題名と［開く］の札に替える（`src/web/static/shell.js:793・847・857`）
+- まとめは、同じ文を Discord に投げてから履歴に書く（`src/app/lead.ts:183-193`）。投稿に失敗すると、履歴を書かずに戻る。Web はその履歴の行の頭（`終わりました: <#`・`止まりました: <#`）でまとめと見分け（`isLeadText`。`src/app/lead.ts:72-73・119-121`）、右腕の未読の印を付ける（`src/web/routes/topics.ts:216`）。今の殻は、右腕の会話の中でだけ `<#ID>` を題名と［開く］の札に替える（`src/web/static/shell.js:793・847・857`）
 - まとめが出るのは話題のターンだけ（`src/app/handler.ts:460-461`）。入口の行は「止まった」に数えない（`src/web/routes/topics.ts:142・420` の `NO_PROGRESS`。`docs/plan/lead.md` の決定 4 も同じ）
 
 ### 2.4 Discord のチャンネルを持たない話題は在るか
@@ -109,9 +109,15 @@ Web には通知（Web Push）が無い【事実: `src` に実装が無い】。
 | 一覧を返す口 | — | `GET /api/models` は無い（`docs/plan/models.md` の PR-3。画面と一緒に #528 で止めている） |
 | General の話題 | `src/app/session-ops.ts:389-392` | プロジェクトのセッションが使える機械では、Web・右腕から場所なしで始めた話題にも General のフォルダが入り、プロジェクトのセッションとして動く。`/new` で `project` を省いた話題は軽いセッション（`src/app/commands/new.ts:205-206`） |
 | ターンの runner の選び | `src/app/turn.ts:231` | プロジェクトのセッションなら `projectRunner`、そうでなければ持ち主の人格の runner。エンジンでは分けていない |
-| 新しい会話の最初の文 | `src/app/turn.ts:136-139・368` | 共有の記憶の全行（`memoryBlock`）+ seed + 本文。/renew の後・会話の記録が切れた後も同じ |
-| 失敗の数え方 | `src/app/turn.ts:322-345` | `result` の届かない失敗が同じ会話の id で 3 回（`RESUME_FAILURE_LIMIT`）続くと、id を消して新しい会話で 1 回やり直す。数えないのは打ち切りと中断だけ |
+| 新しい会話の最初の文 | `src/app/turn.ts:136-139・358` | 共有の記憶の全行（`memoryBlock`）+ seed + 本文。/renew の後・会話の記録が切れた後も同じ |
+| 失敗の数え方 | `src/app/turn.ts:322-345` | `result` の届かない失敗が同じ会話の id で 3 回（`RESUME_FAILURE_LIMIT`）続くと、id を消して新しい会話で 1 回やり直す。数えないのは打ち切りと中断だけ。打ち切り・中断で終わっても、途中で受け取った id が在って保存がまだ無ければ残し、seed を消す（`src/app/turn.ts:280-287`） |
 | エンジンごとの記録 | `src/store/db.ts`（v18）・`src/store/sdk-sessions.ts:13-31` | `channel_sessions.engine`・`usage_log.engine` の列は在る（既定 `claude`）。**`channel_sessions.engine` は誰も読み書きしていない**（`get`・`set` は `engine` を扱わない）。`personas.md` §3 の「エンジンが違えば捨てて seed から」は実装が無い |
+| 会話の対応を読む所 | `src/app/turn.ts:303`・`src/app/session-renew.ts:82`・`src/app/topic-move.ts:272`・`src/app/inbox-rotate.ts:284`／`src/web/routes/topics.ts:345`・`src/web/routes/channels.ts:204`・`src/app/inbox-rotate.ts:251` | 前の 4 つはターンの道（続きの id を取る）。後ろの 3 つは読むだけで、ターンのエンジンを知らない（Web の一覧は、終わっていない話題の全部で読む） |
+| 実行時のエンジン | `src/main.ts:372・392`・`src/app/personas.ts:15`・`src/store/usage.ts:34` | codex の人格も含め、全部 `engine: "claude"`。今在る `channel_sessions` の行も `claude`。型は `Engine`（`claude` か `codex`） |
+| 使った量の合計 | `src/store/usage.ts:238-300`・`src/app/commands/usage.ts:46-71`・`src/web/routes/usage.ts:74-75` | 合計（`summarize`・`sumOutputTokens`・`listDays`）は人格と時刻だけで絞り、エンジンを見ない。1 ターン 1 行の表示（`npm run usage`。`src/app/usage-report.ts`）にエンジンの欄は無く、モデルの欄だけ |
+| 表示名を引く | `src/agent/models.ts` の `labelOf` | `model` の値だけで引く。一覧に無ければ値そのまま。呼ぶ所は `src/app/session-ops.ts:85`・`src/app/right-hand.ts:199`・`src/cc/takeover.ts:100`・`src/app/usage-report.ts:76` |
+| 同時のターンの枠 | `src/config.ts:213`・`src/app/queue.ts` | 同時のターンは既定で 2。話題のターンは、そのうち 1 つまで（残りは #inbox などのため） |
+| 本文も画像も残らない発言 | `src/app/handler.ts:357-372` | ターンを行わず、理由の文だけ返して履歴に書く |
 | /close のまとめ | `src/app/session-ops.ts:604-626`・`src/app/commands/close-text.ts:7-8` | `CLOSE_PROMPT` は `session_report` の道具を呼ぶよう頼む。道具が呼ばれなければ、返事の文を要約にする（`fallbackSummary`）。失敗したら閉じない |
 | /renew のまとめ | `src/app/session-renew.ts:90-110・26-27` | 話題のモデルで、同じ会話に `RENEW_PROMPT`（「ツールは使わないでください」と書いて在る）を送る |
 | `runner.run` を呼ぶ所 | `src/app/turn.ts:261`・`session-renew.ts:104`・`topic-move.ts:308`・`inbox-rotate.ts:298` ほか | 発言・/close・［続ける］・/renew・場所の付け替え・入口の日替わり |
@@ -157,7 +163,7 @@ Web には通知（Web Push）が無い【事実: `src` に実装が無い】。
 
 | # | 物 | 今 | 決め | 理由 |
 |---|---|---|---|---|
-| 1 | 統括のまとめ（L2） | 同じ文 `終わりました: <#ID>` を Discord と履歴に（`src/app/lead.ts:183-193`） | 履歴の行は `<#ID>` のまま。Discord に投げる文だけ、ローカルの話題を `「題名」（Web）` と書く | 履歴の頭の形を変えると、Web の右腕の未読の印と札が壊れる（§2.3）。Discord ではローカルの番号は開けない |
+| 1 | 統括のまとめ（L2） | 同じ文 `終わりました: <#ID>` を Discord と履歴に（`src/app/lead.ts:183-193`） | 履歴の行は `<#ID>` のまま。Discord に投げる文だけ、ローカルの話題を `「題名」（Web）` と書く。投げてから書く順と、投稿に失敗したら履歴も書かない今の動き（§2.3）は変えない | 履歴の頭の形を変えると、Web の右腕の未読の印と札が壊れる（§2.3）。Discord ではローカルの番号は開けない |
 | 2 | 完了した話題の削除の確認 | 完了から N 日で #system に `<#ID>（題名）…削除しますか` とボタン（`src/app/commands/delete.ts:41-58`・scheduler の `promptDeletes`） | ローカルの話題には出さない。代わりに Web API に削除の口を足す（WP6）。画面のボタンは #528 の後 | 答え 4（Discord に何も出さない）。確認が要る元の理由は Discord のカテゴリの枠（チャンネルの数）で、ローカルの話題は枠を使わない。消さなくても困らない |
 | 3 | 記憶の変更の知らせ | 履歴に書かず、その場所に `（記憶しました: …）` と［取り消す］を送るだけ（`src/app/commands/memory-undo.ts:23-41`） | ローカルの場所では、同じ文を履歴に notice の行として書く。［取り消す］は付けない（Web の記憶の画面の「忘れる」「戻す」で直す。口は今も在る） | 共有の記憶は全人格に効く。Web だけの人格が変えた事を誰も知らない、を避ける（`personas.md` §3 の守り）。Discord には出さない |
 | 4 | `kb_delete` の確認 | その場所に［削除する］［やめる］を送るだけ（`src/app/commands/kb-delete.ts:43`） | ローカルの場所では確認を出せないので、消さずに失敗を返す（確認の投稿に失敗したときと同じ道） | 押せないボタンで待たせない。確認なしで消さない。消すのは Discord の側（右腕）から頼める |
@@ -259,8 +265,9 @@ Web には通知（Web Push）が無い【事実: `src` に実装が無い】。
 
 - **エンジンは話題が持つ**。話題を始めるときに、モデルの一覧から Antigravity 経由のモデルを選ぶと、その話題だけ `agy` で動く。途中で変えない（モデルと同じ決まり）
 - 持ち主は既定の人格のまま。新しい人格・Bot・入口は増えない。話題は今の話題と同じ場所にできる（Discord の `/new` なら Discord のチャンネル、返事は既定の Bot が書く）
-- **#114（`docs/plan/personas.md`）の「人格ごとにエンジンを固定」はそのまま残す**（codex の節 §5 は直さない）。この文書は 2 つ目の軸を足すだけ: ターンのエンジンは「話題が持っていればそれ、無ければ持ち主の人格のエンジン」。足した人格の話題はモデルを選べない（今も）ので、2 つの軸がぶつかる話題は無い
+- **#114（`docs/plan/personas.md`）の「人格ごとにエンジンを固定」はそのまま残す**（codex の節 §5 は直さない）。この文書は 2 つ目の軸を足すだけ: ターンのエンジンは「話題が持っていればそれ、無ければ持ち主の人格のエンジン」。ここで言う人格のエンジンは**実行時のエンジン**（今は codex の人格も含めて全部 `claude`。§2.5）で、設定に書いた値（`codex`）ではない。足した人格の話題はモデルを選べない（今も）ので、2 つの軸がぶつかる話題は無い
 - `ENGINES`（人格の設定に書ける値）は増やさない。前の版の `_ENGINE=antigravity`・人格ごとの作業フォルダ・人格の文の `AGENTS.md` は無くす
+- **型の置き場**: `antigravity` を含む型（`TurnEngine` = `Engine` に `antigravity` を足した物）を `src/agent/models.ts` に置く。一覧の行の `engine`・ターンのエンジンを返す関数・`channel_sessions` と `usage_log` に書く値がこの型。`Engine`（人格の設定に書ける値。`src/config.ts`）と `TurnPersona.engine` は変えない
 - 最初の範囲（答え 3・6・7）: 調べ物と相談だけ。self-agent の道具（記憶・タスク・リマインド・話題を分ける）・プロジェクトの操作・共有の記憶は無い
 
 ### 5.2 モデルの一覧
@@ -279,6 +286,8 @@ Antigravity の slug は、プランで使える物が違い、Google の都合�
 - 一覧の 1 行の型に `engine` を足す: `{ key, label, model, engine }`。Claude の 3 つは `engine: "claude"`。Antigravity の行は `key: "agy:<slug>"`・`label: "<slug>（Antigravity）"`・`model: "<slug>"`・`engine: "antigravity"`
 - key に `agy:` を付ける理由: Antigravity には Claude のモデルも在り、slug が Claude の ID や key と紛れるのを避ける
 - 引く関数を 2 つに分ける: 一覧の key で引く物（`/new`・Web。全部の行）と、名前で引く物（右腕の `session_open`。**Claude の行だけ**）。`bad_model` で返す key の一覧も Claude の行だけ
+- 表示名を引く関数（`labelOf`・`modelLine`）は、エンジンも受け取る。エンジンが `antigravity` なら、一覧に無い slug でも `<slug>（Antigravity）` と出す（変数から slug を外した後も、話題の最初の行と使った量の行で見分けが付く）
+- 段: 変数を読むのは AG5（runner の配線・`/api/status`）。入口が Antigravity の行を見るのは AG7 から。その間は、変数を入れても Antigravity の話題は出来ない（key で引く関数は、AG7 まで Claude の行だけを返す）
 - slug が今の `agy` で使えるかは、起動では確かめない（`agy` を起こさない）。使えない slug はターンで分かる（§5.9 の「モデルが使えない」）
 - 考える深さは slug に入っているので、`--effort` は付けない
 
@@ -306,13 +315,15 @@ Antigravity の slug は、プランで使える物が違い、Google の都合�
 
 | 何 | 中身 |
 |---|---|
-| `sessions.engine`（新しい列） | `TEXT`。NULL = 持ち主の人格のエンジンに従う（今在る行は全部 NULL）。Antigravity の話題は `antigravity` |
+| `sessions.engine`（新しい列） | `TEXT`。NULL = 持ち主の人格の実行時のエンジンに従う（今は全部 `claude`。§5.1。今在る行は全部 NULL）。Antigravity の話題は `antigravity` |
 | `sessions.model` | 今と同じ列に slug を入れる（`agy:` は付けない。`agy --model` にそのまま渡す値） |
-| `channel_sessions.engine`（v18 から在る。今は誰も読み書きしない） | store が読み書きする。保存のときにエンジンを書き、読むときに「今のターンのエンジン」と食い違えば、その行を消して「会話なし」を返す（seed から始まる）。`personas.md` §3 の決まりの実装 |
+| `channel_sessions.engine`（v18 から在る。今は誰も読み書きしない） | store が読み書きする。**今の `get` は変えない（副作用なし）**。Web の一覧・チャンネルの読み取り・日替わりの下見からも呼ばれ、そこにはターンのエンジンが無いため（§2.5）。別に「エンジンを渡して読む」関数を足し、保存した行のエンジンが渡した値と食い違えば、その行を消して「会話なし」を返す（seed から始まる）。**使うのはターンの道の 4 か所だけ**（発言 `src/app/turn.ts:303`・/renew `src/app/session-renew.ts:82`・場所の付け替え `src/app/topic-move.ts:272`・入口の日替わり `src/app/inbox-rotate.ts:284`）。`set` はエンジンを受け取って書く（省けば `claude`）。比べるのは実行時のエンジンなので、codex の人格の今在る行（`claude`）は消えない。`personas.md` §3 の決まりの実装 |
 | `channel_sessions.session_id` | Antigravity の話題では `agy` の `conversation_id` |
-| `usage_log.engine`・`usage_log.model` | `antigravity`・slug |
+| `usage_log.engine`・`usage_log.model` | `antigravity`・slug。Claude の合計からは外す（下） |
 
 エンジンを列で持つ理由: 一覧（env）から slug を外した後も、その話題が Antigravity の物だと分かる必要が在る。モデルの文字列から見分けると、外した途端に Claude に知らないモデル名を渡してしまう。
+
+**使った量の合計**: Antigravity のターンは、Claude の合計（Discord の `/usage`・Web の使用量の合計と日ごとの表）に足さない。トークンの数え方が違い、枠も別なので足せない。合計の 3 つの関数（`summarize`・`sumOutputTokens`・`listDays`）が、`engine` が `antigravity` の行を除く。Antigravity の分は、最初は合計としては出さず、1 ターン 1 行の表示（`npm run usage`）で見えるだけにする。今の行にエンジンの欄は無いので、欄は足さず、モデルの欄に `<slug>（Antigravity）` と出して見分ける（揃える幅は変えない。その行だけ右の欄がずれる）。そのために、行を読む所（`listRecent`）が `engine` も返す（Web の使用量の `rows` にも同じ項目が乗る。画面の字は変えない）。Antigravity の合計を別に出す表示は後の段（画面は #528）。
 
 ### 5.5 `agy` の起こし方
 
@@ -321,7 +332,7 @@ Antigravity の slug は、プランで使える物が違い、Google の都合�
 - **固定で付ける物**: `--output-format stream-json`・`--model <slug>`・`--disable-slash-commands`（本文が `/` で始まっても `agy` のコマンドにしない）
 - **決して付けない物**: `--continue`（`-c`）・`--mode`（どの値も）・`--dangerously-skip-permissions`・`--remote-control`・`--remote-agent`・`--add-dir`（テストで引数を固定する）
 - **子の env は許可の方式**: `PATH`・`HOME`・`LANG`・`XDG_RUNTIME_DIR`・`DBUS_SESSION_BUS_ADDRESS`・`AGY_CLI_DISABLE_AUTO_UPDATE=true` だけ。Discord のトークン・`CLAUDE_CODE_OAUTH_TOKEN` は渡さない（`personas.md` §5.3・§5.4 の codex と同じ考え）
-- **同時に動かすのは全体で 1 つ。runner の中で直列にする**（`runner.run` は発言・/close・［続ける］・/renew など何か所からも呼ばれるので、呼ぶ側の印では漏れる）。並んで待つ間は打ち切りの時計を進めない。待つ間に中断されたら列から抜けて `aborted`。Claude のターンは待たせない
+- **同時に動かすのは全体で 1 つ。runner の中で直列にする**（`runner.run` は発言・/close・［続ける］・/renew など何か所からも呼ばれるので、呼ぶ側の印では漏れる）。並んで待つ間は打ち切りの時計を進めない。待つ間に中断されたら列から抜けて `aborted`。この列に並ぶのは Antigravity のターンだけ。ただし Antigravity の話題のターンも、今のキューの同時のターンの枠（既定で 2。話題のターンはそのうち 1 つまで。§2.5）を取り、runner の中で待つ間も枠を持ったままになる。既定の設定では、Antigravity の話題のターンが動いている間、ほかの話題のターンは Claude の物も待つ（今の話題どうしと同じ）。#inbox などの枠は残る
 - **打ち切り**: ターン全体は今の話題と同じ時間。加えて、**最初のイベント（`init`）が 30 秒で来なければ止める**（鍵束で固まると、全体の打ち切りまで 1 つしか無い枠を塞ぐため。30 秒は仮の値で、AG0 の実測で決め直す）
 - **中断**: `signal` が abort されたら `SIGINT`。決めた時間で終わらなければ `SIGKILL`。結果は `aborted`
 - **`agy` の場所**: `SELF_AGENT_AGY_PATH`（在れば）→ PATH → `~/.local/bin/agy`。毎ターン探す（後から入れても再起動が要らない）
@@ -354,7 +365,7 @@ Antigravity の slug は、プランで使える物が違い、Google の都合�
 | # | 守り | 誰が | 印 |
 |---|---|---|---|
 | 1 | 話題ごとの空の作業フォルダで動かす | self-agent | 事実（形として） |
-| 2 | `permissions.deny` に `read_file(*)`・`write_file(*)`・`command(*)`・`mcp(*)`・`execute_url(*)` | オーナーの手（7 が毎ターン確かめる） | 事実（文書: deny はどのモードでも効く）。効き方は AG0 |
+| 2 | `permissions.deny` に `read_file(*)`・`write_file(*)`・`command(*)`・`mcp(*)`・`execute_url(*)`・`unsandboxed(*)` | オーナーの手（7 が毎ターン確かめる） | 事実（文書: deny はどのモードでも効く）。効き方は AG0。`unsandboxed` の意味は未確認 |
 | 3 | `permissions.allow` に `read_url(*)` | オーナーの手 | 事実（文書）。検索の道具が別の名前なら AG0 で足す |
 | 4 | `toolPermission` は `request-review`（既定）か `strict`。`always-proceed`・`proceed-in-sandbox` なら使えない | 7 が確かめる | 事実 |
 | 5 | `"agentMode": ""`（default モード）。`--mode` は付けない | オーナーの手 | 事実（値）。起動のたびの書き直しでこのキーが消えるかは AG0 |
@@ -364,6 +375,7 @@ Antigravity の slug は、プランで使える物が違い、Google の都合�
 | 9 | 自前の agent の `tools` で、道具を検索と URL の読み取りだけにする | AG0 で使えると分かれば | 未確認 |
 
 - 2 の `read_file(*)` は、作業フォルダの中も外も読ませない（read の deny は write の deny も含む）。文書の通りなら、決まりが無くても作業フォルダの外は確認が要り、ヘッドレスでは拒まれる。deny はその上に重ねる物
+- 2 の `unsandboxed(*)` は、公式の action の一覧に在るが、意味を説明した文を読めていない【未確認】。名前からは「sandbox の外でコマンドを打つ許し」と読めるので、deny に入れておく【推測】。AG0 の 8 で、意味と、deny に書いて `agy` が困らないかを見る。困るなら外す（`command(*)` の deny は残る）
 - 5 について: `agentMode` のキーが無いと、ヘッドレスは `auto` が使える所では `auto` で動く。`auto` でも deny は効くので、7 は「キーが無い」を通す（書き直しで消える見込みが在るため）。`auto`・`accept-edits`・`plan` がはっきり書いて在るときだけ止める
 - 7 が見られるのは Global の決まりだけ。Project・Shared の置き場に allow が足されていても見えない（deny の方が強いので、2 が在る限り通らない）
 
@@ -376,7 +388,7 @@ Antigravity の slug は、プランで使える物が違い、Google の都合�
   "agentMode": "",
   "permissions": {
     "allow": ["read_url(*)"],
-    "deny": ["read_file(*)", "write_file(*)", "command(*)", "mcp(*)", "execute_url(*)"]
+    "deny": ["read_file(*)", "write_file(*)", "command(*)", "mcp(*)", "execute_url(*)", "unsandboxed(*)"]
   }
 }
 ```
@@ -416,7 +428,7 @@ Antigravity の slug は、プランで使える物が違い、Google の都合�
 | 統括のまとめ（L2） | 今のまま出る（アプリが作る文。話題のターンなので対象） | 事実 |
 | 止まった話題を「あなたの番」に数える | 今のまま数える（話題なので。入口は数えないが、Antigravity は入口では動かない） | 事実（§2.3）／AG5 のテスト |
 | 場所を変える・プロジェクト | できない（§5.3） | |
-| 画像・添付 | できない。入力はテキストだけ【事実】。「この話題は画像を読めません」と添えて、文だけでターンにする | |
+| 画像・添付 | できない。入力はテキストだけ【事実】。「この話題は画像を読めません」と添えて、文だけでターンにする。本文が空で画像だけの発言は、断りの文だけを返してターンを行わない（今の「本文も画像も残らない発言」と同じ扱い。§2.5） | |
 | オーナーが貼った URL だけ読む決まり | 掛けられない。`agy` の側の `read_url` の決まりで動く | |
 | 許可を訊く（プロジェクトのセッションの物） | 無い。やんわり拒否 | |
 | 会話の要約（compaction）の印 | 無い。長くなって失敗したら /renew を案内する | 未確認（自動で縮めるか） |
@@ -443,7 +455,9 @@ Antigravity の slug は、プランで使える物が違い、Google の都合�
 | 中断 | 自分で送った `SIGINT` | 「中断しました」 | 入れない（今と同じ） |
 | 時間切れ | 自前の時計 | 今の打ち切りと同じ | 入れない（今と同じ） |
 
-- **Antigravity の話題では、失敗を「3 回で会話の id を捨てる」数に入れない**（§2.5）。レビューの 5 は「分類した失敗は数えない」だったが、枠切れの形が分からず「その他」に入るので、それも数えない事にした。数えると、枠が切れている間に 3 回打っただけで会話を失う。id を捨てるのは「会話が見つからない」と分かった失敗だけ。代わりに、本当に壊れた会話は自分では直らない（オーナーが新しい話題を始める）
+- **Antigravity の話題では、失敗を「3 回で会話の id を捨てる」数に入れない**（§2.5）。レビューの 5 は「分類した失敗は数えない」だったが、枠切れの形が分からず「その他」に入るので、それも数えない事にした。数えると、枠が切れている間に 3 回打っただけで会話を失う。id を捨てるのは「会話が見つからない」と分かった失敗だけ
+- **壊れた会話から抜ける道**: 数えないので、続けられない会話の id が残ると同じ失敗を繰り返す。中断・打ち切りの後も id は残る（§2.5）。/renew も同じ会話での要約のターンが要るので、それだけでは抜けられない。そこで、**Antigravity の話題で /renew の要約のターンが失敗したとき（中断は除く）、失敗の知らせに［要約なしで新しくする］を付ける**。押すと、今の「会話の記録が見つからないとき」と同じ道（`renewed_fresh`。`src/app/session-renew.ts:127-144`）を通る: 会話の id を消し、seed は今の道と同じ（前の /renew の要約 → /close の要約 → 題名）。ターンを使わない。Discord はボタン。Web は口だけ: /renew の口（`POST /api/channels/<id>/renew`）に「要約なしで」の印を付けて呼べる（Antigravity の話題で、会話の id が在るときだけ。ほかは 400）。画面のボタンは AG8
+- **分類できない失敗が同じ id で続いたときの扱いは、AG0 の結果で決める**（決め打ちしない）。AG0 の 4 で「中断・`ERROR` で終わった会話を同じ id で続けられる」と分かれば、今の形（数えない + 上の抜け道）のまま。続けられないと分かれば、「中断・打ち切り・`ERROR` の後は id を残さない」か「その他の失敗だけは数える」かを、出方を見て選ぶ
 - 止まったターンは、今の「止まった話題」の扱い（あなたの番に数える。`docs/plan/lead.md` の決定 4）に乗る。**入口では起きない**（§2.3）が、Antigravity は話題だけなので当たらない。場所の線の Web だけの人格の入口は、止まっても「あなたの番」に出ない（§3.1）
 - #483（利用枠で止まったときの自動のやり直しと［もう一度送る］）は、Claude の側もまだ main に無い【事実】。Antigravity の側は、枠が戻る時刻も誤りの形も分からないので、最初は入れない
 - console の log には分類だけを出す。`error` の本文・作業フォルダのパスは出さない
@@ -457,6 +471,7 @@ Antigravity の slug は、プランで使える物が違い、Google の都合�
 - ターンは必ず runner を通る。`agy` が無ければ runner が「`agy` が無い」の結果を返す（§5.9）。後から入れたら、次のターンから動く（再起動は要らない）
 - 話題を作るときだけ、実行ファイルが在るかを見る（起こさない）。無ければ作らずに断る（§5.3）
 - `/api/status` に `antigravity: { models, available }` を足す。`available` は最後に分かった値（`ok` / `not_installed` / `config` / `signed_out` / `unknown`）。変数が空なら項目ごと出さない。**止まり方の分類と同じ段（AG3 で値を持ち、AG5 で口に出す）**
+- 段: 変数の読み取り・書き間違いの exit 1・起動のときの確かめ・runner の配線・`/api/status` の項目は AG5。入口は AG7（§8.3）
 - npm で配る物（`docs/plan/distribution.md`）: 依存を足さない（子プロセスを起こすだけ）。`agy` は同梱しない
 - Mac: 置き場の既定は同じ `~/.local/bin/agy`。資格情報は Keychain。サービスとして動く self-agent から Keychain を読めるかは【未確認】。使わない人の起動には何も影響しない
 
@@ -496,9 +511,9 @@ Antigravity の slug は、プランで使える物が違い、Google の都合�
 | 2 | 1 の後 | サインインの前に 1 回だけ `agy -p` を打ち、「サインインしていないとき」の出方を残す（枠を使わない） | 不要 |
 | 3 | 2 の後 | サインイン: tmux の中で `agy` を開く。SSH だと URL が出るので、電話で開いてサインインし、出たコードを端末に貼る。個人の Google アカウント（サブスクの物）を選ぶ | 不要 |
 | 4 | 3 が通らないとき | 鍵束。公式の直し方は「D-Bus のセッションと鍵束のデーモンを動かす（例: `export $(dbus-launch)`）」。この機械には鍵束のデーモンが無いので、入れる必要が出るかもしれない（`sudo apt install gnome-keyring`【推測: 公式の文書の物ではない】） | **要るかもしれない** |
-| 5 | 3 の後 | 全体の設定 `~/.gemini/antigravity-cli/settings.json` に、§5.6 の中身（`"agentMode": ""`・deny の 5 つ・allow の 1 つ）を足す。`useG1Credits` と `allowNonWorkspaceAccess` が `true` になっていない事を見る（既定は両方 `false` なので、書いていなければ良い）。AG0 では手で。後は `npm run agy-setup -- --print` が中身を出す | 不要 |
+| 5 | 3 の後 | 全体の設定 `~/.gemini/antigravity-cli/settings.json` に、§5.6 の中身（`"agentMode": ""`・deny の 6 つ・allow の 1 つ）を足す。`useG1Credits` と `allowNonWorkspaceAccess` が `true` になっていない事を見る（既定は両方 `false` なので、書いていなければ良い）。AG0 では手で。後は `npm run agy-setup -- --print` が中身を出す | 不要 |
 | 6 | AG0 | 実測に「はい」と言う（サブスクの枠を使う。§7） | 不要 |
-| 7 | AG7 | env ファイルに `SELF_AGENT_ANTIGRAVITY_MODELS=<slug>,…` を足す（slug は AG0 で残した `agy models` の出力から選ぶ。§9 の 2）。再起動に「はい」と言う | 不要 |
+| 7 | AG7 | env ファイルに `SELF_AGENT_ANTIGRAVITY_MODELS=<slug>,…` を足す（slug は AG0 で残した `agy models` の出力から選ぶ。§9 の 2）。再起動に「はい」と言う。変数を読むのは AG5 からだが、入口（AG7）が入るまでは、入れても話題は出来ない | 不要 |
 | 8 | サインインが切れたとき | 3 をもう一度（要れば先に `agy` の中で `/logout`）。機械を再起動した後に鍵束が閉じていれば、開ける | 4 と同じ |
 | 9 | `agy` を更新したとき | `npm run agy-check`（枠を使う） | 不要 |
 | 10 | 一覧の slug が Google の側で外れたとき | env の slug を直して、再起動に「はい」と言う | 不要 |
@@ -514,11 +529,11 @@ self-agent が自分でしない事: `agy` を入れる・サインインする�
 | 1 | サインインの前の `agy -p` | 誤りの文・exit code（枠を使わない） |
 | 2 | `agy --version`・`agy models` | 版。オーナーのプランで使える slug。サインインが要るか・枠を使うか |
 | 3 | 2 ターン（stream-json） | イベントの実物。`usage` が 1 回ごとか累計か。`input_tokens` がキャッシュの読みを含むか |
-| 4 | 続き（`--conversation <id>`） | 前のターンを覚えているか。別のフォルダからでも続くか。**知らない id を渡したときの出方**（§5.9 の「会話が見つからない」の形） |
+| 4 | 続き（`--conversation <id>`） | 前のターンを覚えているか。別のフォルダからでも続くか。**知らない id を渡したときの出方**（§5.9 の「会話が見つからない」の形）。**中断（`INTERRUPTED`）・`ERROR` で終わった会話を、同じ id で続けられるか**（§5.9 の抜け道の決め） |
 | 5 | stdin で渡す形 + `--conversation` | 組めるか。stdin を閉じた後の exit code |
 | 6 | 渡す文 | 作業フォルダの `AGENTS.md` がヘッドレスで効くか（`read_file(*)` を deny したままで）。`--agent` で自前の agent を選べるか。`init.tools` に出る道具の名前。`--disable-slash-commands` がヘッドレスで効くか |
 | 7 | モード | `--mode default` が通るか（公式には無い値。通らない前提で設計している）。`"agentMode": ""` が、起動のたびの書き直しで消えるか。この機械で、キーが無いときに `auto` と default のどちらで動いたか（出力か stderr で分かるか） |
-| 8 | 道具の拒否（§5.6 の設定で） | 作業フォルダの中への書き込み・コマンド・**作業フォルダの外の読み**・作業フォルダの中の読みが拒まれるか。URL の読み取りと検索は通るか（検索の道具の名前）。stderr の知らせの形。`read_file(*)` の deny で `agy` 自身が困らないか |
+| 8 | 道具の拒否（§5.6 の設定で） | 作業フォルダの中への書き込み・コマンド・**作業フォルダの外の読み**・作業フォルダの中の読みが拒まれるか。URL の読み取りと検索は通るか（検索の道具の名前）。stderr の知らせの形。`read_file(*)` の deny で `agy` 自身が困らないか。`unsandboxed(*)` が何を指すか、deny に書いて困らないか |
 | 9 | 決まりの置き場 | Project の決まりがどこに入るか・ヘッドレスで効くか（self-agent の分だけを分けられるか）。設定の置き場を env で分けられるか |
 | 10 | 新しいフォルダ | ヘッドレスが「信頼するか」で止まるか・`trustedWorkspaces` に何が入るか（§5.5 の作業フォルダの案 A が使えるか） |
 | 11 | 中断 | `SIGINT` の後の `status`・exit code。`SIGTERM` ではどうか。子プロセスが残らないか |
@@ -562,14 +577,15 @@ self-agent が自分でしない事: `agy` を入れる・サインインする�
 | AG1 | runner の読み取り: stream-json の行 → `RunResult`（偽のプロセス。AG0 で残した行を、§7 の「消す物」を消してからテストに使う） | | | |
 | AG2 | 起こし方（§5.5）: 引数・env・話題ごとの作業フォルダ・渡す文のファイル・中断・2 つの打ち切り・runner の中の直列 | | | |
 | AG3 | 設定を読んで確かめる（§5.6 の 7）・止まり方の分類（§5.9）・`available` の値を持つ・`npm run agy-setup -- --print`・`docs/commands.md` | | | |
-| AG4 | 保存（§5.4）: `sessions.engine` のマイグレーション・話題の store・`channel_sessions.engine` の読み書きと食い違いで捨てる・一覧の型に `engine`（引く関数を 2 つに） | 再 | | |
-| AG5 | ターンの配線: runner を選ぶ所を 1 つの関数に（発言・/close・/renew）・最初の文に記憶を付けない・画像の断り・/close の専用の文・場所の付け替えの断り・失敗を数えない・`usage_log`・`/api/status` | 再 | | |
+| AG4 | 保存（§5.4）: `sessions.engine` のマイグレーション・話題の store・`channel_sessions.engine` を書く・エンジンを渡して読む関数（食い違えば捨てる。今の `get` は変えない）・型 `TurnEngine`・一覧の型に `engine`（引く関数を 2 つに）・表示名をエンジンも見て引く・合計から Antigravity の行を除く | 再 | | |
+| AG5 | ターンの配線: `SELF_AGENT_ANTIGRAVITY_MODELS` を読む（書き間違いは exit 1）・起動のときの確かめ・runner の配線・runner を選ぶ所を 1 つの関数に（発言・/close・/renew）・ターンの道の 4 か所を「エンジンを渡して読む」に・最初の文に記憶を付けない・画像の断り・/close の専用の文・/renew の［要約なしで新しくする］・場所の付け替えの断り・失敗を数えない・`usage_log` と使った量の行の字・`/api/status`・`docs/environment.md`（§1.3 への案内の 1 行） | 再 | | |
 | AG6 | `npm run agy-check`（実機の受け入れ。§7 の 3・4・8・11 を機械で）。`docs/commands.md` | | | 枠（Google。回すとき） |
-| AG7 | 門を開ける = 入口（§5.3）: `SELF_AGENT_ANTIGRAVITY_MODELS` を読む・`/new` の選択肢・`POST /api/topics`・`GET /api/models`・始めたときの案内・`docs/environment.md`（§1.3 への案内の 1 行）・`docs/plan/models.md` の入口の表 | 再 | 手（env・`agy-check`） | 枠（Google。確かめ） |
-| AG8 | 画面: 始める板のモデルの一覧に Antigravity の行を出す・話題の見出しにエンジンを出す | | | **#528 の向きが決まるまで止める** |
+| AG7 | 門を開ける = 入口だけ（§5.3）: key で引く関数が Antigravity の行も返す・`/new` の選択肢・`POST /api/topics`・`GET /api/models`・始めたときの案内とモデルの行・`docs/plan/models.md` の入口の表 | 再 | 手（env・`agy-check`） | 枠（Google。確かめ） |
+| AG8 | 画面: 始める板のモデルの一覧に Antigravity の行を出す・話題の見出しにエンジンを出す・/renew の失敗の知らせに［要約なしで新しくする］ | | | **#528 の向きが決まるまで止める** |
 
 - AG7 を開ける条件: AG0 で §5.6 の 3 つの拒否と URL の読み取りが確かめられている事。AG6 が通っている事
-- AG4・AG5 は、変数が空の間は誰も通らない道（`sessions.engine` が入った行が無い）。main に入れても動きは変わらない
+- AG4・AG5 は、Antigravity の話題が無い間は誰も通らない道（`sessions.engine` が入った行が無い）。**AG5 が main に入って変数を入れても、入口（AG7）が無いので Antigravity の話題は出来ない**。変わるのは、runner が配線される事と `/api/status` の項目だけ
+- **戻さない物**: Antigravity の話題が 1 つでも出来た後は、戻して良いのは AG7（入口）だけ。AG4・AG5 を戻すと、Antigravity の話題の会話の id と slug が Claude の runner に渡る（§3.4 の 2 と同じ形）。止めたいときは変数を空にする（その話題は決まった文で断る）
 - 場所の線とは独立。どちらを先にしても良い
 
 後で（今は作らない）:
@@ -599,6 +615,7 @@ self-agent が自分でしない事: `agy` を入れる・サインインする�
   - Web だけの人格が在る設定で `/setup` を打っても、その人格の入口のために `createTextChannel` が呼ばれず、`persona_channels` の行が変わらない
 - WP4
   - ローカルの話題のまとめ: 履歴の行は `終わりました: <#` で始まり（`isLeadText` が真）、Discord に投げた文には `<#` が無く、題名が在る。Discord の話題のまとめは 2 つとも今と同じ
+  - まとめの投稿（Discord）に失敗したら、履歴の行も書かない（今と同じ。ローカルの話題のまとめも、既定の Bot が落ちている間は Web の右腕に出ない）
   - 完了から N 日経ったローカルの話題について、#system に削除の確認が出ない。Discord の話題には今と同じに出る
   - ローカルの場所で記憶を変えると、その場所の履歴に notice の行が 1 つでき、Discord の偽 Gateway には何も行かない
   - ローカルの場所の `kb_delete` は、消さずに失敗を返す
@@ -634,8 +651,8 @@ self-agent が自分でしない事: `agy` を入れる・サインインする�
   - 2 つ同時に呼ぶと、2 つ目の子は 1 つ目が終わってから起きる。待つ間に abort すると、子を起こさずに `aborted`
   - 本文が引数にも log にも出ない
 - AG3
-  - 設定の読み取り: ファイルが無い・JSON でない・deny の 5 つのどれかが無い・`toolPermission` が `always-proceed` か `proceed-in-sandbox`・`allowNonWorkspaceAccess` が true・`useG1Credits` が true・`agentMode` が `auto`／`accept-edits`／`plan`、のどれでも「設定が足りない」を返し、子を起こさない
-  - deny の 5 つが在り、ほかのキーが無い設定は通る。`agentMode` が `""` でも、キーが無くても通る。`toolPermission` が `strict` でも通る
+  - 設定の読み取り: ファイルが無い・JSON でない・deny の 6 つのどれかが無い・`toolPermission` が `always-proceed` か `proceed-in-sandbox`・`allowNonWorkspaceAccess` が true・`useG1Credits` が true・`agentMode` が `auto`／`accept-edits`／`plan`、のどれでも「設定が足りない」を返し、子を起こさない
+  - deny の 6 つが在り、ほかのキーが無い設定は通る。`agentMode` が `""` でも、キーが無くても通る。`toolPermission` が `strict` でも通る
   - 設定のファイルを書かない（読み取りだけで開く）
   - 起こせない（ENOENT）→「`agy` が無い」。誤りの文に `authentication required` →「サインイン」。`keyring` →「鍵束」。`invalid model selection` →「モデルが使えない」。それぞれ決まった文
   - `available` が、失敗の分類で変わり、次に成功すると `ok` に戻る
@@ -644,18 +661,28 @@ self-agent が自分でしない事: `agy` を入れる・サインインする�
 - AG4
   - 古い DB から上げると、今在る行の `sessions.engine` はすべて NULL
   - エンジンを `antigravity` で作った話題は、store がそのエンジンを返す。ほかの話題は「無い」を返す
-  - 会話の対応: `antigravity` で保存した行を `claude` で読むと「会話なし」が返り、行が消える。同じエンジンで読むと id が返る。今在る行（`claude`）を `claude` で読む動きは変わらない
+  - 会話の対応: `antigravity` で保存した行を、エンジンを渡して読む関数に `claude` で訊くと「会話なし」が返り、行が消える。同じエンジンで訊くと id が返る。今在る行（`claude`）を `claude` で訊く動きは変わらない
+  - 今の `get` は、どのエンジンの行でも id を返し、行を消さない。`antigravity` の行が在る話題について、Web の一覧（`GET /api/topics`・`GET /api/channels`）を呼んだ後も、行が残る
+  - codex の人格（設定の `engine` が `codex`）の今在る行は、その人格のターンの読みで消えない（比べるのは実行時のエンジン `claude`）
+  - `set` をエンジンなしで呼ぶと `claude` が入る
+  - 表示名: エンジンが `antigravity` なら、一覧に無い slug でも `<slug>（Antigravity）`。エンジンなし・`claude` の引き方は今と同じ
+  - 合計（`summarize`・`sumOutputTokens`・`listDays`）は、`engine` が `antigravity` の行を足さない。ほかの行の合計は今と同じ
   - 一覧の Claude の 3 行は `engine` が `claude`。名前で引く関数は Claude の行しか返さない
 - AG5
   - `sessions.engine` が `antigravity` の話題の発言で、Antigravity の runner が 1 回呼ばれ、Claude の runner は呼ばれない。ほかの話題・入口は今と同じ
   - その話題の新しい会話の最初の文に、記憶のブロックの見出しが無い。seed が在れば付く。Claude の話題の最初の文は、変更の前とバイト単位で同じ
   - 画像を付けた発言は、決まった断りの文が付き、runner には文だけが渡る
+  - 本文が空で画像だけの発言は、断りの文だけが返り、runner が呼ばれない（`usage_log` の行もできない）
   - /close: runner に渡る文に `session_report` の語が無い。返事の文が要約になり、タスクの確認が出ない。runner が失敗したら閉じない
   - /renew: 偽の runner（Antigravity の物）で、今と同じ結果（会話の id が消え、要約が seed に入る）
+  - /renew の要約のターンが失敗した Antigravity の話題では、知らせに［要約なしで新しくする］が付く。押すと、runner を呼ばずに会話の id が消え、seed に前の /renew の要約（無ければ /close の要約、それも無ければ題名）が入り、区切りの行が 1 つ書かれる。Claude の話題の失敗の知らせには付かない。中断のときも付かない
+  - /renew の口に「要約なしで」の印を付けて呼ぶと、Antigravity の話題では同じ結果。Claude の話題・会話の id が無い話題では 400 で、何も変わらない
   - 場所の付け替えは、決まった理由で断る
   - Antigravity の runner が同じ会話で 3 回続けて失敗しても、会話の id は残る
   - Antigravity の runner の失敗で終わった話題が、Claude の失敗のときと同じく「あなたの番」に数えられ、統括のまとめが出る
-  - `usage_log` の行の `engine` が `antigravity`、`model` が slug
+  - `usage_log` の行の `engine` が `antigravity`、`model` が slug。そのターンの後も、Discord の `/usage` と Web の使用量の合計・日ごとの表の数は変わらない。`npm run usage` の行のモデルの欄は `<slug>（Antigravity）`。`GET /api/usage` の `rows` の行に `engine` が乗る
+  - 形に合わない slug・重なり・9 個以上は、変数名を出して exit 1。変数が在り `agy` が無い機械で、起動が exit 0 で続く
+  - 変数を入れても、`/new` の `model` の選択肢は 3 つのまま、`POST /api/topics` に `agy:<slug>` を渡すと 400 `invalid_model`（入口は AG7）
   - `sessions.engine` が `antigravity` なのに Antigravity の runner が配線されていない（変数を後で空にした）とき、決まった文で断り、Claude の runner を呼ばない
   - 変数が空のとき `/api/status` に `antigravity` の項目が無い。在るとき `models` と `available` が出る
   - 既定の人格のシステムプロンプトとツールの定義が、変更の前とバイト単位で同じ
@@ -666,14 +693,13 @@ self-agent が自分でしない事: `agy` を入れる・サインインする�
 - AG7
   - 変数が未設定・空のとき: `/new` の `model` の選択肢は 3 つ、`GET /api/models` は 3 行（どれも `engine: "claude"`）、`POST /api/topics` の動きは変更の前と同じ
   - slug を 2 つ並べると、選択肢と `GET /api/models` が 5 つになり、足した行は `key` が `agy:<slug>`・`engine` が `antigravity`
-  - 形に合わない slug・重なり・9 個以上は、変数名を出して exit 1
   - `POST /api/topics` に `model: "agy:<slug>"` と General を渡すと 201。返事に `engine: "antigravity"`・`mode: "light"`・`place.dir` が `null`。`sessions` の行の `engine` と `model`（slug）が入る。プロジェクトのセッションが使える設定でも、General のフォルダが入らない
   - 場所がプロジェクトなら 400 `model_place`。`/new` で `project` と一緒なら本人にだけ断る。どちらも話題を作らない
   - `agy` の実行ファイルが見つからないと 503 `engine_unavailable`（`/new` は本人にだけ断る）。話題を作らない
   - 右腕の `session_open` に `agy:<slug>`・slug・表示名のどれを渡しても `bad_model` が返り、返す key の一覧は Claude の 3 つだけ。何も作らない。引数 `model` の説明の文が、変更の前とバイト単位で同じ
   - 場所の既定に Antigravity の行の key が入っていても（DB に直に書いて試す）、無い物として扱い、話題は Claude で始まる
   - 始めたときの案内に、§5.7 の 1 行が在る
-  - 変数が在り `agy` が無い機械で、起動が exit 0 で続く
+  - 始めたときのモデルの行が `モデル: <slug>（Antigravity）`
   - 実機: `npm run agy-check` が通る。`/new` で Antigravity のモデルを選んで 2 ターン話し、2 ターン目が 1 ターン目を覚えている。［中断］で止まる。/close で要約が出て、右腕にまとめが出る
 
 実装に渡すときの注意: WP1・WP5・WP6・AG4・AG5・AG7 は再起動を伴うので、マージの後にオーナーに訊いてから（AG4 と AG5 は 1 回にまとめて良い）。WP2〜WP4・AG1〜AG3 は使われない部品で、main に入れても動きは変わらない。AG1 は AG0 の記録（実物の行）が無いと始められない。AG2 の「渡す文の渡し方」「本文を stdin で渡すか」「作業フォルダの案」は AG0 の後に設計が決めてから渡す。
@@ -711,7 +737,7 @@ self-agent が自分でしない事: `agy` を入れる・サインインする�
 | 事 | 中身 | 節 |
 |---|---|---|
 | 2 本の線に分ける | 場所とエンジンは独立 | §0 |
-| エンジンは話題が持つ | `sessions.engine`。無ければ持ち主の人格のエンジン。#114 の「人格ごとに固定」は残す | §5.1・§5.4 |
+| エンジンは話題が持つ | `sessions.engine`。無ければ持ち主の人格の実行時のエンジン（今は全部 `claude`）。#114 の「人格ごとに固定」は残す | §5.1・§5.4 |
 | 一覧は env で並べる | `SELF_AGENT_ANTIGRAVITY_MODELS`。空なら何も増えない（門） | §5.2 |
 | `/new` からも選べる | Web の画面が止まっている間の入口。キャッシュは外れない | §5.3 |
 | 場所の無い話題だけ | General のフォルダも入れない。場所の付け替えは断る。場所の既定には置けない | §5.3 |
@@ -726,6 +752,10 @@ self-agent が自分でしない事: `agy` を入れる・サインインする�
 | 記憶は渡さない・seed は渡す | 最初の文を組む関数 1 つで切り替える | §5.7 |
 | まとめのターンは `agy` で回す | /close は専用の文。タスクの確認は出ない | §5.8 |
 | Antigravity の話題では、失敗を id を捨てる数に入れない | 枠切れの形が分からないため | §5.9 |
+| 壊れた会話から抜ける道 | /renew の失敗に［要約なしで新しくする］ | §5.9 |
+| 会話の対応の `get` は副作用なしのまま | 食い違いで捨てる読みは別の関数で、ターンの道の 4 か所だけ | §5.4 |
+| Antigravity のターンを Claude の合計に足さない | 1 ターン 1 行の表示で見えるだけ | §5.4 |
+| 変数を読むのは AG5、入口は AG7 | Antigravity の話題が出来た後に戻せるのは AG7 だけ | §8.3 |
 | `agy` が在るかは毎ターン知る | 起動で固定しない。起動は止めない | §5.10 |
 | まとめの履歴の行は `<#ID>` のまま | Discord に投げる文だけ題名 | §3.3 |
 | ローカルの話題の削除の確認を出さない | Web API に消す口を足す | §3.3 |
@@ -742,6 +772,8 @@ self-agent が自分でしない事: `agy` を入れる・サインインする�
 | 本文を stdin で渡すか、`-p` で渡すか | 設計（AG0 の後） |
 | 作業フォルダを話題ごとにするか、全体で 1 つか | 設計（AG0 の 10 の結果で） |
 | 最初のイベントの打ち切りの秒数 | 設計（AG0 の 15 の結果で） |
+| 分類できない失敗が同じ id で続いたときの扱い | 設計（AG0 の 4 の結果で） |
+| `unsandboxed(*)` を deny に残すか | 設計（AG0 の 8 の結果で） |
 | OS の側で囲う段（AGX）が要るか | 設計（AG0 の 8・9 と §9 の 1 の答えで） |
 | ローカルの場所のリマインドの扱い | 設計（WP4 の中で） |
 
@@ -778,9 +810,9 @@ self-agent が自分でしない事: `agy` を入れる・サインインする�
 - `read_file(*)` を deny した `agy` が、`AGENTS.md` を読めるか。自前の agent と `--agent` がヘッドレスで効くか
 - default モードを設定だけで固定できるか（`"agentMode": ""` が起動のたびの書き直しで消えるか。公式は「既定の値のキーは消す」と書いている）
 - `strict` の説明が公式の 2 つのページで食い違う（§4.3 の 2）。設計は `strict` に頼らない形にした
-- 知らない action を決まりに書いたときの動き。検索の道具の許可の名前
+- 知らない action を決まりに書いたときの動き。`unsandboxed` の意味。検索の道具の許可の名前
 - Project の決まりの置き場と、ヘッドレスでの効き方。新しいフォルダで「信頼するか」を訊かれるか
-- stdin の形と `--conversation` を組めるか。別のフォルダから id で続けられるか
+- stdin の形と `--conversation` を組めるか。別のフォルダから id で続けられるか。中断・`ERROR` で終わった会話を続けられるか
 - `usage` が 1 回ごとか累計か。会話が長くなったときに自動で縮めるか
 - `SIGTERM` での止まり方。`agy --version`・`agy models` がサインインや枠を要るか
 - Mac のサービスから Keychain を読めるか
