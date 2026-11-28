@@ -1,6 +1,7 @@
 import type { DatabaseSync, SQLOutputValue } from "node:sqlite";
 import { DEFAULT_PERSONA_ID } from "../config.ts";
 import { rollbackIfOpen } from "./db.ts";
+import { type ChannelPlace, toChannelPlace } from "./local-places.ts";
 
 /** 状態カテゴリの種類（進行中 / 待ち / 完了） */
 export type SessionState = "active" | "waiting" | "done";
@@ -38,8 +39,8 @@ const CHANNEL_COLUMNS: Record<"homeCategoryId" | "systemChannelId" | "githubChan
 /** 入口のチャンネルの種類（persona_channels.kind）。足した人格の #<NAME> は inbox */
 export type PersonaChannelKind = "inbox" | "tasks";
 
-/** 入口のチャンネル（persona_channels の行）がどのサーバー・人格・種類のものか */
-export type EntryChannel = { guildId: string; persona: string; kind: PersonaChannelKind };
+/** 入口のチャンネル（persona_channels の行）がどのサーバー・人格・種類・場所（docs/plan/personas-web-antigravity.md §3.1）のものか */
+export type EntryChannel = { guildId: string; persona: string; kind: PersonaChannelKind; place: ChannelPlace };
 
 /** 足した人格の #<NAME>（persona_channels の kind 'inbox' の行）と、その切り替えの日・時刻 */
 export type PersonaInbox = {
@@ -49,6 +50,8 @@ export type PersonaInbox = {
   rotatedDate: string | null;
   /** 最後に切り替えた時刻（ISO）。まだ切り替えていなければ null */
   rotatedAt: string | null;
+  /** 場所（docs/plan/personas-web-antigravity.md §3.1）。local は Discord にチャンネルが無い */
+  place: ChannelPlace;
 };
 
 /** persona_channels（既定の人格の行）に置く入口のチャンネル */
@@ -106,29 +109,38 @@ export class GuildSettingsStore {
     return row === undefined ? undefined : toSettings(row);
   }
 
-  /** その入口のチャンネル（persona_channels の行）のサーバー・人格・種類。入口のチャンネルでなければ undefined */
+  /** その入口のチャンネル（persona_channels の行）のサーバー・人格・種類・場所。入口のチャンネルでなければ undefined */
   entryChannel(channelId: string): EntryChannel | undefined {
-    const row = this.db.prepare("SELECT guild_id, persona, kind FROM persona_channels WHERE channel_id = ?").get(channelId);
+    const row = this.db.prepare("SELECT guild_id, persona, kind, place FROM persona_channels WHERE channel_id = ?").get(channelId);
     if (row === undefined) return undefined;
-    return { guildId: String(row.guild_id), persona: String(row.persona), kind: row.kind === "tasks" ? "tasks" : "inbox" };
+    return {
+      guildId: String(row.guild_id),
+      persona: String(row.persona),
+      kind: row.kind === "tasks" ? "tasks" : "inbox",
+      place: toChannelPlace(row.place, "persona_channels.place"),
+    };
   }
 
   /** そのサーバーのその人格の #inbox（足した人格は #<NAME>）の行。まだ無ければ undefined */
   personaInbox(guildId: string, persona: string): PersonaInbox | undefined {
     const row = this.db
-      .prepare("SELECT channel_id, rotated_date, rotated_at FROM persona_channels WHERE guild_id = ? AND persona = ? AND kind = 'inbox'")
+      .prepare("SELECT channel_id, rotated_date, rotated_at, place FROM persona_channels WHERE guild_id = ? AND persona = ? AND kind = 'inbox'")
       .get(guildId, persona);
     if (row === undefined) return undefined;
     return {
       channelId: nullableString(row.channel_id),
       rotatedDate: nullableString(row.rotated_date),
       rotatedAt: nullableString(row.rotated_at),
+      place: toChannelPlace(row.place, "persona_channels.place"),
     };
   }
 
-  /** 足した人格の #<NAME> のチャンネルの ID を保存する（/setup）。行が無ければ作る */
-  setPersonaInbox(guildId: string, persona: string, channelId: string): void {
-    this.setPersonaChannel(guildId, "inbox", { channel_id: channelId }, persona);
+  /**
+   * 足した人格の #<NAME> のチャンネルの ID を保存する（/setup）。行が無ければ作る。
+   * place を渡したときだけ場所も書く（省略すれば、新しい行は discord・既にある行は今の場所のまま）
+   */
+  setPersonaInbox(guildId: string, persona: string, channelId: string, place?: ChannelPlace): void {
+    this.setPersonaChannel(guildId, "inbox", place === undefined ? { channel_id: channelId } : { channel_id: channelId, place }, persona);
   }
 
   /** その入口のチャンネル（persona_channels の行）の持ち主の人格の id。入口のチャンネルでなければ undefined */
@@ -181,7 +193,7 @@ export class GuildSettingsStore {
   private setPersonaChannel(
     guildId: string,
     kind: PersonaChannelKind,
-    values: Partial<Record<"channel_id" | "rotated_date" | "rotated_at", string>>,
+    values: Partial<Record<"channel_id" | "rotated_date" | "rotated_at" | "place", string>>,
     persona: string = DEFAULT_PERSONA_ID,
   ): void {
     const at = this.now().toISOString();

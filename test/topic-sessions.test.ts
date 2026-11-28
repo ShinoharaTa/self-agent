@@ -41,6 +41,7 @@ test("TopicSessionStore: 進行中として保存し、最終発言の時刻は�
     deletedAt: null,
     renewedSummary: null,
     renewedAt: null,
+    place: "discord",
   };
   assert.deepEqual(created, expected);
   assert.deepEqual(store.get("topic-1"), expected);
@@ -279,6 +280,7 @@ test("openDb: v3 の DB を v4 に上げても既存のセッションは残り�
     deletedAt: null,
     renewedSummary: null,
     renewedAt: null,
+    place: "discord",
   });
   assert.equal(store.getCloseDraft("topic-1"), undefined);
   assert.equal(new SdkSessionStore(db).get("topic-1"), "session-1");
@@ -510,6 +512,7 @@ test("openDb: v8 の DB を v9 に上げても既存のセッションは残り�
     deletedAt: null,
     renewedSummary: null,
     renewedAt: null,
+    place: "discord",
   });
   assert.deepEqual(
     store.listDeleteDue(new Date("2026-09-01T00:00:00.000Z"), 5).map((session) => session.channelId),

@@ -152,7 +152,7 @@ test("/setup: 足した人格の #<NAME> を #tasks の後に self-agent カテ�
   );
   assert.match(created()[2]?.topic ?? "", /Mika/);
   assert.equal(guildSettings.personaInbox("guild-1", "mika")?.channelId, "ch-4");
-  assert.deepEqual(guildSettings.entryChannel("ch-4"), { guildId: "guild-1", persona: "mika", kind: "inbox" });
+  assert.deepEqual(guildSettings.entryChannel("ch-4"), { guildId: "guild-1", persona: "mika", kind: "inbox", place: "discord" });
   // 既定の人格の #inbox・#tasks は今までどおり
   assert.equal(guildSettings.get("guild-1")?.inboxChannelId, "ch-2");
   assert.equal(guildSettings.get("guild-1")?.systemChannelId, "ch-5");

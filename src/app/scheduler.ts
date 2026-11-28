@@ -207,6 +207,7 @@ export class Scheduler {
    * （失敗した移動や手で動かされたチャンネルを直す）。サーバーごとに 1 回だけ Discord からチャンネルの一覧を取る。
    * - セッションのチャンネルが Discord 上に無ければ、手で消されたので削除済みにする（要約は残し、SDK セッションと seed を消す）
    * - 親がその状態のカテゴリのどれでもなければ、その状態のカテゴリへの移動を入れる（1 サーバーで最大 5 件。残りは次の tick）
+   * - ローカルの話題（place が local）は飛ばす（一覧に無くても削除済みにせず、移動も入れない）
    * - #inbox / #tasks / #system / #github / #jobs の親が self-agent カテゴリでなければ、そこへ戻す移動を入れる
    * - Claude Code のチャンネル（ccChannels があれば）は cc/channels.ts の reconcile（同じ一覧で）
    * self-agent カテゴリ・その状態のカテゴリが Discord 上に 1 つも無ければ、そこへは移さない（作り直すのは /setup）
@@ -239,6 +240,8 @@ export class Scheduler {
       // 一覧を取っている間に状態が変わっている（発言・/close・削除）ことがあるので読み直す
       const session = topicSessions.get(candidate.channelId);
       if (session === undefined || session.state === "deleted") continue;
+      // ローカルの話題（Web だけの人格。docs/plan/personas-web-antigravity.md §3.4 の 1）は Discord にチャンネルが無いので、消しも移しもしない
+      if (session.place === "local") continue;
       if (!parents.has(session.channelId)) {
         topicSessions.markDeleted(session.channelId);
         sessions.delete(session.channelId);

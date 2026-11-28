@@ -806,6 +806,48 @@ test("再同期: 対象は許可サーバーのうち /setup 済みのサーバ�
   assert.ok(env.logs[0]?.includes("Missing Access"), env.logs.join("\n"));
 });
 
+test("再同期（#530 の WP1）: ローカルの話題は親カテゴリの一覧に無くても状態・SDK セッション・seed を変えず、移動も入れない。Discord の話題は今と同じに扱う", async (t) => {
+  const env = setup(t);
+  layout(env);
+  // ローカルの話題（進行中・待ち・完了）。Discord の一覧にはどれも無い
+  const local = ["100000000000000000001", "100000000000000000002", "100000000000000000003"];
+  for (const channelId of local) {
+    env.topicSessions.create({ channelId, guildId: "guild-1", title: channelId, categoryId: "local", place: "local" });
+    env.sessions.set(channelId, `session-${channelId}`);
+    env.seeds.set(channelId, `seed-${channelId}`);
+  }
+  env.topicSessions.setWaiting(local[1]!);
+  env.topicSessions.close(local[2]!, "閉じたときの要約");
+  const before = local.map((channelId) => env.topicSessions.get(channelId));
+  // Discord の話題: 1 つは一覧に無い（削除済みにする）、6 つは親がずれている（移動は上限の 5 件まで）
+  env.createAt("topic-gone", NOW);
+  env.sessions.set("topic-gone", "session-gone");
+  env.seeds.set("topic-gone", "seed-gone");
+  const drifted = ["topic-1", "topic-2", "topic-3", "topic-4", "topic-5", "topic-6"];
+  for (const channelId of drifted) env.createAt(channelId, NOW);
+  env.gateway.parents = discord(drifted.map((channelId): [string, string | null] => [channelId, null]));
+
+  await env.scheduler.tick();
+
+  for (const [index, channelId] of local.entries()) {
+    assert.deepEqual(env.topicSessions.get(channelId), before[index], channelId);
+    assert.equal(env.sessions.get(channelId), `session-${channelId}`, channelId);
+    assert.equal(env.seeds.get(channelId), `seed-${channelId}`, channelId);
+  }
+  assert.equal(env.topicSessions.get("topic-gone")?.state, "deleted");
+  assert.equal(env.sessions.get("topic-gone"), undefined);
+  assert.equal(env.seeds.get("topic-gone"), undefined);
+  // ローカルの話題は上限の 5 件に数えない（Discord の話題の 5 件が入る）
+  assert.equal(RECONCILE_BATCH_LIMIT, 5);
+  assert.deepEqual(
+    env.channelOps.moves,
+    drifted.slice(0, RECONCILE_BATCH_LIMIT).map((channelId) => toState(channelId, "active")),
+  );
+  assert.deepEqual(env.sent(), []);
+  assert.equal(env.logs.length, 2);
+  for (const line of env.logs) assert.ok(!line.includes("topic-") && !line.includes("10000000"), line);
+});
+
 test("再同期: 一覧を取っている間に作られたセッションは削除済みにせず、状態が変わったセッションは今の状態で判断する", async (t) => {
   const env = setup(t);
   layout(env);

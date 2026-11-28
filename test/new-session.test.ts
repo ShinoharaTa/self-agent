@@ -131,6 +131,7 @@ test("/new: 進行中に空きがあればそこにチャンネルを作って�
     deletedAt: null,
     renewedSummary: null,
     renewedAt: null,
+    place: "discord",
   });
   assert.equal(logs.length, 1);
   assert.ok(!logs[0]!.includes("ch-8"));
