@@ -173,7 +173,7 @@ export type ReminderSchedulerDeps = {
   /**
    * 頼んだ場所がローカル（Web だけ）か、と Discord に出す文の中での書き方。ローカルの場所の知らせは頼んだ場所に出さず、
    * #tasks・#inbox（既定の人格の Bot）に localPlaceNote の注記で出し、頼んだ場所の履歴に 1 行書く（channel_id は変えない）。
-   * 無ければ（引くのに失敗したら）今までどおり
+   * 無ければ今までどおり。引くのに失敗した回は、投稿に失敗した回と同じく次の tick でやり直す
    */
   places?: Pick<PlaceRefs, "isLocal" | "refOf">;
   /** 予約した依頼を動かすチャンネル（#inbox・#tasks）か */
@@ -321,21 +321,30 @@ export class ReminderScheduler {
     const update = this.nextUpdate(reminder, occurrence, now);
 
     const key = `${id}:${reminder.fireSeq}`;
-    const localRef = this.localRefOf(reminder);
+    // 場所を引けなかった回は、投稿に失敗した回と同じに数える（ローカルかが分からないまま出すと、ローカルの場所では呑まれる）
+    let localRef: string | undefined;
+    let placeKnown = false;
     let result: PostResult;
     try {
+      localRef = this.localRefOf(reminder);
+      placeKnown = true;
       result = await this.post(reminder, localRef, (note) => this.message(reminder, taskTitle, occurrence, now, note));
     } catch (error) {
       const failures = (this.failures.get(key) ?? 0) + 1;
       if (failures < REMINDER_MAX_ATTEMPTS) {
         // DB は変えないので、次の tick でやり直す
         this.failures.set(key, failures);
-        log(`リマインドの投稿に失敗しました（#${id}、guild=${reminder.guildId}）: ${describeError(error)}`);
+        log(
+          placeKnown
+            ? `リマインドの投稿に失敗しました（#${id}、guild=${reminder.guildId}）: ${describeError(error)}`
+            : `リマインドの場所を引けなかったため、次の回にやり直します（#${id}）: ${describeError(error)}`,
+        );
         return;
       }
       this.failures.delete(key);
       this.giveUp(reminder, occurrence, now);
       log(`リマインドの投稿に ${REMINDER_MAX_ATTEMPTS} 回失敗したため、この回を諦めました（#${id}、guild=${reminder.guildId}）: ${describeError(error)}`);
+      // 場所を引けずに諦めた回は、ローカルかが分からないので履歴に書かない
       if (localRef !== undefined) this.recordLocalNotice(reminder, taskTitle, LOCAL_GAVE_UP_NOTE);
       return;
     }
@@ -373,19 +382,14 @@ export class ReminderScheduler {
 
   /**
    * 頼んだ場所がローカルなら、Discord に出す文の中での書き方（refOf）。削除済みの話題・Discord の場所・places が無ければ undefined。
-   * 場所を引く所が投げたら log を 1 行出して undefined（今までどおりの道で出す）
+   * 場所を引く所が投げたらそのまま投げる（fire は投稿の失敗と同じに数え、次の tick でやり直す）
    */
   private localRefOf(reminder: Reminder): string | undefined {
-    const { places, topicSessions, log } = this.deps;
+    const { places, topicSessions } = this.deps;
     if (places === undefined) return undefined;
-    try {
-      // 削除済みの話題は、ローカルでも今までどおり（MOVED_NOTE で出して付け替える）
-      if (topicSessions.get(reminder.channelId)?.state === "deleted") return undefined;
-      return places.isLocal(reminder.channelId) ? places.refOf(reminder.channelId) : undefined;
-    } catch (error) {
-      log(`リマインドの場所を引けなかったため、今までどおりに出します（#${reminder.id}）: ${describeError(error)}`);
-      return undefined;
-    }
+    // 削除済みの話題は、ローカルでも今までどおり（MOVED_NOTE で出して付け替える）
+    if (topicSessions.get(reminder.channelId)?.state === "deleted") return undefined;
+    return places.isLocal(reminder.channelId) ? places.refOf(reminder.channelId) : undefined;
   }
 
   /** ローカルの場所の履歴に、DB から作り直した本文 + suffix の notice を 1 行書く（ボタンは無い）。失敗は log だけ */
