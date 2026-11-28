@@ -40,6 +40,8 @@ export type RemindersDeps = {
   tasks: Pick<TaskStore, "get" | "complete">;
   /** 時刻の表示と、次の回の計算のタイムゾーン（SELF_AGENT_TZ） */
   cfg: Pick<Config, "timeZone">;
+  /** 一覧と詳細の行の場所の書き方（place-refs.ts。ローカルの場所は `「人格の表示名」（Web）`）。無ければ `<#ID>` */
+  refOf?: (channelId: string) => string;
   log: (message: string) => void;
 };
 
@@ -52,12 +54,14 @@ function earliestAt(reminder: Reminder): Date | undefined {
 
 /**
  * 一覧の 1 行。繰り返し: `#3 毎日 8:00 今日のタスクを出す（依頼・<#ch>）次 10/14(水) 8:00`。
- * 1 回だけ: `#5 10/14(水) 9:00 洗濯物（<#ch>）`（依頼は予約した依頼（prompt）のときだけ付ける）
+ * 1 回だけ: `#5 10/14(水) 9:00 洗濯物（<#ch>）`（依頼は予約した依頼（prompt）のときだけ付ける）。
+ * refOf があれば `<#ch>` の代わりにその字（place-refs.ts）
  */
-export function reminderLine(reminder: Reminder, timeZone: string): string {
+export function reminderLine(reminder: Reminder, timeZone: string, refOf?: (channelId: string) => string): string {
   const at = earliestAt(reminder);
   const when = at === undefined ? "" : formatShortDateTime(at, timeZone);
-  const where = `（${reminder.kind === "prompt" ? "依頼・" : ""}<#${reminder.channelId}>）`;
+  const channel = refOf === undefined ? `<#${reminder.channelId}>` : refOf(reminder.channelId);
+  const where = `（${reminder.kind === "prompt" ? "依頼・" : ""}${channel}）`;
   // 1 行で見せるので、text の改行は空白にする
   const text = reminder.text.replace(/\s*\n\s*/g, " ");
   if (reminder.rule === null) return `#${reminder.id} ${when} ${text}${where}`;
@@ -68,12 +72,12 @@ export function reminderLine(reminder: Reminder, timeZone: string): string {
  * active のリマインドの一覧（次に知らせる順。最大 50 件）と、選ぶセレクト（`rem:pick`、表示した分のうち最大 25 件）。
  * 2000 字を超えるなら末尾から削って「ほか n 件」を足す。0 件なら「リマインドはありません」だけ
  */
-export function reminderListMessage(deps: Pick<RemindersDeps, "reminders" | "cfg">): OutgoingMessage {
-  const { reminders, cfg } = deps;
+export function reminderListMessage(deps: Pick<RemindersDeps, "reminders" | "cfg" | "refOf">): OutgoingMessage {
+  const { reminders, cfg, refOf } = deps;
   const list = reminders.listActive(REMINDER_LIST_LIMIT);
   if (list.length === 0) return { text: NO_REMINDERS_TEXT, components: [] };
   const { text, shown } = fitItems(list, (items, omitted) =>
-    [...items.map((reminder) => reminderLine(reminder, cfg.timeZone)), ...(omitted > 0 ? [omittedText(omitted)] : [])].join("\n"),
+    [...items.map((reminder) => reminderLine(reminder, cfg.timeZone, refOf)), ...(omitted > 0 ? [omittedText(omitted)] : [])].join("\n"),
   );
   return {
     text,
@@ -95,10 +99,10 @@ export function reminderListMessage(deps: Pick<RemindersDeps, "reminders" | "cfg
   };
 }
 
-/** /reminders で選んだものの詳細。[次の回を飛ばす]（`rem:skip:<id>`、繰り返しだけ）と [止める]（`rem:cancel:<id>`） */
-export function reminderDetailMessage(reminder: Reminder, timeZone: string): OutgoingMessage {
+/** /reminders で選んだものの詳細。[次の回を飛ばす]（`rem:skip:<id>`、繰り返しだけ）と [止める]（`rem:cancel:<id>`）。refOf は reminderLine と同じ */
+export function reminderDetailMessage(reminder: Reminder, timeZone: string, refOf?: (channelId: string) => string): OutgoingMessage {
   return {
-    text: reminderLine(reminder, timeZone),
+    text: reminderLine(reminder, timeZone, refOf),
     components: [
       {
         kind: "buttons",
@@ -133,7 +137,7 @@ export function createRemindersCommand(deps: RemindersDeps): CommandHandler {
  * /reminders のセレクト（`rem:pick`）・詳細のボタン（`rem:skip:<id>`・`rem:cancel:<id>`）を受ける。DB の状態で動くので、再起動の後でも押せる
  */
 export function createRemindersComponent(deps: RemindersDeps): ComponentHandler {
-  const { reminders, tasks, cfg, log } = deps;
+  const { reminders, tasks, cfg, refOf, log } = deps;
 
   /** 発火のメッセージを書き換える。本文は DB から作り直し、メンションは付けない */
   const rewrite = async (responder: InteractionResponder, id: number, result: string): Promise<void> => {
@@ -158,7 +162,7 @@ export function createRemindersComponent(deps: RemindersDeps): ComponentHandler 
           await responder.reply({ text: STALE_TEXT, ephemeral: true });
           return;
         }
-        await responder.reply({ ...reminderDetailMessage(reminder, cfg.timeZone), ephemeral: true });
+        await responder.reply({ ...reminderDetailMessage(reminder, cfg.timeZone, refOf), ephemeral: true });
         return;
       }
 

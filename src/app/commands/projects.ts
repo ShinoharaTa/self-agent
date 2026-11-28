@@ -38,6 +38,8 @@ export type ProjectsDeps = {
    * セッションのターン（Bash）と重ねない（docs/plan/shell.md §2.9 の I2）
    */
   turnQueue: Pick<KeyedSerialQueue, "run">;
+  /** 一覧の行の元の場所の書き方（place-refs.ts。ローカルの話題は `「題名」（Web）`）。無ければ `<#ID>` */
+  refOf?: (channelId: string) => string;
   log: (message: string) => void;
 };
 
@@ -46,23 +48,27 @@ function projectUrl(publicBaseUrl: string | undefined, slug: string): string | u
   return publicBaseUrl === undefined ? undefined : `${publicBaseUrl}/p/${slug}/`;
 }
 
-/** 一覧の 1 行: `**題名** <url>（<#元のチャンネル>・更新 YYYY-MM-DD）`。配信の設定が無ければ url の代わりに「（配信は未設定）」 */
-export function projectLine(project: Project, cfg: ProjectsDeps["cfg"]): string {
+/**
+ * 一覧の 1 行: `**題名** <url>（<#元のチャンネル>・更新 YYYY-MM-DD）`。配信の設定が無ければ url の代わりに「（配信は未設定）」。
+ * refOf があれば `<#元のチャンネル>` の代わりにその字（place-refs.ts）
+ */
+export function projectLine(project: Project, cfg: ProjectsDeps["cfg"], refOf?: (channelId: string) => string): string {
   const url = projectUrl(cfg.publicBaseUrl, project.slug) ?? `（${NOT_SERVED_TEXT}）`;
   const updated = formatDate(new Date(project.updatedAt), cfg.timeZone);
-  return `**${project.title}** ${url}（<#${project.channelId}>・更新 ${updated}）`;
+  const channel = refOf === undefined ? `<#${project.channelId}>` : refOf(project.channelId);
+  return `**${project.title}** ${url}（${channel}・更新 ${updated}）`;
 }
 
 /**
  * 削除されていないプロジェクトの一覧（新しく更新した順）と、削除するものを選ぶセレクト（`proj:pick`、新しい順に最大 25 件）。
  * 2000 字を超えるなら末尾から削って「ほか n 件」を足す。0 件なら「プロジェクトはまだありません」だけ
  */
-export function projectListMessage(deps: Pick<ProjectsDeps, "projects" | "cfg">): OutgoingMessage {
-  const { projects, cfg } = deps;
+export function projectListMessage(deps: Pick<ProjectsDeps, "projects" | "cfg" | "refOf">): OutgoingMessage {
+  const { projects, cfg, refOf } = deps;
   const list = projects.list();
   if (list.length === 0) return { text: NO_PROJECTS_TEXT, components: [] };
   const { text } = fitItems(list, (shown, omitted) =>
-    [...shown.map((project) => projectLine(project, cfg)), ...(omitted > 0 ? [omittedText(omitted)] : [])].join("\n"),
+    [...shown.map((project) => projectLine(project, cfg, refOf)), ...(omitted > 0 ? [omittedText(omitted)] : [])].join("\n"),
   );
   return {
     text,

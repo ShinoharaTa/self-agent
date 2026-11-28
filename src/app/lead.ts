@@ -79,8 +79,13 @@ function durationText(ms: number): string {
   return ms < 60_000 ? "1 分未満" : `${Math.floor(ms / 60_000)} 分`;
 }
 
-function eventLine(event: TurnEndEvent): string {
-  const channel = `<#${event.channelId}>`;
+/** 既定の場所の書き方（今の `<#ID>`） */
+function channelRef(channelId: string): string {
+  return `<#${channelId}>`;
+}
+
+function eventLine(event: TurnEndEvent, refOf: (channelId: string) => string = channelRef): string {
+  const channel = refOf(event.channelId);
   switch (event.outcome) {
     case "done":
       return `終わりました: ${channel}（${durationText(event.durationMs)}）`;
@@ -102,14 +107,21 @@ function countsLine(counts: LeadCounts): string {
   return `残り: ${parts.length === 0 ? "なし" : parts.join("・")}`;
 }
 
-/** まとめの本文（mention の字は入れない）。counts が null なら残りの行を出さない */
-export function leadText(events: readonly TurnEndEvent[], counts: LeadCounts | null): string {
+/**
+ * まとめの本文（mention の字は入れない）。counts が null なら残りの行を出さない。
+ * refOf は話題の書き方（place-refs.ts。既定は `<#ID>`）
+ */
+export function leadText(
+  events: readonly TurnEndEvent[],
+  counts: LeadCounts | null,
+  refOf: (channelId: string) => string = channelRef,
+): string {
   const sorted = events
     .map((event, index) => ({ event, index }))
     .sort((a, b) => OUTCOME_ORDER[a.event.outcome] - OUTCOME_ORDER[b.event.outcome] || a.index - b.index)
     .map(({ event }) => event);
   const shown = sorted.length > LEAD_MAX_LINES ? sorted.slice(0, LEAD_MAX_LINES - 1) : sorted;
-  const lines = shown.map(eventLine);
+  const lines = shown.map((event) => eventLine(event, refOf));
   if (shown.length < sorted.length) lines.push(`ほか ${sorted.length - shown.length} 件`);
   if (counts !== null) lines.push(countsLine(counts));
   return lines.join("\n");
@@ -130,6 +142,11 @@ export type LeadDeps = {
   /** 残りの数。取れなければ null */
   counts: () => LeadCounts | null;
   history?: HistoryStore;
+  /**
+   * Discord に投げる文の中での話題の書き方（place-refs.ts。ローカルの話題は `「題名」（Web）`）。無ければ `<#ID>`。
+   * 履歴の行はいつも `<#ID>`（Web の右腕の未読の印と札が頭の形を見る）
+   */
+  refOf?: (channelId: string) => string;
   /** 既定は REAL_TIMERS */
   timers?: ProgressTimers;
   log: (message: string) => void;
@@ -174,13 +191,15 @@ export function createLead(deps: LeadDeps): Lead {
       log("まとめの残りの数を取れませんでした");
       counts = null;
     }
+    // 履歴の文はいつも `<#ID>`。Discord に投げる文だけ refOf で書く
     const text = leadText(events, counts);
+    const posted = deps.refOf === undefined ? text : leadText(events, counts, deps.refOf);
     const ownerUserId = deps.ownerUserId;
     // 鳴らし方は出す時点の設定を 1 回だけ読む
     const ringSetting = deps.settings().ring;
     const ring = ownerUserId !== undefined && events.some((event) => ringsFor(event, ringSetting));
     try {
-      await deps.post(inbox, { text, ...(ring ? { mentionUserId: ownerUserId } : {}) });
+      await deps.post(inbox, { text: posted, ...(ring ? { mentionUserId: ownerUserId } : {}) });
     } catch (error) {
       log(`まとめの投稿に失敗しました: ${describeError(error)}`);
       return;

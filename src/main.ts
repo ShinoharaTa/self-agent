@@ -53,6 +53,7 @@ import { createRightHand } from "./app/right-hand.ts";
 import { Scheduler, TICK_INTERVAL_MS } from "./app/scheduler.ts";
 import { PersonaStatus, startPersonaGateways } from "./app/persona-status.ts";
 import { type LocalPersonaPlaces, PersonaRouter, type PersonaRuntime } from "./app/personas.ts";
+import { createPlaceRefs } from "./app/place-refs.ts";
 import { createShutdown } from "./app/shutdown.ts";
 import { ShellState, shellRefresher } from "./app/shell-state.ts";
 import { createSystemNotifier } from "./app/system-notice.ts";
@@ -303,6 +304,13 @@ const projectTools = {
   log,
   now,
 };
+// 場所（place）の引き方と、Discord に出す文の中での場所の書き方（docs/plan/personas-web-antigravity.md §3.2・§3.3 の 1）。
+// ローカルの話題・入口は `「題名」（Web）`・`「人格の表示名」（Web）`、Discord の場所は今と同じ `<#ID>`。まとめ・/reminders・/projects が同じ 1 つを見る
+const placeRefs = createPlaceRefs({
+  guildSettings,
+  topicSessions,
+  personaName: (personaId) => config.personas.find((persona) => persona.id === personaId)?.name,
+});
 // リマインドのツール（reminder_set・reminder_list・reminder_cancel）と task_list の remind
 const reminderTools = { reminders, log, now };
 // dev モードなら run ごとの会話を <dataDir>/devlog/<日付>.jsonl に残す（dev モードでなければ受け口を作らない）
@@ -458,6 +466,8 @@ const lead = config.leadNotify
       post: (channelId, message) => ownerPosts.sendMessage(channelId, message),
       // 残りの数は Web の一覧と同じ集め方（topicCollect は下で作る。Web が無効なら無い）
       counts: () => (topicCollect === undefined ? null : leadCounts(buildTopics(topicCollect(now().getTime(), null)))),
+      // Discord に投げる文だけ、ローカルの話題を題名で書く（履歴の行は <#ID> のまま）
+      refOf: placeRefs.refOf,
       ...history,
       log,
     })
@@ -592,6 +602,8 @@ const commands = createCommands({
   turn,
   inboxRotator,
   reminders,
+  // /reminders・/projects の行の場所の書き方
+  refOf: placeRefs.refOf,
   // /job（SELF_AGENT_JOBS=1 のときだけ登録する）
   ...(jobs === undefined ? {} : { jobs }),
   // /guests（ゲストが有効のときだけ登録する。メインサーバーでオーナーが認証コードの発行・許可の取り消し・一覧を行う）
@@ -639,6 +651,8 @@ const handleInteraction = createInteractionHandler({
     turnQueue,
     turn,
     reminders,
+    // /reminders の詳細の行の場所の書き方
+    refOf: placeRefs.refOf,
     // cc_send・cc_start の確認のボタン（cc:）。送信・起動は SELF_AGENT_CC=1 のときだけ下で作る（押したときに読む）。書き換えは確認を投稿した持ち主の Bot
     ccSends,
     ccStarts,

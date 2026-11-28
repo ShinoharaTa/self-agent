@@ -54,13 +54,17 @@ export function formatElapsed(fromIso: string, now: Date): string {
 
 /**
  * 一覧の 1 行: `<#id> 題名（最終 n 時間前）`。personaName（足した人格のセッション）があれば `<#id> 題名（<表示名>・最終 n 時間前）`、
- * projectDir（プロジェクトのセッション）があれば `<#id> 題名（プロジェクト <名前>・最終 n 時間前）`
+ * projectDir（プロジェクトのセッション）があれば `<#id> 題名（プロジェクト <名前>・最終 n 時間前）`。
+ * 場所がローカル（docs/plan/personas-web-antigravity.md §3.2）なら `<#id>` を付けず `題名（<表示名>・Web・最終 n 時間前）`（Discord ではローカルの番号は開けない）
  */
 export function sessionLine(session: TopicSession, now: Date, personaName?: string, projectDir?: string): string {
+  const local = session.place === "local";
   const persona = personaName === undefined ? "" : `${personaName}・`;
+  const web = local ? "Web・" : "";
   // プロジェクトの名前の `_` などの Markdown は無効にする
   const project = projectDir === undefined ? "" : `プロジェクト ${escapeDiscordText(projectDir)}・`;
-  return `<#${session.channelId}> ${session.title}（${persona}${project}最終 ${formatElapsed(session.lastActivityAt, now)}）`;
+  const head = local ? "" : `<#${session.channelId}> `;
+  return `${head}${session.title}（${persona}${web}${project}最終 ${formatElapsed(session.lastActivityAt, now)}）`;
 }
 
 /**
