@@ -305,14 +305,14 @@ const projectTools = {
   now,
 };
 // 場所（place）の引き方と、Discord に出す文の中での場所の書き方（docs/plan/personas-web-antigravity.md §3.2・§3.3 の 1）。
-// ローカルの話題・入口は `「題名」（Web）`・`「人格の表示名」（Web）`、Discord の場所は今と同じ `<#ID>`。まとめ・/reminders・/projects・記憶の知らせ・kb_delete・cc_send／cc_start が同じ 1 つを見る
+// ローカルの話題・入口は `「題名」（Web）`・`「人格の表示名」（Web）`、Discord の場所は今と同じ `<#ID>`。まとめ・/reminders・/projects・記憶の知らせ・kb_delete・cc_send／cc_start・リマインド（発火と reminder_set）が同じ 1 つを見る
 const placeRefs = createPlaceRefs({
   guildSettings,
   topicSessions,
   personaName: (personaId) => config.personas.find((persona) => persona.id === personaId)?.name,
 });
-// リマインドのツール（reminder_set・reminder_list・reminder_cancel）と task_list の remind
-const reminderTools = { reminders, log, now };
+// リマインドのツール（reminder_set・reminder_list・reminder_cancel）と task_list の remind。ローカルの場所の notify は、作った結果に #tasks に出る旨を足す
+const reminderTools = { reminders, log, now, places: placeRefs };
 // dev モードなら run ごとの会話を <dataDir>/devlog/<日付>.jsonl に残す（dev モードでなければ受け口を作らない）
 const devLogSink = createDevLogSink(config);
 if (devLogSink !== undefined) log(`dev モード: 会話を記録します（${config.devLogDays} 日で消します）`);
@@ -808,6 +808,8 @@ const reminderScheduler = new ReminderScheduler({
   gateway: { ...ownerPosts, channelExists: (channelId) => gateway.channelExists(channelId) },
   // 足した人格の Bot が接続していない・投稿に失敗したら、既定の人格の Bot で #tasks・#inbox に出す
   personas,
+  // 頼んだ場所がローカル（Web だけ）の知らせは、頼んだ場所に出さず #tasks・#inbox に注記つきで出し、頼んだ場所の履歴に 1 行書く
+  places: placeRefs,
   resolveChannel,
   turnQueue,
   turn,
