@@ -189,6 +189,7 @@ v1 §1 の事実（静的サーバーの `allowedLogin`、Tailscale KB の `Tail
 ### 5.4 SSE を使わない理由と、後で確かめる方法
 - 未確認: `tailscale serve` が長いストリームをそのまま通すか・無通信で切るか。polling は loopback の小さな JSON（`/api/running` は数百バイト）なので 2 秒でも負荷は無い。
 - 確かめ方（W3 の実機の受け入れに「参考」として入れる。通れば後で `/api/events` を足す）: `curl -N https://<host>.<tailnet>.ts.net:9444/api/status-stream`（実装者が W3 で 30 秒ごとに `: ping` を流す試験用の GET を 1 つ足してよい。認証は同じ）を 5 分つなぎ、切れずに ping が届けば SSE は使える。
+- 調べた結果（2026-11-28。#528。詳しくは `docs/plan/web-ui-home.md` §5.2・§5.3）: Tailscale の Serve の文書には、SSE・長い接続・溜めてから流すか・時間切れのどれも書いていない。tailscale のソース（`ipn/ipnlocal/serve.go`）では、中継は Go の標準の逆プロキシ（`httputil.ReverseProxy`）で `FlushInterval` を指定しておらず、受ける側に読み書きの時間切れは無い。Go の逆プロキシは応答が `text/event-stream` のとき書くたびにすぐ流す。→ 作りの上では溜めずに流れ、時間でも切れない見込みが高い（**推測**・確度は高い）。この機械の版での実機は**未確認**（上の確かめ方に、10 分つなぐ・HTTP/2 かを見る・スマホの PWA で画面を消して戻す、を足して `web-ui-home.md` §5.3 の V3a で行う）
 
 ## 6. セッションの操作を Discord と Web で共有する（W5）
 

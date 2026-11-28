@@ -1,5 +1,7 @@
 # Web UI の磨き（UI-1〜UI-6・NAV・UI-7〜UI-12）: 今の画面と決まりの差と PR の段
 
+> 注記（2026-11-28。#528）: 今の殻の設計。新しい入口は `docs/plan/web-ui-home.md`（`docs/archive/` へ動かすのは入れ替えの後の Z）。
+
 関連 issue: #225（決まりと画面）・#224（PWA）・#235（スマホの下タブ）・#248（スマホの第 2 回。fix #249・UI-7 #250・UI-8 #251）。決まりは `docs/design/WEB-UI-GUIDELINES.md`、PWA の節は `docs/plan/web-ui.md` §11。
 
 
