@@ -79,6 +79,7 @@ import { CcTakeover, CcTakeoverExpirer, readProcBtime, readProcStat } from "./cc
 import { DEFAULT_PERSONA_ID, loadConfig, missingForStart } from "./config.ts";
 import { createDevLogSink, devLogDir, pruneDevLogs } from "./devlog/log.ts";
 import { DiscordGateway } from "./discord/discord-gateway.ts";
+import { LocalGateway } from "./discord/local-gateway.ts";
 import { GhClient, resolveCommandPath, resolveGhPath } from "./github/gh.ts";
 import { createGithubPoller } from "./github/poller.ts";
 import { GUEST_TURNS_KEEP_DAYS } from "./guest/constants.ts";
@@ -216,6 +217,8 @@ const sessions = new SdkSessionStore(db, now);
 const usage = new UsageStore(db, now);
 const guildSettings = new GuildSettingsStore(db, now);
 const topicSessions = new TopicSessionStore(db, now);
+// ローカルの番号（docs/plan/personas-web-antigravity.md §3.1）。振り分けのローカルの Gateway と、話題・入口を作る所が同じ 1 つを使う
+const localIds = new LocalIdStore(db);
 // 場所ごとの既定のモデル（docs/plan/models.md §3・§4。書く口は PR-4）
 const placeSettings = new PlaceSettingStore(db, now);
 const seeds = new ChannelSeedStore(db, now);
@@ -405,8 +408,14 @@ const personaRuntimes: PersonaRuntime[] = [
     };
   }),
 ];
-// チャンネルの持ち主の人格（persona_channels・sessions.persona）への振り分け。返事などは持ち主の Bot（ownerPosts）、管理の操作は既定の人格の Bot（gateway）
-const personas = new PersonaRouter({ personas: personaRuntimes, guildSettings, topicSessions });
+// チャンネルの持ち主の人格（persona_channels・sessions.persona）への振り分け。返事などは持ち主の Bot（ownerPosts）、管理の操作は既定の人格の Bot（gateway）。
+// 場所がローカルのチャンネルはローカルの Gateway（Discord に何も送らない）
+const personas = new PersonaRouter({
+  personas: personaRuntimes,
+  guildSettings,
+  topicSessions,
+  localGateway: new LocalGateway(localIds),
+});
 const ownerPosts = personas.ownerPosts();
 // ナレッジベースと記憶のツール: kb_delete の確認と記憶の変更の知らせは run のチャンネルに、その持ち主の Bot で投稿する。
 // ローカルの場所（placeRefs）では、kb_delete は確認を出さずに断り、記憶の知らせは送らずに履歴に書く
@@ -591,7 +600,7 @@ const topicProposals = createTopicProposals({ move: moveDeps, moves: topicMoves,
 // コマンドは既定の人格のアプリだけが登録して受ける。/close・/renew のターンはチャンネルの持ち主の人格で動かし、結果は持ち主の Bot が投稿する
 // 場所がローカルの人格（Web だけ。docs/plan/personas-web-antigravity.md §3.1）。まだ無いので述語は常に false（WP5 で config の _SURFACE につなぐ）。
 // /new・ホームパネル・POST /api/topics・右腕の session_open・POST /api/sessions・/setup が同じ 1 つを見る
-const localPlaces: LocalPersonaPlaces = { isLocalPersona: () => false, ids: new LocalIdStore(db) };
+const localPlaces: LocalPersonaPlaces = { isLocalPersona: () => false, ids: localIds };
 const commands = createCommands({
   cfg: config,
   gateway,

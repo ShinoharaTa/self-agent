@@ -232,6 +232,87 @@ test("まとめ: refOf が投げても落とさない。投稿は 1 回で文は
   assert.deepEqual(logs, ["まとめの場所の書き方を引けませんでした"]);
 });
 
+// ---- まとめの長さ（#530 の WP5） ----
+
+/** 逃がす字だけの 100 字の題名（Discord に出すと 200 字） */
+const LONG_TITLE = "<#_*".repeat(25);
+const LONG_TITLE_ESCAPED = "\\<\\#\\_\\*".repeat(25);
+
+test("まとめ: 逃がす字だけの 100 字の題名のローカルの話題 9 つ（鳴らす）→ 投稿は 1 回で、文 + mention の字が 2000 以下。最後の 2 行は「ほか n 件」と残りの行。履歴の行は今と同じ <#ID> の文で 1 行", async (t) => {
+  const { env, run, posts, rows } = leadSetup(t, { settings: () => ({ ring: "all", scope: "all" }) });
+  const ids = Array.from({ length: 9 }, (_, i) => `1000000000000000001${String(i + 10)}`);
+  for (const channelId of ids) {
+    env.topicSessions.create({ channelId, guildId: GUILD, title: LONG_TITLE, categoryId: "local", persona: "mika", place: "local" });
+  }
+  const events = ids.map((id) => event(id));
+  const counts: LeadCounts = { running: 1, queued: 0, yourTurn: 1 };
+  // 9 行のままでは 2000 字を超える（作り直しが要る場面）
+  assert.ok(leadText(events, counts, env.placeRefs.refOf).length + `<@${OWNER}> `.length > 2000);
+  await run(events);
+  assert.equal(posts.length, 1);
+  const message = posts[0]!.message;
+  assert.equal(message.mentionUserId, OWNER);
+  assert.ok(message.text.length + `<@${OWNER}> `.length <= 2000);
+  const lines = message.text.split("\n");
+  assert.match(lines.at(-2)!, /^ほか \d+ 件$/);
+  assert.equal(lines.at(-1), "残り: 動いている 1・あなたの番 1");
+  assert.ok(lines.length < 11);
+  for (const line of lines.slice(0, -2)) assert.equal(line, `終わりました: 「${LONG_TITLE_ESCAPED}」（Web）（4 分）`);
+  assert.equal(message.text, leadText(events, counts, env.placeRefs.refOf, lines.length - 1));
+  // 行の上限が 1 つ多いと 2000 字を超える（減らすのは超えるときだけ・1 ずつ）
+  assert.ok(leadText(events, counts, env.placeRefs.refOf, lines.length).length + `<@${OWNER}> `.length > 2000);
+  const history = rows();
+  assert.equal(history.length, 1);
+  assert.equal(history[0]!.text, leadText(events, counts));
+  assert.equal(history[0]!.text.split("\n").length, 10);
+});
+
+test("まとめ: 文だけなら 2000 字ちょうどの 9 行は、鳴らさなければそのまま・鳴らすなら mention の字の分で行を減らす", async (t) => {
+  const counts: LeadCounts = { running: 1, queued: 0, yourTurn: 1 };
+  const outcomes: Array<{ text: string; mention: boolean }> = [];
+  for (const ring of ["off", "all"] as const) {
+    const { env, run, posts } = leadSetup(t, { settings: () => ({ ring, scope: "all" }) });
+    const ids = Array.from({ length: 9 }, (_, i) => `1000000000000000002${String(i + 10)}`);
+    ids.forEach((channelId, i) => {
+      const title = i === 8 ? LONG_TITLE.slice(0, 96) : LONG_TITLE;
+      env.topicSessions.create({ channelId, guildId: GUILD, title, categoryId: "local", persona: "mika", place: "local" });
+    });
+    const events = ids.map((id) => event(id));
+    const full = leadText(events, counts, env.placeRefs.refOf);
+    assert.equal(full.length, 2000);
+    await run(events);
+    assert.equal(posts.length, 1);
+    const message = posts[0]!.message;
+    outcomes.push({ text: message.text, mention: message.mentionUserId === OWNER });
+    if (ring === "off") assert.equal(message.text, full);
+    else {
+      assert.notEqual(message.text, full);
+      assert.ok(message.text.length + `<@${OWNER}> `.length <= 2000);
+      assert.match(message.text.split("\n").at(-2)!, /^ほか \d+ 件$/);
+    }
+  }
+  assert.deepEqual(
+    outcomes.map(({ mention }) => mention),
+    [false, true],
+  );
+});
+
+test("まとめ: Discord の話題だけ 12 件は、文が今と同じ（9 行 +「ほか 3 件」+ 残り）。ローカルの話題 1 つ（100 字の題名）は削られない", async (t) => {
+  const discord = leadSetup(t, { settings: () => ({ ring: "all", scope: "all" }) });
+  const events = Array.from({ length: 12 }, (_, i) => event(String(200 + i)));
+  await discord.run(events);
+  const counts: LeadCounts = { running: 1, queued: 0, yourTurn: 1 };
+  assert.equal(discord.posts[0]!.message.text, leadText(events, counts));
+  assert.equal(discord.posts[0]!.message.text.split("\n")[9], "ほか 3 件");
+  assert.equal(discord.posts[0]!.message.mentionUserId, OWNER);
+
+  const local = leadSetup(t, { settings: () => ({ ring: "all", scope: "all" }) });
+  local.env.topicSessions.create({ channelId: "100000000000000000110", guildId: GUILD, title: LONG_TITLE, categoryId: "local", persona: "mika", place: "local" });
+  await local.run([event("100000000000000000110")]);
+  assert.equal(local.posts.length, 1);
+  assert.equal(local.posts[0]!.message.text, `終わりました: 「${LONG_TITLE_ESCAPED}」（Web）（4 分）\n残り: 動いている 1・あなたの番 1`);
+});
+
 // ---- 一覧（T8・T9） ----
 
 test("sessionLine: ローカルの話題は <# が無く、題名と「Web・」が在る。Discord の話題は今と同じ字", (t) => {

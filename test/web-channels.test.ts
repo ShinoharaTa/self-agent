@@ -9,8 +9,10 @@ import type { MoveDeps } from "../src/app/topic-move.ts";
 import { createTopicProposals } from "../src/app/topic-proposals.ts";
 import type { PersonaConfig } from "../src/config.ts";
 import type { Gateway } from "../src/discord/gateway.ts";
+import { LocalGateway } from "../src/discord/local-gateway.ts";
 import { channelRoutes } from "../src/web/routes/channels.ts";
 import { createWebServer, type WebServer } from "../src/web/server.ts";
+import { LocalIdStore } from "../src/store/local-places.ts";
 import { TopicMoveStore } from "../src/store/topic-moves.ts";
 import { createStores, tempDb, tempDir } from "./helpers/db.ts";
 
@@ -82,6 +84,7 @@ async function setup(t: TestContext, options: { publicBaseUrl?: string; proposal
     ],
     guildSettings,
     topicSessions,
+    localGateway: new LocalGateway(new LocalIdStore(db)),
   });
   // 右腕の場所を変える確認（proposals のときだけ。/turns は pending を読むだけなので、付け替えと投稿の配線は使われない）
   const moves = new TopicMoveStore(db, () => NOW);
@@ -189,6 +192,7 @@ test("/api/channels: /setup 前のサーバー（env の #inbox だけ）はチ�
     personas: [{ id: "default", name: "default", engine: "claude", runner: {} as AgentRunner, gateway: {} as Gateway, connected: () => true }],
     guildSettings,
     topicSessions,
+    localGateway: new LocalGateway(new LocalIdStore(db)),
   });
   const server = createWebServer({
     host: "127.0.0.1",

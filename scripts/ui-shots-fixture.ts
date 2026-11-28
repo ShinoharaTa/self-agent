@@ -20,6 +20,7 @@ import type { CcCancelResult } from "../src/cc/sender.ts";
 import { takeoverConfirmText, type CcTakeoverCheck } from "../src/cc/takeover.ts";
 import { takeoverReasonText } from "../src/cc/takeover-rules.ts";
 import type { Gateway } from "../src/discord/gateway.ts";
+import { LocalGateway } from "../src/discord/local-gateway.ts";
 import type { TmuxPane } from "../src/tmux/tmux.ts";
 import { AttachmentStore } from "../src/store/attachments.ts";
 import { CcChannelStore } from "../src/store/cc-channels.ts";
@@ -31,6 +32,7 @@ import { openDb } from "../src/store/db.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
 import { HistoryStore } from "../src/store/history.ts";
 import { KnowledgeStore } from "../src/store/knowledge.ts";
+import { LocalIdStore } from "../src/store/local-places.ts";
 import { MemoryStore } from "../src/store/memories.ts";
 import { NoticeStore } from "../src/store/notices.ts";
 import { ProjectStore } from "../src/store/projects.ts";
@@ -416,6 +418,7 @@ export async function startFixtureServer(options: { log?: (line: string) => void
       personas: [{ id: "default", name: "default", engine: "claude", runner: {} as AgentRunner, gateway: {} as Gateway, connected: () => true }],
       guildSettings,
       topicSessions,
+      localGateway: new LocalGateway(new LocalIdStore(db)),
     });
     const cfg = {
       allowedGuildIds: [GUILD],

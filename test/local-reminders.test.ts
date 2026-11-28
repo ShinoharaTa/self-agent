@@ -101,8 +101,6 @@ function okResult(text: string): RunResult {
 type SetupOptions = {
   /** places に渡す物。true は本物の placeRefs、false は渡さない（既定 true） */
   places?: boolean | Pick<PlaceRefs, "isLocal" | "refOf">;
-  /** PersonaRouter に（記録の包みを被せた）ローカルの Gateway を渡すか（既定 true。main.ts は WP5 まで渡さない） */
-  localGateway?: boolean;
   /** mika を設定に入れるか（既定 true） */
   mikaInConfig?: boolean;
   /** #tasks を /setup で作ってあるか（既定 true） */
@@ -152,7 +150,7 @@ function setup(t: TestContext, options: SetupOptions = {}) {
     ],
     guildSettings,
     topicSessions,
-    ...(options.localGateway === false ? {} : { localGateway: local.gateway }),
+    localGateway: local.gateway,
   });
   const placeRefs = createPlaceRefs({ guildSettings, topicSessions, personaName: (id) => (id === "mika" ? "ミカ" : undefined) });
   const places = options.places === undefined || options.places === true ? placeRefs : options.places === false ? undefined : options.places;
@@ -277,26 +275,24 @@ test("リマインド（T21）: #tasks が無ければ #inbox に同じ注記で
   entry.assertMikaAndLocalUntouched("ローカルの入口");
 });
 
-test("リマインド（T22）: ownerConnected が真・偽、持ち主が設定に在る・無い、ローカルの Gateway の有無で、出る先・文・行が同じ（頼んだ場所の接続は訊かない）", async (t) => {
+test("リマインド（T22）: ownerConnected が真・偽、持ち主が設定に在る・無いで、出る先・文・行が同じ（頼んだ場所の接続は訊かない）", async (t) => {
   const outcomes: unknown[] = [];
   for (const connected of [true, false]) {
     for (const mikaInConfig of [true, false]) {
-      for (const localGateway of [true, false]) {
-        const label = `connected=${connected} inConfig=${mikaInConfig} local=${localGateway}`;
-        const env = setup(t, { mikaInConfig, localGateway });
-        env.connection.mika = connected;
-        const added = env.add(LOCAL_TOPIC);
-        await env.scheduler.tick();
-        env.assertMikaAndLocalUntouched(label);
-        assert.ok(!env.asked.includes(LOCAL_TOPIC), label);
-        assert.deepEqual(env.moves, [], label);
-        const after = env.reminders.get(added.id)!;
-        outcomes.push({
-          posts: env.defaultGateway.posts,
-          row: [after.channelId, after.status, after.lastMessageChannelId],
-          history: env.rows(LOCAL_TOPIC).map(([kind, source, , text]) => [kind, source, text]),
-        });
-      }
+      const label = `connected=${connected} inConfig=${mikaInConfig}`;
+      const env = setup(t, { mikaInConfig });
+      env.connection.mika = connected;
+      const added = env.add(LOCAL_TOPIC);
+      await env.scheduler.tick();
+      env.assertMikaAndLocalUntouched(label);
+      assert.ok(!env.asked.includes(LOCAL_TOPIC), label);
+      assert.deepEqual(env.moves, [], label);
+      const after = env.reminders.get(added.id)!;
+      outcomes.push({
+        posts: env.defaultGateway.posts,
+        row: [after.channelId, after.status, after.lastMessageChannelId],
+        history: env.rows(LOCAL_TOPIC).map(([kind, source, , text]) => [kind, source, text]),
+      });
     }
   }
   for (const outcome of outcomes) assert.deepEqual(outcome, outcomes[0]);

@@ -2,14 +2,14 @@
 // セッションのチャンネルは sessions.persona で引き、どちらにも無ければ既定の人格。
 // 返事・途中経過・入力中表示・リマインドの投稿・記憶の知らせ・kb_delete の確認は持ち主の Bot（gatewayFor）、
 // カテゴリ・チャンネルの作成・移動・削除、ピン留め、#system、再同期、コマンドの登録は既定の人格の Bot（admin）が行う。
-// ローカルの場所（place = 'local'。docs/plan/personas-web-antigravity.md §3.1）の gatewayFor は、localGateway があればそれを返す
+// ローカルの場所（place = 'local'。docs/plan/personas-web-antigravity.md §3.1）の gatewayFor は localGateway を返し、ownerConnected は真。
+// 持ち主と場所は 1 回の引き（入口は persona_channels、無ければ sessions）で一緒に読む
 import type { AgentRunner } from "../agent/runner.ts";
 import { DEFAULT_PERSONA_ID, type Engine } from "../config.ts";
 import type { Gateway, InteractionResponder, OutgoingMessage } from "../discord/gateway.ts";
 import type { GuildSettingsStore } from "../store/guild-settings.ts";
 import type { ChannelPlace, LocalIdStore } from "../store/local-places.ts";
 import type { TopicSessionStore } from "../store/topic-sessions.ts";
-import { channelPlaceOf } from "./place-refs.ts";
 
 /** 既定の人格の表示（表示名の変数が無いので、/sessions・/usage ではこの名前で出す） */
 export const DEFAULT_PERSONA_LABEL = "既定の人格";
@@ -42,12 +42,15 @@ export type PersonaRouterDeps = {
   /** 動かす人格（設定の順）。最初は既定の人格 */
   personas: readonly PersonaRuntime[];
   /** 入口のチャンネル（#inbox・#tasks・#<NAME>）の持ち主と場所 */
-  guildSettings: Pick<GuildSettingsStore, "personaOfChannel" | "entryChannel">;
+  guildSettings: Pick<GuildSettingsStore, "entryChannel">;
   /** セッションのチャンネルの持ち主と場所 */
-  topicSessions: Pick<TopicSessionStore, "personaOf" | "get">;
-  /** ローカルの場所の Gateway（discord/local-gateway.ts）。無ければローカルの場所も持ち主の Bot に振り分ける（今と同じ） */
-  localGateway?: Gateway;
+  topicSessions: Pick<TopicSessionStore, "ownerPlaceOf">;
+  /** ローカルの場所の Gateway（discord/local-gateway.ts）。必ず渡す（渡し忘れると、ローカルの番号が本物の Discord に行く） */
+  localGateway: Gateway;
 };
+
+/** チャンネルの持ち主の人格の id（行が無ければ undefined）と場所 */
+type ChannelOwner = { persona: string | undefined; place: ChannelPlace };
 
 export class PersonaRouter {
   private readonly deps: PersonaRouterDeps;
@@ -77,33 +80,47 @@ export class PersonaRouter {
    * 設定から外した人格のチャンネルも既定の人格のものとして扱う
    */
   ownerOf(channelId: string): string {
-    const id = this.deps.guildSettings.personaOfChannel(channelId) ?? this.deps.topicSessions.personaOf(channelId);
-    return id !== undefined && this.byId.has(id) ? id : DEFAULT_PERSONA_ID;
+    return this.ownerIdOf(this.lookup(channelId));
   }
 
   /** チャンネルの持ち主の人格 */
   runtimeFor(channelId: string): PersonaRuntime {
-    return this.byId.get(this.ownerOf(channelId)) ?? this.defaultPersona;
+    return this.runtimeOf(this.lookup(channelId));
   }
 
   /**
-   * チャンネルの持ち主の Bot。場所（入口は persona_channels.place、セッションは sessions.place）が local で localGateway があれば、
+   * チャンネルの持ち主の Bot。場所（入口は persona_channels.place、セッションは sessions.place）が local なら、
    * 持ち主の人格が設定に無くてもローカルの Gateway
    */
   gatewayFor(channelId: string): Gateway {
-    const local = this.deps.localGateway;
-    if (local !== undefined && this.placeOf(channelId) === "local") return local;
-    return this.runtimeFor(channelId).gateway;
+    const owner = this.lookup(channelId);
+    return owner.place === "local" ? this.deps.localGateway : this.runtimeOf(owner).gateway;
   }
 
-  /** チャンネルの場所。persona_channels（入口）→ sessions（セッション）の順に引き、どちらにも無ければ discord */
-  private placeOf(channelId: string): ChannelPlace {
-    return channelPlaceOf(this.deps, channelId);
-  }
-
-  /** チャンネルの持ち主の Bot が Discord に接続しているか */
+  /** チャンネルの持ち主の Bot が Discord に接続しているか。場所が local なら、持ち主の Bot によらず真（Discord を通らない） */
   ownerConnected(channelId: string): boolean {
-    return this.runtimeFor(channelId).connected();
+    const owner = this.lookup(channelId);
+    return owner.place === "local" || this.runtimeOf(owner).connected();
+  }
+
+  /**
+   * チャンネルの持ち主と場所を 1 回で引く。persona_channels（入口）→ sessions（セッション）の順に引き、どちらにも無ければ持ち主なし・discord。
+   * 読みは入口なら 1 回、セッション・どちらにも無い番号なら 2 回
+   */
+  private lookup(channelId: string): ChannelOwner {
+    return (
+      this.deps.guildSettings.entryChannel(channelId) ??
+      this.deps.topicSessions.ownerPlaceOf(channelId) ?? { persona: undefined, place: "discord" }
+    );
+  }
+
+  /** 引いた持ち主の人格の id。行が無い・設定に無い人格なら既定の人格 */
+  private ownerIdOf(owner: ChannelOwner): string {
+    return owner.persona !== undefined && this.byId.has(owner.persona) ? owner.persona : DEFAULT_PERSONA_ID;
+  }
+
+  private runtimeOf(owner: ChannelOwner): PersonaRuntime {
+    return this.byId.get(this.ownerIdOf(owner)) ?? this.defaultPersona;
   }
 
   /** チャンネルの持ち主の人格の runner（ターンはこれで動かす） */

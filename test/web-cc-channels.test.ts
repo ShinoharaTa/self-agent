@@ -10,9 +10,11 @@ import { PersonaRouter } from "../src/app/personas.ts";
 import type { CcCloseResult, CcSubmitWebResult } from "../src/cc/channels.ts";
 import type { CcSessionView } from "../src/cc/registry.ts";
 import type { Gateway } from "../src/discord/gateway.ts";
+import { LocalGateway } from "../src/discord/local-gateway.ts";
 import { CcChannelStore } from "../src/store/cc-channels.ts";
 import { CcPermissionStore } from "../src/store/cc-permissions.ts";
 import { CcSendStore } from "../src/store/cc-sends.ts";
+import { LocalIdStore } from "../src/store/local-places.ts";
 import { ccChannelDescriber, ccRoutes } from "../src/web/routes/cc.ts";
 import { channelRoutes, webChannelLookup, webChannelNamer } from "../src/web/routes/channels.ts";
 import { turnRoutes } from "../src/web/routes/turns.ts";
@@ -93,6 +95,7 @@ async function setup(t: TestContext) {
     personas: [{ id: "default", name: "default", engine: "claude", runner: {} as AgentRunner, gateway: {} as Gateway, connected: () => true }],
     guildSettings,
     topicSessions,
+    localGateway: new LocalGateway(new LocalIdStore(db)),
   });
   const describe = ccChannelDescriber({
     registry,

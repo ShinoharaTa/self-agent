@@ -1,5 +1,6 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { buildQueryOptions } from "../src/agent/query-options.ts";
 import type { RunResult } from "../src/agent/runner.ts";
@@ -9,7 +10,7 @@ import { ChannelOpsQueue } from "../src/app/channel-ops.ts";
 import { CLOSE_PROMPT, createCloseCommand } from "../src/app/commands/close.ts";
 import { createDeleteComponent } from "../src/app/commands/delete.ts";
 import { createRenewCommand, renewedText } from "../src/app/commands/renew.ts";
-import { createHandler } from "../src/app/handler.ts";
+import { createHandler, WEB_ECHO_PREFIX } from "../src/app/handler.ts";
 import { InboxRotator } from "../src/app/inbox-rotate.ts";
 import { type CommandHandler, registerCommands } from "../src/app/interactions.ts";
 import {
@@ -27,7 +28,7 @@ import { rotatedSeed } from "../src/app/summary.ts";
 import { createSystemNotifier } from "../src/app/system-notice.ts";
 import { runChannelTurn } from "../src/app/turn.ts";
 import { DiscordGateway } from "../src/discord/discord-gateway.ts";
-import type { Gateway, IncomingMessage, Interaction } from "../src/discord/gateway.ts";
+import type { Gateway, IncomingMessage, Interaction, OutgoingMessage } from "../src/discord/gateway.ts";
 import { LocalGateway } from "../src/discord/local-gateway.ts";
 import { LocalIdStore } from "../src/store/local-places.ts";
 import type { DatabaseSync } from "node:sqlite";
@@ -106,6 +107,7 @@ function setup(t: TestContext, steps: { default?: RunResult[]; mika?: RunResult[
     ],
     guildSettings,
     topicSessions,
+    localGateway: new LocalGateway(new LocalIdStore(db)),
   });
   topicSessions.create({ channelId: "topic-m", guildId: "guild-1", title: "ミカの相談", categoryId: "active-1", persona: "mika" });
   topicSessions.create({ channelId: "topic-d", guildId: "guild-1", title: "既定の相談", categoryId: "active-1" });
@@ -162,8 +164,8 @@ test("PersonaRouter: 持ち主は persona_channels → sessions.persona の順�
   assert.equal(env.personas.turnPersona("unknown").runner, env.defaultRunner);
 });
 
-/** setup の人格と store に、ローカルの Gateway を渡した（渡さない）振り分け。ローカルの話題と入口は、設定に無い人格 gone と mika のもの */
-function localSetup(t: TestContext, withLocal: boolean) {
+/** setup の人格と store に、ローカルの Gateway を渡した振り分け。ローカルの話題と入口は、設定に無い人格 gone と mika のもの */
+function localSetup(t: TestContext) {
   const env = setup(t);
   env.topicSessions.create({
     channelId: "local-topic",
@@ -180,27 +182,27 @@ function localSetup(t: TestContext, withLocal: boolean) {
     personas: env.personas.all,
     guildSettings: env.guildSettings,
     topicSessions: env.topicSessions,
-    ...(withLocal ? { localGateway } : {}),
+    localGateway,
   });
   return { ...env, router, localGateway };
 }
 
 test("PersonaRouter.gatewayFor: place = 'local' の話題・入口は、持ち主の人格が設定に無くてもローカルの Gateway（ownerPosts も同じ。持ち主の引き方は変えない）", async (t) => {
-  const env = localSetup(t, true);
+  const env = localSetup(t);
   for (const id of ["local-topic", "local-mika", "local-entry"]) assert.equal(env.router.gatewayFor(id), env.localGateway, id);
   // 送信はローカルの Gateway に届き、Discord の Bot には何も来ない
   assert.match(await env.router.ownerPosts().sendMessage("local-mika", { text: "返事" }), /^1\d{20}$/);
   await env.router.ownerPosts().send("local-topic", "返事");
   assert.deepEqual(env.mika.called, []);
   assert.deepEqual(env.mikaFake.sent, []);
-  // ownerOf・turnPersona・ownerConnected は今と同じ（connected は WP5）
+  // ownerOf・turnPersona は今と同じ（ownerConnected の場所の扱いは下の別のテスト）
   assert.deepEqual(["local-topic", "local-mika", "local-entry"].map((id) => env.router.ownerOf(id)), ["default", "mika", "default"]);
   assert.equal(env.router.turnPersona("local-mika").runner, env.mikaRunner);
   assert.equal(env.router.ownerConnected("local-mika"), true);
 });
 
 test("PersonaRouter.gatewayFor: place = 'discord' の場所は、ローカルの Gateway を渡しても今と同じ持ち主の Bot", (t) => {
-  const env = localSetup(t, true);
+  const env = localSetup(t);
   env.guildSettings.setChannel("guild-1", "inboxChannelId", "inbox-1");
   env.topicSessions.create({ channelId: "topic-x", guildId: "guild-1", title: "外した人格", categoryId: "active-1", persona: "gone" });
   const ids = ["inbox-1", "topic-m", "topic-d", "topic-x", "unknown"];
@@ -211,13 +213,6 @@ test("PersonaRouter.gatewayFor: place = 'discord' の場所は、ローカルの
   assert.equal(env.router.gatewayFor("topic-m"), env.mika.gateway);
   assert.equal(env.router.gatewayFor("topic-x"), env.defaultGateway);
   assert.equal(env.router.admin, env.defaultGateway);
-});
-
-test("PersonaRouter.gatewayFor: ローカルの Gateway を渡さない振り分けは、place = 'local' の場所でも今と同じ持ち主の Bot", (t) => {
-  const env = localSetup(t, false);
-  assert.equal(env.router.gatewayFor("local-topic"), env.defaultGateway);
-  assert.equal(env.router.gatewayFor("local-mika"), env.mika.gateway);
-  assert.equal(env.router.gatewayFor("local-entry"), env.defaultGateway);
 });
 
 /** store の呼ばれたメソッドの名前を残す（tracked の store 版。振り分けが DB を何回読むかを確かめる） */
@@ -236,15 +231,132 @@ function trackedStore<T extends object>(store: T): { store: T; called: string[] 
   return { store: proxy, called };
 }
 
-test("PersonaRouter.gatewayFor: ローカルの Gateway を渡さない振り分けは、場所を引く読み（entryChannel・get）をせず、持ち主の読みだけ（今と同じ回数）", (t) => {
-  const env = localSetup(t, false);
+test("PersonaRouter: gatewayFor・ownerOf・ownerConnected・turnPersona は 1 回の呼び出しで持ち主と場所を 1 回だけ引く（入口は entryChannel 1 回、話題・知らない番号は entryChannel 1 回 + ownerPlaceOf 1 回）", (t) => {
+  const env = localSetup(t);
+  env.guildSettings.setChannel("guild-1", "inboxChannelId", "inbox-1");
   const guildSettings = trackedStore(env.guildSettings);
   const topicSessions = trackedStore(env.topicSessions);
-  const router = new PersonaRouter({ personas: env.personas.all, guildSettings: guildSettings.store, topicSessions: topicSessions.store });
-  for (const id of ["local-topic", "local-mika", "local-entry", "topic-m", "unknown"]) router.gatewayFor(id);
-  // 入口の行が在る local-entry だけは sessions.persona を引かない（ownerOf の今の読み方）
-  assert.deepEqual(guildSettings.called, Array(5).fill("personaOfChannel"));
-  assert.deepEqual(topicSessions.called, Array(4).fill("personaOf"));
+  const router = new PersonaRouter({
+    personas: env.personas.all,
+    guildSettings: guildSettings.store,
+    topicSessions: topicSessions.store,
+    localGateway: env.localGateway,
+  });
+  const calls: Array<[string, (channelId: string) => unknown]> = [
+    ["gatewayFor", (id) => router.gatewayFor(id)],
+    ["ownerOf", (id) => router.ownerOf(id)],
+    ["ownerConnected", (id) => router.ownerConnected(id)],
+    ["turnPersona", (id) => router.turnPersona(id)],
+  ];
+  const cases: Array<[string, string[], string[]]> = [
+    ["local-entry", ["entryChannel"], []],
+    ["inbox-1", ["entryChannel"], []],
+    ["local-topic", ["entryChannel"], ["ownerPlaceOf"]],
+    ["local-mika", ["entryChannel"], ["ownerPlaceOf"]],
+    ["topic-m", ["entryChannel"], ["ownerPlaceOf"]],
+    ["unknown", ["entryChannel"], ["ownerPlaceOf"]],
+  ];
+  for (const [name, call] of calls) {
+    for (const [id, entryReads, topicReads] of cases) {
+      guildSettings.called.length = 0;
+      topicSessions.called.length = 0;
+      call(id);
+      // personaOfChannel・personaOf・get は読まない
+      assert.deepEqual(guildSettings.called, entryReads, `${name} ${id}`);
+      assert.deepEqual(topicSessions.called, topicReads, `${name} ${id}`);
+    }
+  }
+});
+
+test("PersonaRouter.ownerConnected: 場所が local の話題・入口は、持ち主の Bot が切れていても・持ち主が設定に無く既定の Bot が切れていても真。discord の場所は持ち主の connected() のまま", (t) => {
+  const env = localSetup(t);
+  const connection = { default: true, mika: true };
+  const [first, second] = env.personas.all;
+  const router = new PersonaRouter({
+    personas: [
+      { ...first!, connected: () => connection.default },
+      { ...second!, connected: () => connection.mika },
+    ],
+    guildSettings: env.guildSettings,
+    topicSessions: env.topicSessions,
+    localGateway: env.localGateway,
+  });
+  env.guildSettings.setChannel("guild-1", "inboxChannelId", "inbox-1");
+  env.topicSessions.create({ channelId: "topic-x", guildId: "guild-1", title: "外した人格", categoryId: "active-1", persona: "gone" });
+  // ローカルの話題（gone・mika）・ローカルの入口（gone）・既定の #inbox・mika の話題・既定の話題・外した人格の話題・知らない番号
+  const ids = ["local-topic", "local-mika", "local-entry", "inbox-1", "topic-m", "topic-d", "topic-x", "unknown"];
+  const connectedOf = () => ids.map((id) => router.ownerConnected(id));
+  assert.deepEqual(connectedOf(), [true, true, true, true, true, true, true, true]);
+  connection.mika = false;
+  assert.deepEqual(connectedOf(), [true, true, true, true, false, true, true, true]);
+  connection.default = false;
+  assert.deepEqual(connectedOf(), [true, true, true, false, false, false, false, false]);
+  connection.mika = true;
+  assert.deepEqual(connectedOf(), [true, true, true, false, true, false, false, false]);
+});
+
+test("Web の発言（submitText）: 設定に無い人格のローカルの話題は、既定の Bot が切れていても bot_disconnected にならず、echo はローカルの Gateway に 1 回・既定の Bot には 0 回", async (t) => {
+  const env = setup(t, { default: [ok("返事", "s-local")] });
+  env.topicSessions.create({
+    channelId: "local-topic",
+    guildId: "guild-1",
+    title: "外した人格のローカルの話題",
+    categoryId: "local",
+    persona: "gone",
+    place: "local",
+  });
+  /** ローカルの Gateway に来た sendMessage（チャンネルと文） */
+  const echoes: string[] = [];
+  const local = new LocalGateway(new LocalIdStore(env.db));
+  const localGateway = new Proxy(local, {
+    get(target, prop, receiver) {
+      const value: unknown = Reflect.get(target, prop, receiver);
+      if (prop !== "sendMessage" || typeof value !== "function") return value;
+      return (channelId: string, outgoing: OutgoingMessage) => {
+        echoes.push(`${channelId} ${outgoing.text}`);
+        return (value as Gateway["sendMessage"]).call(target, channelId, outgoing);
+      };
+    },
+  });
+  const [first, ...rest] = env.personas.all;
+  const router = new PersonaRouter({
+    personas: [{ ...first!, connected: () => false }, ...rest],
+    guildSettings: env.guildSettings,
+    topicSessions: env.topicSessions,
+    localGateway,
+  });
+  const queue = new KeyedSerialQueue(2);
+  const handler = createHandler({
+    cfg,
+    resolveChannel: createChannelResolver(cfg, env.guildSettings, env.topicSessions),
+    ...env.turn,
+    personas: router,
+    gateway: router.ownerPosts(),
+    ownerConnected: (channelId) => router.ownerConnected(channelId),
+    channelOps: new RecordingChannelOps(),
+    queue,
+    now: () => NOW,
+    timers: { after: () => () => {}, every: () => () => {} },
+  });
+  const submitted = await handler.submitText({ guildId: "guild-1", channelId: "local-topic", content: "宿を比べて", at: NOW, source: "web" });
+  assert.equal(submitted.result, "accepted");
+  await queue.idle();
+  assert.deepEqual(echoes, [`local-topic ${WEB_ECHO_PREFIX}\n宿を比べて`]);
+  assert.deepEqual([env.defaultGateway.sent, env.defaultGateway.posts, env.defaultGateway.calls], [[], [], []]);
+  assert.deepEqual([env.mikaFake.sent, env.mikaFake.posts], [[], []]);
+  // Discord の場所は、持ち主の Bot が切れていれば今と同じ bot_disconnected
+  assert.deepEqual(
+    await handler.submitText({ guildId: "guild-1", channelId: "topic-d", content: "こんにちは", at: NOW, source: "web" }),
+    { result: "bot_disconnected" },
+  );
+});
+
+test("見張り: main.ts は LocalIdStore を 1 つだけ作り、PersonaRouter にその番号のローカルの Gateway を渡す", () => {
+  const source = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+  assert.equal(source.match(/new LocalIdStore\(/g)?.length, 1);
+  const router = source.match(/new PersonaRouter\(\{[\s\S]*?\n\}\);/)?.[0];
+  assert.ok(router !== undefined);
+  assert.match(router, /\n {2}localGateway: new LocalGateway\(localIds\),\n/);
 });
 
 test("2 つの Bot が同じ発言を受け取ると、持ち主の Bot の分だけがターンになり、返信は持ち主の Bot から出る", async (t) => {
