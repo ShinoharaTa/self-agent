@@ -34,6 +34,7 @@ import { ChannelOpsQueue } from "./app/channel-ops.ts";
 import { createHandler } from "./app/handler.ts";
 import { InboxRotator } from "./app/inbox-rotate.ts";
 import { createLead, leadCounts } from "./app/lead.ts";
+import { checkPersonaPlaces, ensureLocalEntries } from "./app/local-entries.ts";
 import type { CcPermissionButtons } from "./app/commands/cc.ts";
 import { createConfirmKbDelete } from "./app/commands/kb-delete.ts";
 import { CcConfirmExpirer, type CcConfirmRuntime } from "./app/commands/cc-confirm.ts";
@@ -219,6 +220,18 @@ const guildSettings = new GuildSettingsStore(db, now);
 const topicSessions = new TopicSessionStore(db, now);
 // ローカルの番号（docs/plan/personas-web-antigravity.md §3.1）。振り分けのローカルの Gateway と、話題・入口を作る所が同じ 1 つを使う
 const localIds = new LocalIdStore(db);
+// 場所がローカルの人格（Web だけ。docs/plan/personas-web-antigravity.md §3.1）。まだ無いので述語は常に false（WP5 で config の _SURFACE につなぐ）。
+// 起動のときの検査と入口作り・/new・ホームパネル・POST /api/topics・右腕の session_open・POST /api/sessions・/setup が同じ 1 つを見る
+const localPlaces: LocalPersonaPlaces = { isLocalPersona: () => false, ids: localIds };
+// 人格の場所は id に付き、後から変えられない。述語と今在る入口・話題の場所が食い違えば起動しない（両向き）。
+// 揃っていれば、/setup 済みのサーバーに Web だけの人格の入口（ローカルの番号）を作る。どちらも Discord・Web の待ち受けより前
+const localEntriesDeps = { cfg: config, guildSettings, topicSessions, localPlaces, log };
+const placeErrors = checkPersonaPlaces(localEntriesDeps);
+if (placeErrors.length > 0) {
+  for (const error of placeErrors) console.error(error);
+  process.exit(1);
+}
+ensureLocalEntries(localEntriesDeps);
 // 場所ごとの既定のモデル（docs/plan/models.md §3・§4。書く口は PR-4）
 const placeSettings = new PlaceSettingStore(db, now);
 const seeds = new ChannelSeedStore(db, now);
@@ -598,9 +611,6 @@ const sessionMode: SessionModeDeps | undefined =
 // 右腕の場所を変える確認（move: のボタンと Web の「あなたの番」。期限の判定は topicMoves と同じ時計）
 const topicProposals = createTopicProposals({ move: moveDeps, moves: topicMoves, ownerPosts, now, log });
 // コマンドは既定の人格のアプリだけが登録して受ける。/close・/renew のターンはチャンネルの持ち主の人格で動かし、結果は持ち主の Bot が投稿する
-// 場所がローカルの人格（Web だけ。docs/plan/personas-web-antigravity.md §3.1）。まだ無いので述語は常に false（WP5 で config の _SURFACE につなぐ）。
-// /new・ホームパネル・POST /api/topics・右腕の session_open・POST /api/sessions・/setup が同じ 1 つを見る
-const localPlaces: LocalPersonaPlaces = { isLocalPersona: () => false, ids: localIds };
 const commands = createCommands({
   cfg: config,
   gateway,
