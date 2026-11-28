@@ -1,6 +1,6 @@
 # 話題をピン留めして、会話ごとの列として並べる（#507）
 
-> 注記（2026-11-28。#528）: 今の殻の設計。新しい入口は `docs/plan/web-ui-home.md`（`docs/archive/` へ動かすのは入れ替えの後の Z）。
+> 注記（2026-11-28。#528）: 今の殻の設計。新しい入口は `docs/plan/web-ui-home.md`（`docs/archive/` へ動かすのは入れ替えの後の Z）。残りの段の扱いは `docs/plan/web-ui-rebuild.md` §8。
 
 - 今の状態: 段 P0〜P5。今は P5 まで（#507 の段は全部済み。サーバー: DB の `topic_pins`（v48）・`GET /api/topics` の `pins`・`pinMax`・`POST /api/topics/ch:<id>/pin`。画面: 「…」の板の「ピン留めする／ピン留めを外す」とあなたの番の列の節「ピン留め」。スマホの形はここまで。部品と幅の算数（`DECK` の 3 つの値 `CONV`・`GAP`・`PIN_MAX`（P3 で足した `LANE` は #514 の R4 で外した）・`stripFit`・`stripSeen`・`Deck` の `strip`・`deckModel` の `seen`・`DeckBand` の `turn`・見出しのピンのボタン・`IconButton` の `pressed`・口 `SA.pin`・`SA.deck.stripFit`・`stripSeen`）。P4: 640px 以上で留めた数が 1 以上なら、帯（`#v3-deck`。`#v3` の `data-pins` と `--c-deck-col-w`・`--c-deck-conv-w`）に流れの 3 列と留めた順の会話の列（`pins.js`・`#v3-pins`）が並んで横に送られ、列の左端で止まる（末尾は右端）。見えている列（`SA.pins.measure`）だけ読み直し・既読。留めた話題は席に開かずその列へ送って入力欄に焦点。席の見出しのピンのボタンで留めると列になり、列のピンのボタン・「…」で外す。P5: 番の列が端まで見えない間は上の帯に「あなたの番 n」（押すと左端へ送って番の列に焦点）・上限の時は席のピンのボタンが押せず理由を出す・新しく留めた列だけ右から出る動き。実機で確かめる事は §7.6）。
 - 書いた日: 2026-11-26。main `d6809c5` を読んだ

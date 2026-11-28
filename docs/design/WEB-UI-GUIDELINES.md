@@ -1,6 +1,6 @@
 # Web UI の見た目と振る舞いの決まり
 
-> 注記（2026-11-28。#528）: 今の殻の決まり。新しい入口は `docs/plan/web-ui-home.md`（`docs/archive/` へ動かすのは入れ替えの後の Z）。
+> 注記（2026-11-28。#528）: 今の殻の決まり。新しい入口は `docs/plan/web-ui-home.md`（`docs/archive/` へ動かすのは入れ替えの後の Z）。残りの段の扱いは `docs/plan/web-ui-rebuild.md` §8。台帳（`web-ui-rebuild.md`）§3.1 が持ち越すとした行（実装の名前を画面に出さない・当たりの大きさ・コントラスト 4.5 以上）は、新しい入口でも守る。
 
 > 対象: `src/web/static/`（`/` の `index.html`。話題の一覧・会話・右腕の新しい殻。docs/plan/web-ui-v3.md）。`templates/web/`（LLM が作るページの土台）は対象外で、その決まりは `templates/web/DESIGN.md`。
 > 根拠: Anthropic frontend-design、Vercel Web Interface Guidelines、Emil Kowalski の design-eng / mobile-native、heydamir/unslop、pbakaus/impeccable、ibelick/ui-skills、Nutlope/hallmark の各 skill を、この UI（tailnet の中・1 人用・日本語・iPhone と PC）に合う形に絞ったもの。出典は項目の末尾に `[unslop]` `[impeccable]` `[ui-skills]` `[hallmark]` `[emil]` `[vercel]` `[anthropic]` の印で書く。印の無いものは既存の決まり（DESIGN.md・web-ui.md）か、この文書で決めたもの。
