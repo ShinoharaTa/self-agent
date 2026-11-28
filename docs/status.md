@@ -88,7 +88,8 @@ CC9 は済（Web の会話のサイドバーの群「Claude Code」。アクテ�
 - 2026-11-28: オーナーが方向（案 D）・進め方（B = 別の入口に作り、揃ったら入れ替える）・スマホを先・「ほか」は古い画面へ送る・いちばん古い殻（`classic.html`）を先に消す、などを決めた（`docs/plan/web-ui-rebuild.md` §7）。明暗に加えて色の組を切り替えられるようにする（#539）。統括が `docs/plan/web-ui-home.md` §6.2 の 19 個を決めた。オーナーに訊く事は同じ文書の §6.1 の 8 つ
 - 2026-11-28: §6.1 の問い 1 = a（いちばん古い殻をこのまま消す）。P1 = #542。残る問いは 7 つ
 - 2026-11-28: P1 済み（#544。#542）: `classic.html`・`sidebar.js`・`workbench.js` を消し、`views.js` の殻の見分けと設定の「画面」の行、`api.js` の古い既読の鍵の読み書きを外した。`shell.js` が起動で localStorage の `self-agent-web:seen`・`self-agent-web:seen-sent` を消す。静的ファイル・検査・文書だけで、再起動は要らない。`app.css` の古い殻だけの規則は残した（Z）
-- 今は P1 まで（P0 = 文書: `web-ui-rebuild.md` の直しと `web-ui-home.md`。P1 = 上の行）。新しい入口の画面はまだ無い。段は P0〜P3・N0〜N6・S・Z と、サーバー側の V1〜V4（`web-ui-home.md` §4）。次は P2（計算の module）
+- 2026-11-28: P2a 済み（#549。#548）: `n-calc.js`（新しい入口の計算。`api.js`・`topics.js`・`c-deck.js`・`c-list.js` から写した純粋な関数と、既読の判定・サーバーの既読の取り込み・3 つのタブの分け方と数の印・ピンの 1 段）と `test/web-n-calc.test.ts`。どの html からも読まないので今の画面は変わらず、再起動は要らない
+- 今は P2a まで（P0 = 文書: `web-ui-rebuild.md` の直しと `web-ui-home.md`。P1・P2a = 上の行）。新しい入口の画面はまだ無い。段は P0〜P3・N0〜N6・S・Z と、サーバー側の V1〜V4（`web-ui-home.md` §4）。次は P2b（文の解釈の module）
 - 今の画面には段を足さない。止めていた段の扱い（解ける・吸う・閉じる・止めたまま）は `web-ui-rebuild.md` §8。上の各節に残る段の予定より、この節が勝つ
 
 ## Bot を持たない人格と Antigravity のエンジン（#530）
