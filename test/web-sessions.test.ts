@@ -23,6 +23,7 @@ import {
 import { renewedText } from "../src/app/session-renew.ts";
 import { CcChannelStore } from "../src/store/cc-channels.ts";
 import type { PersonaConfig } from "../src/config.ts";
+import { LocalGateway } from "../src/discord/local-gateway.ts";
 import { LocalIdStore } from "../src/store/local-places.ts";
 import { PlaceSettingStore } from "../src/store/place-settings.ts";
 import type { CloseDraft, TopicSessionStore } from "../src/store/topic-sessions.ts";
@@ -113,7 +114,7 @@ async function until(condition: () => boolean): Promise<void> {
 async function setup(
   t: TestContext,
   steps: (topicSessions: TopicSessionStore) => Array<RunResult | Error | ((input: RunInput) => RunResult)> = () => [],
-  options: { projectSessions?: ProjectSessionGate; isLocalPersona?: (personaId: string) => boolean } = {},
+  options: { projectSessions?: ProjectSessionGate; isLocalPersona?: (personaId: string) => boolean; localGateway?: boolean } = {},
 ) {
   const db = tempDb(t);
   const stores = createStores(db, () => NOW);
@@ -148,6 +149,7 @@ async function setup(
     ],
     guildSettings,
     topicSessions,
+    ...(options.localGateway === true ? { localGateway: new LocalGateway(new LocalIdStore(db)) } : {}),
   });
   const cfg = { allowedGuildIds: [GUILD, GUILD_NOT_SET_UP], personas: [MIKA], publicBaseUrl: undefined, inboxChannelId: undefined };
   const resolveChannel = createChannelResolver(cfg, guildSettings, topicSessions);
@@ -519,6 +521,29 @@ test("POST /renew: #inbox は rotateNow。区切りの行を書かない結果�
   assert.deepEqual(await call(env.server, "POST", "/api/channels/201/renew"), { status: 409, json: { error: "closed" } });
   assert.equal(env.rotations.length, 1);
   assert.equal(env.runner.inputs.length, 0);
+});
+
+test("POST /close（#530 の WP4）: ローカルの話題は確認の notice と確定の後の divider が履歴に在り、既定の人格・mika の Bot には何も行かない", async (t) => {
+  const local = "100000000000000000001";
+  const env = await setup(t, (topicSessions) => [reports(DRAFT, topicSessions)], { localGateway: true });
+  env.topicSessions.create({ channelId: local, guildId: GUILD, title: "ローカルの話題", categoryId: "local", persona: "mika", place: "local" });
+  env.sessions.set(local, "session-3");
+
+  assert.deepEqual(await call(env.server, "POST", `/api/sessions/${local}/close`), { status: 202, json: { accepted: true } });
+  await until(() => env.rows(local).length === 1);
+  await env.turnQueue.idle();
+  assert.deepEqual(env.rows(local), [{ kind: "notice", text: CLOSE_CONFIRM_NOTICE, persona: "mika" }]);
+  assert.deepEqual(await call(env.server, "POST", `/api/sessions/${local}/close/confirm`, { selected: [0] }), {
+    status: 200,
+    json: { summary: DRAFT.summary, registered: 1 },
+  });
+  assert.equal(env.topicSessions.get(local)?.state, "done");
+  assert.deepEqual(env.rows(local).at(-1), { kind: "divider", text: closedText(DRAFT.summary, 1), persona: "mika" });
+  await env.turnQueue.idle();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  for (const [label, gateway] of [["既定の人格", env.gateway], ["mika", env.mikaGateway]] as const) {
+    assert.deepEqual([gateway.calls, gateway.sent, gateway.posts, gateway.edits], [[], [], [], []], label);
+  }
 });
 
 test("POST /api/sessions: 題名の制御文字（改行・タブ）は空白にして連続する空白を 1 つにし、100 字はその後で数える", async (t) => {

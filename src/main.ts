@@ -305,7 +305,7 @@ const projectTools = {
   now,
 };
 // 場所（place）の引き方と、Discord に出す文の中での場所の書き方（docs/plan/personas-web-antigravity.md §3.2・§3.3 の 1）。
-// ローカルの話題・入口は `「題名」（Web）`・`「人格の表示名」（Web）`、Discord の場所は今と同じ `<#ID>`。まとめ・/reminders・/projects が同じ 1 つを見る
+// ローカルの話題・入口は `「題名」（Web）`・`「人格の表示名」（Web）`、Discord の場所は今と同じ `<#ID>`。まとめ・/reminders・/projects・記憶の知らせ・kb_delete・cc_send／cc_start が同じ 1 つを見る
 const placeRefs = createPlaceRefs({
   guildSettings,
   topicSessions,
@@ -408,12 +408,19 @@ const personaRuntimes: PersonaRuntime[] = [
 // チャンネルの持ち主の人格（persona_channels・sessions.persona）への振り分け。返事などは持ち主の Bot（ownerPosts）、管理の操作は既定の人格の Bot（gateway）
 const personas = new PersonaRouter({ personas: personaRuntimes, guildSettings, topicSessions });
 const ownerPosts = personas.ownerPosts();
-// ナレッジベースと記憶のツール: kb_delete の確認と記憶の変更の知らせは run のチャンネルに、その持ち主の Bot で投稿する
+// ナレッジベースと記憶のツール: kb_delete の確認と記憶の変更の知らせは run のチャンネルに、その持ち主の Bot で投稿する。
+// ローカルの場所（placeRefs）では、kb_delete は確認を出さずに断り、記憶の知らせは送らずに履歴に書く
 const kbMemory = {
   knowledge,
   memories,
-  confirmKbDelete: createConfirmKbDelete({ gateway: ownerPosts }),
-  notifyMemoryChange: createNotifyMemoryChange({ gateway: ownerPosts, log }),
+  confirmKbDelete: createConfirmKbDelete({ gateway: ownerPosts, places: placeRefs }),
+  notifyMemoryChange: createNotifyMemoryChange({
+    gateway: ownerPosts,
+    places: placeRefs,
+    ...history,
+    personaOf: (channelId) => personas.ownerOf(channelId),
+    log,
+  }),
   timeZone: config.timeZone,
 };
 // 発言と /close・/renew のターンのキュー（key は channelId）。SELF_AGENT_SHELL=1 ならセッションのジョブは同時に 1 つだけ
@@ -1058,7 +1065,7 @@ if (
       permissions: ccPermissionStore,
       unifyReady: () => unifyReady,
     });
-  // 確認は頼んだチャンネルに、その持ち主の Bot で投稿する
+  // 確認は頼んだチャンネルに、その持ち主の Bot で投稿する（ローカルの場所では cc_send・cc_start を断る）
   ccTools = createCcTools({
     cfg: config,
     registry,
@@ -1068,6 +1075,7 @@ if (
     sends: ccSends,
     starts: ccStarts,
     gateway: ownerPosts,
+    places: placeRefs,
     log,
   });
   ccRuntime = { sender: ccSender, starter: ccStarter, registry, panes };

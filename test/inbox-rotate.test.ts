@@ -11,11 +11,14 @@ import {
   ROTATED_NOTICE_FRESH,
   TASKS_ROTATE_PROMPT,
 } from "../src/app/inbox-rotate.ts";
+import { PersonaRouter } from "../src/app/personas.ts";
 import { buildTurnPrompt } from "../src/app/prompt.ts";
 import { rotatedSeed } from "../src/app/summary.ts";
 import { RESUME_FAILURE_LIMIT, type TurnDeps } from "../src/app/turn.ts";
-import type { TimeOfDay } from "../src/config.ts";
+import type { PersonaConfig, TimeOfDay } from "../src/config.ts";
 import type { IncomingMessage } from "../src/discord/gateway.ts";
+import { LocalGateway } from "../src/discord/local-gateway.ts";
+import { LocalIdStore } from "../src/store/local-places.ts";
 import type { SummaryChannelKind } from "../src/store/inbox-summaries.ts";
 import { createStores, tempDb } from "./helpers/db.ts";
 import { FakeGateway } from "./helpers/gateway.ts";
@@ -1007,4 +1010,64 @@ test("history: 切り替え・rotateNow で divider（ROTATED_NOTICE、引き継
     await idle.rotate();
     assert.deepEqual(rows(idle), [], k.kind);
   }
+});
+
+test("history（#530 の WP4）: ローカルの入口（足した人格の #<NAME>）の日次の切り替えは divider が 1 行で、既定の人格・その人格の Bot には何も行かない", async (t) => {
+  const db = tempDb(t);
+  const now = (): Date => ROTATE_AT;
+  const { guildSettings, inboxSummaries, sessions, seeds, usage, topicSessions, memories, history } = createStores(db, now);
+  const local = "100000000000000000002";
+  // 既定の人格の #inbox は今日切り替え済み。mika のローカルの入口は前日に切り替えて、その後に会話がある
+  guildSettings.setChannel("guild-1", "inboxChannelId", "inbox-1");
+  guildSettings.setInboxRotated("guild-1", "2026-10-03", ROTATE_AT);
+  guildSettings.setPersonaInbox("guild-1", "mika", local, "local");
+  guildSettings.setInboxRotated("guild-1", "2026-10-02", rotatedAtOf("2026-10-02"), "mika");
+  usage.record({ key: local, sessionId: "session-1", ok: true, durationMs: 1000, inputTokens: 10, cacheReadInputTokens: 2000, cacheCreationInputTokens: 300, contextTokens: 2310 });
+  sessions.set(local, "session-1");
+  const runner = new FakeRunner([ok(SUMMARY)]);
+  const defaultGateway = new FakeGateway({ record: ["send", "sendMessage"] });
+  const mikaGateway = new FakeGateway({ record: ["send", "sendMessage"] });
+  const personas = new PersonaRouter({
+    personas: [
+      { id: "default", name: "default", engine: "claude", runner, gateway: defaultGateway, connected: () => true },
+      { id: "mika", name: "ミカ", engine: "claude", runner, gateway: mikaGateway, connected: () => true },
+    ],
+    guildSettings,
+    topicSessions,
+    localGateway: new LocalGateway(new LocalIdStore(db)),
+  });
+  const mika: PersonaConfig = {
+    id: "mika",
+    name: "ミカ",
+    discordTokenEnv: "SELF_AGENT_PERSONA_MIKA_DISCORD_TOKEN",
+    promptFile: "/dev/null",
+    model: undefined,
+    engine: "claude",
+    effort: undefined,
+  };
+  const logs: string[] = [];
+  const log = (line: string): void => void logs.push(line);
+  const rotator = new InboxRotator({
+    cfg: { allowedGuildIds: ["guild-1"], timeZone: "Asia/Tokyo", inboxRotateAt: { hour: 4, minute: 0 }, inboxMaxInputTokens: 150000, personas: [mika] },
+    guildSettings,
+    inboxSummaries,
+    turnQueue: new RecordingQueue(2),
+    turn: { runner, personas, sessions, seeds, usage, log },
+    gateway: personas.ownerPosts(),
+    history,
+    now,
+    log,
+  });
+
+  await rotator.rotateDue(() => false);
+
+  assert.equal(runner.inputs.length, 1);
+  assert.equal(sessions.get(local), undefined);
+  assert.deepEqual(
+    history.list(local, { limit: 10 }).map(({ guildId, kind, source, persona, text }) => ({ guildId, kind, source, persona, text })),
+    [{ guildId: "guild-1", kind: "divider", source: "system", persona: "mika", text: ROTATED_NOTICE }],
+  );
+  assert.deepEqual(history.list("inbox-1", { limit: 10 }), []);
+  assert.deepEqual(defaultGateway.calls, []);
+  assert.deepEqual(mikaGateway.calls, []);
 });

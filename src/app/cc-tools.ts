@@ -2,7 +2,8 @@
 // cc_list は registry の一覧（§2.2 の順）を最大 CC_LIST_MAX 件。cc_send・cc_start は送り先・起動の場所を確かめてから、頼んだチャンネルに
 // 確認（commands/cc-confirm.ts。本文の全文を最大 3 通に分け、ボタンは最後の 1 通）をそのチャンネルの持ち主の Bot で投稿するだけで、
 // 送る・起動するのはオーナーがボタンを押したとき。確認に出しきれない本文は断る（見せていない部分は送らない）。
-// 使えるターンの判定（not_available）は agent/tools.ts の createCcToolHandlers。log は番号だけ（本文・名前・ディレクトリ・チャンネル ID は出さない）
+// 使えるターンの判定（not_available）は agent/tools.ts の createCcToolHandlers。log は番号だけ（本文・名前・ディレクトリ・チャンネル ID は出さない）。
+// ローカルの場所（Discord のボタンを押せない。docs/plan/personas-web-antigravity.md §3.3 の 6）では、cc_send・cc_start は確認を出さず行も作らずに断る
 import { homedir } from "node:os";
 import type { CcListEntry, CcListResult, CcSendResult, CcStartResult, CcToolDeps } from "../agent/tools.ts";
 import { formatWallClock } from "./recurrence.ts";
@@ -19,11 +20,14 @@ import type { CcStartStore } from "../store/cc-starts.ts";
 import type { OutgoingMessage } from "../discord/gateway.ts";
 import { ccRcUrl, cwdLabel } from "../cc/labels.ts";
 import { ccSendPrompt, ccStartPrompt, fitsConfirm } from "./commands/cc-confirm.ts";
+import type { PlaceRefs } from "./place-refs.ts";
 
 /** cc_list が返す件数の上限 */
 export const CC_LIST_MAX = 30;
 /** 本文が確認（最大 3 通）に出しきれないとき（``` を崩すと長くなる）の message */
 export const CONFIRM_TOO_LONG_MESSAGE = "本文に ` が多く、確認に全文を出しきれないため使えません。短くしてください";
+/** ローカルの場所で cc_send・cc_start を頼まれたときの message */
+export const CC_LOCAL_PLACE_MESSAGE = "Web だけの場所では確認を出せないので、ここからは端末の Claude Code に送れません。右腕（#inbox）から頼んでください";
 
 export type CcToolsDeps = {
   cfg: Pick<Config, "workspaceDir" | "timeZone">;
@@ -35,6 +39,8 @@ export type CcToolsDeps = {
   starts: Pick<CcStartStore, "add" | "setMessageId" | "transition">;
   /** 確認の投稿（チャンネルの持ち主の Bot。ownerPosts） */
   gateway: Pick<Gateway, "sendMessage">;
+  /** 頼んだチャンネルの場所がローカルか（無ければどこでも確認を出す） */
+  places?: Pick<PlaceRefs, "isLocal">;
   /** ~ の場所（ディレクトリ名の表示。既定は homedir()） */
   home?: string;
   log: (message: string) => void;
@@ -73,6 +79,8 @@ function startFailure(reason: CcStartFailure): CcStartResult {
 export function createCcTools(deps: CcToolsDeps): CcToolDeps {
   const { cfg, registry, panes, sender, starter, sends, starts, gateway, log } = deps;
   const home = deps.home ?? homedir();
+  /** 頼んだチャンネルがローカルの場所なら、確認を出せないので断る */
+  const isLocal = (channelId: string): boolean => deps.places?.isLocal(channelId) === true;
   const time = (ms: number | undefined): string | null => (ms === undefined ? null : formatWallClock(new Date(ms), cfg.timeZone));
   /** 確認の各通を順に投稿し、最後の 1 通（ボタンの付いたもの）のメッセージ ID を返す。どれかに失敗したら投げる */
   const postPages = async (channelId: string, pages: OutgoingMessage[]): Promise<string> => {
@@ -111,6 +119,7 @@ export function createCcTools(deps: CcToolsDeps): CcToolDeps {
     },
 
     async send(args, context): Promise<CcSendResult> {
+      if (isLocal(context.channelId)) return { result: "not_available", message: CC_LOCAL_PLACE_MESSAGE };
       if (!isUuid(args.session_id)) return { result: "not_found" };
       const checked = normalizeSendText(args.text);
       if (!checked.ok) {
@@ -154,6 +163,7 @@ export function createCcTools(deps: CcToolsDeps): CcToolDeps {
     },
 
     async start(args, context): Promise<CcStartResult> {
+      if (isLocal(context.channelId)) return { result: "not_available", message: CC_LOCAL_PLACE_MESSAGE };
       const checked = await starter.check({
         project: args.project,
         title: args.title,
