@@ -146,7 +146,7 @@ async function settledWithin(page: Page, limit: number): Promise<"" | "要求" |
   }
 }
 
-/** 新しい殻を撮る組（full でなければ一覧と会話の 3 枚だけ）。古い殻はダークのスマホと PC */
+/** 新しい殻を撮る組（full でなければ一覧と会話の 3 枚だけ） */
 const NEW_SHELLS: ReadonlyArray<{ vp: Viewport; theme: Theme; full: boolean }> = [
   { vp: "phone", theme: "dark", full: true },
   { vp: "phone", theme: "light", full: true },
@@ -154,7 +154,6 @@ const NEW_SHELLS: ReadonlyArray<{ vp: Viewport; theme: Theme; full: boolean }> =
   { vp: "pc", theme: "light", full: false },
   { vp: "tablet", theme: "dark", full: false },
 ];
-const OLD_SHELLS: ReadonlyArray<Viewport> = ["phone", "pc"];
 
 function newShellNames(vp: Viewport, theme: Theme, full: boolean): string[] {
   return [
@@ -203,8 +202,6 @@ function newShellNames(vp: Viewport, theme: Theme, full: boolean): string[] {
       : []),
   ].map((n) => `${vp}-${theme}-${n}`);
 }
-
-const oldShellNames = (vp: Viewport): string[] => [`old-${vp}-dark-list`, `old-${vp}-dark-chat`];
 
 /** Claude Code のチャンネルの段 cc（2 つ目のサーバー。ダークの 3 組）。今のサーバーに足すとほかの絵が変わるので分ける */
 const CC_SHELLS: ReadonlyArray<Viewport> = ["phone", "pc", "tablet"];
@@ -1319,7 +1316,6 @@ const MONO_CSS = '*, *::before, *::after { font-family: "IPAGothic", "Osaka-Mono
 /** 撮る PNG の名前（拡張子なし）の全部。--only はこの中から絞る */
 const ALL_SHOT_NAMES: readonly string[] = [
   ...NEW_SHELLS.flatMap(({ vp, theme, full }) => newShellNames(vp, theme, full)),
-  ...OLD_SHELLS.flatMap(oldShellNames),
   ...GALLERY_SHOTS.flatMap(({ vp, theme }) => GALLERY_KINDS.map((kind) => galleryName(vp, theme, kind))),
   ...CC_SHELLS.flatMap(ccShellNames),
 ];
@@ -6612,54 +6608,6 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     }
   }
 
-  /** 比較用の古い殻（ダークだけ） */
-  async function oldShell(vp: Viewport): Promise<void> {
-    const label = `old-${vp}-dark`;
-    if (!oldShellNames(vp).some(wanted)) return;
-    const { ctx, page } = await contextFor(vp, "dark", label);
-    try {
-      await step(`${label} list`, [`${label}-list`], async () => {
-        await page.goto(base + "/static/classic.html", { waitUntil: "load" });
-        // スマホでは一覧が引き出しの中で隠れているので、在るまでを待つ
-        await page.waitForSelector("#sidebar .sb-row", { state: "attached", timeout: 8000 });
-        await settled(page);
-        await shot(page, `${label}-list`);
-      });
-      await step(`${label} chat`, [`${label}-chat`], async () => {
-        await page.goto("about:blank");
-        await page.goto(base + `/static/classic.html#/ch/${open}`, { waitUntil: "load" });
-        await page.waitForSelector("#ed .msg-agent", { timeout: 8000 });
-        await settled(page);
-        await shot(page, `${label}-chat`);
-        // 古い殻に部品（c-*）と見出しの入口は無く、今の見出しが在る
-        const old = await page.evaluate(() => ({
-          parts: document.querySelectorAll('[class^="c-"], [class*=" c-"]').length,
-          toolbar: document.querySelector("#ed .ed-toolbar") !== null,
-          top: (window as unknown as { SA?: { top?: unknown } }).SA?.top === undefined,
-          talk: (window as unknown as { SA?: { talk?: unknown } }).SA?.talk === undefined,
-          cards: (window as unknown as { SA?: { cards?: unknown } }).SA?.cards === undefined,
-          roots: document.querySelectorAll("[data-talk]").length,
-          cardRoots: document.querySelectorAll("[data-cards]").length,
-          msgs: document.querySelectorAll("#ed .msg-agent").length,
-        }));
-        const problems = [
-          ...(old.parts !== 0 ? [`古い殻に c- のクラスの要素が ${old.parts} 個`] : []),
-          ...(!old.toolbar ? ["古い殻の #ed に .ed-toolbar が無い"] : []),
-          ...(!old.top ? ["古い殻に window.SA.top が在る"] : []),
-          ...(!old.talk ? ["古い殻に window.SA.talk が在る"] : []),
-          ...(old.roots !== 0 ? [`古い殻に [data-talk] が ${old.roots} 個`] : []),
-          ...(!old.cards ? ["古い殻に window.SA.cards が在る"] : []),
-          ...(old.cardRoots !== 0 ? [`古い殻に [data-cards] が ${old.cardRoots} 個`] : []),
-          ...(old.msgs === 0 ? ["古い殻の #ed に .msg-agent が無い"] : []),
-        ];
-        for (const line of problems) logLines.push(`[${label}] ${line}`);
-        if (problems.length > 0) throw new Error(`古い殻の検査で ${problems.length} 件`);
-      });
-    } finally {
-      await ctx.close();
-    }
-  }
-
   /**
    * 見本の当たり（hitProblems）と切り替えの折り返しを測る。id の重なりも見る。
    * 足りない物は 1 行ずつ console.log に書き、1 つでもあれば投げて段を失敗にする
@@ -7361,7 +7309,6 @@ async function shoot(browser: Browser, fixture: FixtureServer, out: string, only
     return { count, failed };
   }
   for (const { vp, theme, full } of NEW_SHELLS) await newShell(vp, theme, full);
-  for (const vp of OLD_SHELLS) await oldShell(vp);
   for (const { vp, theme } of GALLERY_SHOTS) await gallery(vp, theme);
   return { count, failed };
 }
@@ -7386,7 +7333,7 @@ async function main(argv: string[]): Promise<number> {
   const only = values.only;
   // 合う名前が無ければ Chromium を起動せずに返す
   if (only !== undefined && !ALL_SHOT_NAMES.some((name) => name.includes(only))) {
-    console.error(`--only ${only} に合う画面が無い（例: ${["phone-dark-a-list", "pc-dark-b-chat-top", "phone-light-b-chat-permission", "tablet-dark-a-list", "old-pc-dark-list", "pc-dark-g-gallery", "phone-dark-g-sheet"].join("・")}）`);
+    console.error(`--only ${only} に合う画面が無い（例: ${["phone-dark-a-list", "pc-dark-b-chat-top", "phone-light-b-chat-permission", "tablet-dark-a-list", "pc-dark-g-gallery", "phone-dark-g-sheet"].join("・")}）`);
     return 1;
   }
 

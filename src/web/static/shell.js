@@ -1,5 +1,5 @@
 // 新しい殻（index.html。docs/plan/web-ui-v3.md §2・§11 の M2）: 話題の一覧（列 1。topics.js）と開いた話題（列 2）、
-// SA.app（古い殻 workbench.js と同じ名前の契約。chat.js・views.js・api.js・ui.js・sound.js が呼ぶ）・hash・スマホの一覧 ⇄ 会話・テーマ・書きかけ・シート・キーボードの高さ、
+// SA.app（chat.js・views.js・api.js・ui.js・sound.js が呼ぶ名前の契約）・hash・スマホの一覧 ⇄ 会話・テーマ・書きかけ・シート・キーボードの高さ、
 // 下のバー（描くのは入口 c-app.js）と「ほか」の板・接続の点と鈴・絞り込み・一覧のキー、列 2 の見出し（描くのは入口 c-app.js の SA.top。[会話][端末]・場所・「…」の板。K4）、右腕（#514。一覧・列の一番上の行からほかの話題と同じに列 2（席）に開く。見出し・印・札）、話題を始めるダイアログ（#v3-start。§2・§5 の M4）、場所を変える（シートと確認。§6.3 の M5）、
 // 640px 以上の流れの列（docs/plan/web-ui-deck.md の D1。入口 c-app.js の SA.deck が在るときだけ）: 上の帯・3 つの列（状態は flows.js）・席（列 2 を開いたときだけ）・「探す」の板（一覧を重ねる）
 "use strict";
@@ -9,7 +9,7 @@
   const { el, icon, openDialog, closeDialog } = SA.ui;
   const root = document.documentElement;
 
-  // ===== 保存（このブラウザだけ。読めなくても動く。鍵は古い殻と同じなので、テーマと書きかけは 2 つの画面で共有する） =====
+  // ===== 保存（このブラウザだけ。読めなくても動く） =====
   const STORAGE_PREFIX = "self-agent-web:";
 
   function load(key, fallback) {
@@ -2103,6 +2103,13 @@
     }
     refs.searchBox = $("v3-search-box");
 
+    // M7 より前の既読の鍵と移し終えた旗（docs/plan/web-ui-v3.md の M8b）。今は読まないので消す。消せなくても画面は出す
+    try {
+      window.localStorage.removeItem(STORAGE_PREFIX + "seen");
+      window.localStorage.removeItem(STORAGE_PREFIX + "seen-sent");
+    } catch {
+      // 消せない環境（プライベートモードなど）では残るだけ
+    }
     S.theme = THEMES.includes(load("theme", "dark")) ? load("theme", "dark") : "dark";
     applyTheme();
     const drafts = loadJson("drafts");

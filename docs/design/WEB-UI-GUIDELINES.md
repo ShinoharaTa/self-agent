@@ -4,7 +4,7 @@
 
 > 対象: `src/web/static/`（`/` の `index.html`。話題の一覧・会話・右腕の新しい殻。docs/plan/web-ui-v3.md）。`templates/web/`（LLM が作るページの土台）は対象外で、その決まりは `templates/web/DESIGN.md`。
 > 根拠: Anthropic frontend-design、Vercel Web Interface Guidelines、Emil Kowalski の design-eng / mobile-native、heydamir/unslop、pbakaus/impeccable、ibelick/ui-skills、Nutlope/hallmark の各 skill を、この UI（tailnet の中・1 人用・日本語・iPhone と PC）に合う形に絞ったもの。出典は項目の末尾に `[unslop]` `[impeccable]` `[ui-skills]` `[hallmark]` `[emil]` `[vercel]` `[anthropic]` の印で書く。印の無いものは既存の決まり（DESIGN.md・web-ui.md）か、この文書で決めたもの。
-> 古い殻（VS Code 風の SPA）は `/static/classic.html` に M8b まで残す。古い殻だけの決まりは §4・§5・§7 の末尾の小節「古い殻（`/static/classic.html`）だけの決まり（M8b で消す）」に寄せた。§2・§6・§8 と §5 のトーストなどの行には、古い殻の語（タイトルバー・下タブ・ステータスバー・パレットなど）が本文として残っている。M8b で直す。
+> 古い殻（VS Code 風の SPA。`/static/classic.html`）は M8b（#542。`docs/plan/web-ui-home.md` §4.3 の P1）で消した。§4・§5・§7 の末尾の小節「古い殻（`/static/classic.html`）だけの決まり（M8b で消す）」と、§2・§6・§8 と §5 のトーストなどの行に残る古い殻の語（タイトルバー・下タブ・ステータスバー・パレットなど）は、消した殻の記録で、今の決まりではない（P1 では書き直していない）。
 > 「事実」= 2026-11-04 の main のコードで確かめたこと。「決まり」= これから守ること。決定は §11。
 > #463 で §2.3・§4〜§6・§10 を新しい形に改めた。入る段は 列と席 = D1、スマホ = D2、線と差し色 = D3、会話の行 = D4（済）、動き = D5、右腕の口（丸）と枠 = D6（`docs/plan/web-ui-deck.md`。丸と枠は #514 で消し、右腕は あなたの番 の列の一番上の行にした。`docs/plan/web-ui-hand-row.md`）。その段が入るまで、その部分の画面は前の形で、決まりは各節の「…までの形」の文で見る。
 

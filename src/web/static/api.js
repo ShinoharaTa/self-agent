@@ -28,10 +28,6 @@
   const CC_SCREEN_INTERVAL_MS = 3000;
   /** 許可の要求を保留しているセッションがあるときの一覧の間隔 */
   const CC_PERMISSION_INTERVAL_MS = 3000;
-  /** M7 より前の既読（localStorage）。旗（SEEN_SENT_KEY）が無い間だけ始めの値として読む。書かない・消さない（消すのは M8b） */
-  const SEEN_KEY = "self-agent-web:seen";
-  /** 古い既読を一覧の会話の分だけサーバーへ移し終えた旗（"1"） */
-  const SEEN_SENT_KEY = "self-agent-web:seen-sent";
   /** 音がオンで画面が隠れている間、/api/running と /api/cc/sessions を読み続ける間隔（docs/plan/web-ui-sound.md §3） */
   const HIDDEN_SOUND_MS = 10000;
 
@@ -225,10 +221,9 @@
       };
       // 一覧に無いチャンネル（削除した・開けなくなった）の書きかけを捨てる。形の違う応答では捨てない
       if (Array.isArray(data && data.channels)) SA.app.pruneDrafts(store.channels.channels.map((c) => c && c.id));
-      // サーバーの既読を取り込み、こちらの方が進んでいる会話を送る。一覧の分が全部サーバーに入ったら、古い鍵を以後読まない
-      // 空の一覧では書かない（古い既読を 1 件も送らないまま旗が立つ）
+      // サーバーの既読を取り込み、こちらの方が進んでいる会話を送る
       const readIds = store.channels.channels.map((c) => c && c.id).filter((id) => typeof id === "string");
-      if (store.syncReads(data && data.reads, readIds) && readIds.length > 0) markSeenSent();
+      store.syncReads(data && data.reads, readIds);
       SA.app.refreshSidebar();
       SA.app.refreshStatus();
       SA.chat.channelsChanged();
@@ -477,38 +472,8 @@
 
   // ===== 既読（サーバーの topic_reads。docs/plan/web-ui-v3.md §3.3。{ [channelId]: 見た最後の history.id }） =====
   // 進めたら sendRead（POST …/ch:<id>/read）で送り、ほかの端末の分は会話の一覧と話題の一覧（topics.js）の応答の reads で取り込む（どちらも大きい方だけ）。
-  // localStorage には書かない（同じブラウザの別のタブへも次の polling で届く）。送れなくてもこのタブのメモリには残る
-  function readOldSeen() {
-    try {
-      if (window.localStorage.getItem(SEEN_SENT_KEY) === "1") return {};
-      const v = JSON.parse(window.localStorage.getItem(SEEN_KEY) || "null");
-      return v !== null && typeof v === "object" && !Array.isArray(v) ? v : {};
-    } catch {
-      return {};
-    }
-  }
-
-  /** チャンネルごとに id の大きい方 */
-  function mergeSeen(a, b) {
-    const merged = {};
-    for (const source of [a, b]) {
-      for (const [channelId, value] of Object.entries(source)) {
-        const id = Number(value);
-        if (Number.isFinite(id) && id > (merged[channelId] || 0)) merged[channelId] = id;
-      }
-    }
-    return merged;
-  }
-
-  store.seen = mergeSeen(readOldSeen(), {});
-
-  function markSeenSent() {
-    try {
-      if (window.localStorage.getItem(SEEN_SENT_KEY) !== "1") window.localStorage.setItem(SEEN_SENT_KEY, "1");
-    } catch {
-      // 書けなくても動く（次に開いたときも古い鍵を読み、サーバーより大きい分だけを送る）
-    }
-  }
+  // localStorage には読みも書きもしない（同じブラウザの別のタブへも次の polling で届く）。送れなくてもこのタブのメモリには残る
+  store.seen = {};
 
   // このタブのメモリだけ: 200 が返った送った値・断られた会話（400・404。このページでは送り直さない）・送っている最中の会話
   const readAcked = {};

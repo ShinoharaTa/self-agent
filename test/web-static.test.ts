@@ -13,9 +13,8 @@ import { staticFileFor } from "../src/web/static.ts";
 const STATIC_DIR = fileURLToPath(new URL("../src/web/static/", import.meta.url));
 const files = readdirSync(STATIC_DIR);
 const read = (name: string): string => readFileSync(join(STATIC_DIR, name), "utf8");
-/** `/` が配る新しい殻と、M8b まで残す古い殻（/static/classic.html。docs/plan/web-ui-v3.md の M8） */
+/** `/` が配る新しい殻（docs/plan/web-ui-v3.md の M8。古い殻は #542 で消した） */
 const SHELL_HTML = "index.html";
-const CLASSIC_HTML = "classic.html";
 /** scripts/make-icons.ts が書くもの（docs/plan/web-ui.md §11.5） */
 const ICON_FILES = ["app-icon.svg", "apple-touch-icon.png", "icon-192.png", "icon-512.png", "icon-512-maskable.png"];
 
@@ -29,9 +28,6 @@ test("web static: 決めたファイルがそろっていて、base.css・icons.
     "sound.js",
     "chat.js",
     "views.js",
-    "sidebar.js",
-    "workbench.js",
-    "classic.html",
     "shell.css",
     "shell.js",
     "topics.js",
@@ -92,23 +88,6 @@ test("web static: HTML に inline の script・style・style 属性・on* 属性
     // 外のオリジンを読まない
     assert.doesNotMatch(html, /(src|href)="(https?:)?\/\//i, name);
   }
-});
-
-test("web static: 古い殻（classic.html）の読み込みの順と既定のテーマ", () => {
-  const html = read(CLASSIC_HTML);
-  assert.match(html, /<html lang="ja" data-theme="dark">/);
-  const links = [...html.matchAll(/<link rel="stylesheet" href="([^"]+)">/g)].map((m) => m[1]);
-  assert.deepEqual(links, ["/static/base.css", "/static/tokens.css", "/static/app.css"]);
-  const scripts = [...html.matchAll(/<script src="([^"]+)" defer><\/script>/g)].map((m) => m[1]);
-  assert.deepEqual(scripts, [
-    "/static/ui.js",
-    "/static/api.js",
-    "/static/sound.js",
-    "/static/chat.js",
-    "/static/views.js",
-    "/static/sidebar.js",
-    "/static/workbench.js",
-  ]);
 });
 
 test("web static: モックの「提案」「モック」・分割・ダミーのデータが残っていない", () => {
@@ -540,23 +519,15 @@ test("web static: ui.js の confirm は SA.ask が在れば口へ描き、実行
   assert.deepEqual(log.slice(-1), ["closed:f"]);
 });
 
-test("web static: 古い殻（classic.html）に失敗のトーストの容れ物（role=alert）がある", () => {
-  const html = read(CLASSIC_HTML);
-  assert.match(html, /<div class="toast-stack" id="toast" role="status"[^>]*hidden><\/div>/);
-  assert.match(html, /<div class="toast-stack" id="toast-alert" role="alert"[^>]*hidden><\/div>/);
-});
-
 // ===== 許可のカード（views.js。GUIDELINES §5 許可のカード）を偽の DOM で描く =====
 /** 子孫の要素を順に（深さ優先） */
 function descendants(node: FakeNode): FakeNode[] {
   return node.children.flatMap((c) => [c, ...descendants(c)]);
 }
 
-function loadViews(opts: { v3?: boolean } = {}) {
-  // v3 なら新しい殻の根（#v3）があるとして描く（views.js の isV3Shell）
-  const v3Root = opts.v3 ? new FakeNode("div") : null;
+function loadViews() {
   const document = {
-    getElementById: (id: string) => (id === "v3" ? v3Root : null),
+    getElementById: () => null,
     createElement: (tag: string) => new FakeNode(tag),
     createElementNS: (_ns: string, tag: string) => new FakeNode(tag),
     createTextNode: (text: string) => Object.assign(new FakeNode("#text"), { text }),
@@ -644,21 +615,7 @@ test("web static: 許可のカードは [許可][拒否] の 2 つ（許可 seco
   assert.deepEqual(posts.slice(2), ["/api/cc/permissions/9/deny"]);
 });
 
-test("web static: 本文へのスキップリンク・入力の必須とエラーの属性・z-index の変数（GUIDELINES §4・§5・§8）", () => {
-  const html = read(CLASSIC_HTML);
-  // body の最初の要素がスキップリンクで、飛び先は焦点を受けられる
-  assert.match(html, /<body>\s*<a class="skip-link" href="#editors">本文へ<\/a>/);
-  assert.match(html, /id="editors" tabindex="-1"/);
-  for (const [id, error] of [
-    ["new-title", "new-error"],
-    ["cc-start-title", "cc-start-error"],
-  ]) {
-    const input = new RegExp(`<input[^>]*id="${id}"[^>]*>`).exec(html)?.[0] ?? "";
-    assert.match(input, /\brequired\b/, id);
-    assert.match(input, /aria-required="true"/, id);
-    assert.match(input, new RegExp(`aria-describedby="${error}"`), id);
-    assert.match(html, new RegExp(`<div class="alert-slot"><p class="alert" id="${error}" role="alert"`), error);
-  }
+test("web static: z-index の変数と見出しの段（GUIDELINES §4・§8）", () => {
   // z-index は変数だけ（数字を直接書くのは :root の段の定義の中だけ）
   const css = read("app.css");
   const raw = [...css.matchAll(/z-index:\s*([^;]+);/g)].map((m) => m[1]!.trim());
@@ -668,19 +625,7 @@ test("web static: 本文へのスキップリンク・入力の必須とエラ�
   for (const name of files.filter((n) => n.endsWith(".js"))) assert.doesNotMatch(read(name), /el\("h3"/, name);
 });
 
-test("web static: スマホの下タブは固定 4（会話・タスク・リマインド・その他）で、「その他」のシートと backdrop の容れ物がある（docs/plan/web-ui-polish.md の NAV）", () => {
-  const html = read(CLASSIC_HTML);
-  const sheet = /<div[^>]*id="more-sheet"[^>]*>/.exec(html)?.[0] ?? "";
-  assert.match(sheet, /role="dialog"/);
-  assert.match(sheet, /aria-modal="true"/);
-  assert.match(sheet, /aria-label="その他の画面"/);
-  assert.match(html, /<div class="drawer-backdrop" id="more-backdrop" hidden><\/div>/);
-  // 下タブの主要の 3 つと、「その他」に入るもの（順は ACTIVITIES のまま）
-  const js = read("sidebar.js");
-  const phoneOf = (id: string): string | undefined => new RegExp(`\\{ id: "${id}",[^\\n]*?phone: "(primary|more)"`).exec(js)?.[1];
-  for (const id of ["chat", "tasks", "reminders"]) assert.equal(phoneOf(id), "primary", id);
-  for (const id of ["knowledge", "projects", "jobs", "github", "usage", "devlog", "status", "settings"]) assert.equal(phoneOf(id), "more", id);
-  assert.match(read("workbench.js"), /"aria-controls": "more-sheet"/);
+test("web static: app.css の「その他」のシート（.more-sheet）は transform と visibility だけを動かし、639px 以下だけ出す（docs/plan/web-ui-polish.md の NAV）", () => {
   // シートの動きは transform と visibility だけ（height・all を動かさない）
   const css = read("app.css");
   const rule = /\n {2}\.more-sheet \{([^}]*)\}/.exec(css)?.[1] ?? "";
@@ -693,94 +638,7 @@ test("web static: スマホの下タブは固定 4（会話・タスク・リマ
   assert.match(css, /\n\.more-sheet,\n#more-backdrop \{\n {2}display: none;\n\}/);
 });
 
-// ===== 会話の一覧の群「Claude Code」（sidebar.js。docs/plan/claude-code-channels.md §2）を偽の DOM で描く =====
-type CcFake = { sessions: Array<Record<string, unknown>>; starting: Array<Record<string, unknown>>; stale: boolean; unreadable: boolean; fetchedAt: string | null };
-
-function loadSidebar(opts: {
-  ccEnabled: boolean;
-  cc: CcFake | null;
-  setUp?: boolean;
-  shows?: boolean;
-  channels?: boolean;
-  unread?: number;
-  /** 会話の一覧に足す Claude Code のチャンネル（kind cc。CC14）と、未読にするチャンネル */
-  ccChannels?: string[];
-  unreadIds?: string[];
-  /** 会話の一覧に足すプロジェクトのセッション（kind session）と、実行中のターン（/api/running の行） */
-  sessions?: Array<Record<string, unknown>>;
-  running?: Array<Record<string, unknown>>;
-}) {
-  const document = {
-    activeElement: null as FakeNode | null,
-    getElementById: () => null,
-    createElement: (tag: string) => new FakeNode(tag),
-    createElementNS: (_ns: string, tag: string) => new FakeNode(tag),
-    createTextNode: (text: string) => Object.assign(new FakeNode("#text"), { text }),
-  };
-  const context = { window: {} as Record<string, unknown>, document, setTimeout: () => 0, clearTimeout: () => undefined, Intl, Date, Number };
-  vm.runInNewContext(read("ui.js"), context);
-  const SA = (context.window as { SA: Record<string, unknown> }).SA;
-  const calls = { kickCc: 0, loadCc: 0, opened: [] as string[] };
-  const channel = (id: string, kind: string, name: string, state?: string) => ({ id, kind, name, title: name, state, persona: "default", last: null });
-  SA.store = {
-    status: { cc: { enabled: opts.ccEnabled } },
-    channels: opts.channels === false ? null : {
-      guilds: [{ id: "g", setUp: opts.setUp !== false }],
-      personas: [{ id: "default", name: "既定の人格", isDefault: true }],
-      channels: [
-        channel("c1", "inbox", "inbox"),
-        channel("c2", "session", "調べもの", "active"),
-        ...(opts.ccChannels ?? []).map((id) => channel(id, "cc", "cc-" + id)),
-        ...(opts.sessions ?? []).map((extra) => ({ ...channel(String(extra.id), "session", String(extra.title), "active"), ...extra })),
-      ],
-    },
-    cc: opts.cc,
-    ccAt: opts.cc ? Date.now() : 0,
-    ccFailed: false,
-    running: opts.running ?? [],
-    ccEnabled: () => opts.ccEnabled,
-    ccNeedsInputCount: () => (opts.cc ? opts.cc.sessions.filter((s) => s.state === "needs_input").length : 0),
-    unreadCount: () => opts.unread ?? 1,
-    runningOf: (id: string) => (opts.running ?? []).find((r) => r.channelId === id) ?? null,
-    runningWaitingText: (run: { waitingPermission?: { toolName: string } } | null) => (run && run.waitingPermission ? "許可を待っています: " + run.waitingPermission.toolName : null),
-    isUnread: (ch: { id: string }) => (opts.unreadIds ?? []).includes(ch.id),
-    load: {
-      cc: () => {
-        calls.loadCc++;
-      },
-      channels: () => undefined,
-    },
-  };
-  SA.app = {
-    activeTabId: () => null,
-    sidebarShows: (id: string) => id === "chat" && opts.shows !== false,
-    open: (tab: string) => calls.opened.push(tab),
-    closeDrawer: () => undefined,
-  };
-  SA.poll = {
-    kickCc: () => {
-      calls.kickCc++;
-    },
-  };
-  // 許可待ちの判定と数は api.js のものをそのまま使う
-  vm.runInNewContext(sessionAskingSource(), { store: SA.store });
-  SA.views = {
-    oneLine: (text: string) => text.replace(/\s+/g, " "),
-    ccName: (s: { name?: string; cwdLabel?: string }) => s.name || s.cwdLabel || "（名前なし）",
-    ago: () => "1 分前",
-    secondsAgo: () => "3 秒前",
-  };
-  vm.runInNewContext(read("sidebar.js"), context);
-  const sidebar = SA.sidebar as { ACTIVITIES: Array<{ id: string; count?: () => number; countLabel?: () => string }>; render: (container: FakeNode, id: string) => void };
-  const container = new FakeNode("div");
-  sidebar.render(container, "chat");
-  const groups = descendants(container).filter((n) => n.tagName === "details");
-  const titleOf = (g: FakeNode) => g.children[0]!.children[1]!.text;
-  const countOf = (g: FakeNode) => g.children[0]!.children[2]!.text;
-  const ccGroup = groups.find((g) => titleOf(g) === "Claude Code");
-  return { sidebar, container, groups, titleOf, countOf, ccGroup, calls, store: SA.store as Record<string, unknown>, document: document as { activeElement: FakeNode | null } };
-}
-
+// ===== 許可待ちの判定（api.js） =====
 /** api.js の store.sessionAsking と store.sessionAskingCount */
 function sessionAskingSource(): string {
   const js = read("api.js");
@@ -792,26 +650,6 @@ function sessionAskingSource(): string {
 }
 
 const ccSession = (sessionId: string, name: string, state: string, extra: Record<string, unknown> = {}) => ({ sessionId, name, state, inTmux: true, cwdLabel: "~/w/" + name, ...extra });
-
-test("web static: ACTIVITIES に Claude Code（cc）は無く、会話の数は未読 + 判断待ち", () => {
-  const { sidebar } = loadSidebar({
-    ccEnabled: true,
-    cc: { sessions: [ccSession("a", "x", "needs_input"), ccSession("b", "y", "needs_input"), ccSession("c", "z", "idle")], starting: [], stale: false, unreadable: false, fetchedAt: null },
-  });
-  assert.equal(sidebar.ACTIVITIES.some((a) => a.id === "cc"), false);
-  const chat = sidebar.ACTIVITIES.find((a) => a.id === "chat")!;
-  // 未読 1 + 判断待ち 2
-  assert.equal(chat.count!(), 3);
-  assert.equal(chat.countLabel!(), "未読・判断待ち ");
-  assert.doesNotMatch(read("sidebar.js"), /\{ id: "cc",/);
-  // 語は未読だけ・判断待ちだけ・両方で分ける
-  const needsOnly = loadSidebar({ ccEnabled: true, unread: 0, cc: { sessions: [ccSession("a", "x", "needs_input")], starting: [], stale: false, unreadable: false, fetchedAt: null } });
-  assert.equal(needsOnly.sidebar.ACTIVITIES.find((a) => a.id === "chat")!.countLabel!(), "判断待ち ");
-  const unreadOnly = loadSidebar({ ccEnabled: true, unread: 2, cc: { sessions: [ccSession("a", "x", "idle")], starting: [], stale: false, unreadable: false, fetchedAt: null } });
-  assert.equal(unreadOnly.sidebar.ACTIVITIES.find((a) => a.id === "chat")!.countLabel!(), "未読 ");
-  // workbench は関数の countLabel を呼ぶ
-  assert.match(read("workbench.js"), /typeof a\.countLabel === "function" \? a\.countLabel\(\)/);
-});
 
 test("web static: store.ccNeedsInputCount（api.js）は連携が有効で一覧があるときだけ needs_input の数", () => {
   const src = /store\.ccNeedsInputCount = [^\n]*;/.exec(read("api.js"))?.[0];
@@ -837,57 +675,6 @@ test("web static: store.isUnread（api.js）は最後の行が返事か統括の
   assert.equal(isUnread({ id: "ch:100", last: { id: 5, kind: "notice", lead: true } }), false);
   assert.equal(isUnread({ id: "ch:100", last: { id: 6, kind: "notice" } }), false);
   assert.equal(isUnread({ id: "ch:100", last: { id: 6, kind: "agent" } }), true);
-});
-
-test("web static: 一覧を描き直しても .sb-body のスクロール位置を保つ（同じアクティビティのときだけ）", () => {
-  const { sidebar, container, store } = loadSidebar({ ccEnabled: false, cc: null });
-  const bodyOf = () => container.children.find((c) => c.classes.has("sb-body")) as (FakeNode & { scrollTop?: number }) | undefined;
-  assert.equal(container.getAttribute("data-activity"), "chat");
-  bodyOf()!.scrollTop = 120;
-  sidebar.render(container, "chat");
-  assert.equal(bodyOf()!.scrollTop, 120);
-  assert.equal(container.getAttribute("data-activity"), "chat");
-  // 別のアクティビティへ切り替えたら先頭から（戻ってきても先頭から）
-  store.openTasks = [];
-  bodyOf()!.scrollTop = 80;
-  sidebar.render(container, "tasks");
-  assert.equal(bodyOf()!.scrollTop ?? 0, 0);
-  assert.equal(container.getAttribute("data-activity"), "tasks");
-  sidebar.render(container, "chat");
-  assert.equal(bodyOf()!.scrollTop ?? 0, 0);
-  // 出さないアクティビティは空にして印を外す
-  sidebar.render(container, "status");
-  assert.equal(container.children.length, 0);
-  assert.equal(container.getAttribute("data-activity"), null);
-  // 行のボタンは開くタブを data-tab に持つ（描き直した後のフォーカスの戻し先）
-  sidebar.render(container, "chat");
-  const rowBtn = descendants(container).find((n) => n.tagName === "button" && n.classes.has("sb-row"))!;
-  assert.equal(rowBtn.getAttribute("data-tab"), "ch:c1");
-});
-
-test("web static: 会話・Claude Code の行に焦点があれば、一覧を描き直した後に同じ data-tab の新しい行へ焦点を戻す（スクロールさせない）", () => {
-  const { sidebar, container, document } = loadSidebar({ ccEnabled: false, cc: null, sessions: [{ id: "p1", title: "調べもの 2" }] });
-  const rowOf = (tab: string) => container.querySelectorAll("button.sb-row").find((n) => n.getAttribute("data-tab") === tab);
-  const before = rowOf("ch:p1")!;
-  assert.ok(before);
-  // 本物の DOM の tagName は大文字
-  before.tagName = "BUTTON";
-  document.activeElement = before;
-  FakeNode.focusLog = [];
-  sidebar.render(container, "chat");
-  const after = rowOf("ch:p1")!;
-  assert.notEqual(after, before, "行は作り直している");
-  assert.equal(FakeNode.focusLog.length, 1);
-  assert.equal(FakeNode.focusLog[0]!.node, after);
-  // opts は vm の中で作ったもの（別の realm）なので値だけを見る
-  assert.equal((FakeNode.focusLog[0]!.opts as { preventScroll?: boolean }).preventScroll, true);
-  // 行のボタンでなければ（見出しの操作など）戻さない
-  const other = new FakeNode("BUTTON");
-  container.append(other);
-  document.activeElement = other;
-  FakeNode.focusLog = [];
-  sidebar.render(container, "chat");
-  assert.deepEqual(FakeNode.focusLog, []);
 });
 
 test("web static: store.sessionAsking（api.js）は実行中のターンの waitingPermission を優先し、まだ読んでいなければ channel の permission", () => {
@@ -921,57 +708,12 @@ test("web static: store.sessionAsking（api.js）は実行中のターンの wai
   assert.equal(make(waiting, [pendingCh, plainCh]).sessionAskingCount(), 1);
 });
 
-test("web static: プロジェクトのセッションの許可待ちの行はバッジ「許可待ち」（質問なら「質問」）と dot-warn で、スピナーを出さない。会話の数に入る", () => {
-  const permission = (extra: Record<string, unknown> = {}) => ({ id: 7, sessionId: "x", state: "pending", toolName: "Bash", summary: "npm  test", ...extra });
-  const { sidebar, groups, titleOf } = loadSidebar({
-    ccEnabled: false,
-    cc: null,
-    unread: 0,
-    sessions: [
-      { id: "p1", title: "許可のセッション", permission: permission() },
-      { id: "p2", title: "質問のセッション", permission: permission({ question: { questions: [{ question: "どれ" }] } }) },
-      { id: "p3", title: "動いているセッション" },
-    ],
-    running: [
-      { channelId: "p1", waitingPermission: { toolName: "Bash", since: "t" } },
-      { channelId: "p2", waitingPermission: { toolName: "AskUserQuestion", since: "t" } },
-      { channelId: "p3" },
-    ],
-  });
-  const active = groups.find((g) => titleOf(g) === "進行中")!;
-  const list = active.children.find((c) => c.tagName === "ul")!;
-  const rowNamed = (title: string) => list.children.find((li) => descendants(li).some((n) => n.classes.has("sb-label") && n.text === title))!;
-  const ask = rowNamed("許可のセッション");
-  const badgeText = (li: FakeNode) => descendants(li).filter((n) => n.classes.has("badge-accent")).map((n) => n.text);
-  assert.deepEqual(badgeText(ask), ["許可待ち"]);
-  assert.ok(descendants(ask).some((n) => n.classes.has("badge-accent") && n.classes.has("hide-sm")));
-  const dot = descendants(ask).find((n) => n.classes.has("dot-warn"))!;
-  assert.equal(dot.getAttribute("aria-label"), "許可待ち");
-  assert.equal(descendants(ask).some((n) => n.classes.has("spinner")), false);
-  assert.equal(ask.children[0]!.getAttribute("title"), "Bash: npm test");
-  const question = rowNamed("質問のセッション");
-  assert.deepEqual(badgeText(question), ["質問"]);
-  assert.equal(descendants(question).find((n) => n.classes.has("dot-warn"))!.getAttribute("aria-label"), "質問");
-  // 許可を待っていない実行中の行は今のまま（スピナー）
-  const run = rowNamed("動いているセッション");
-  assert.ok(descendants(run).some((n) => n.classes.has("spinner")));
-  assert.deepEqual(badgeText(run), []);
-  // 会話の数（未読 0 + 判断待ち 0 + 許可待ち 2）と語
-  const chat = sidebar.ACTIVITIES.find((a) => a.id === "chat")!;
-  assert.equal(chat.count!(), 2);
-  assert.equal(chat.countLabel!(), "判断待ち ");
-});
-
 test("web static: 下タブの数は実行中も隠さず、数があるときのスピナーはアイコンの左（has-count）", () => {
   const css = read("app.css");
   assert.doesNotMatch(css, /\.act-btn\.is-running \.act-count \{\s*display: none;/);
   assert.match(css, /\.act-btn\.is-running\.has-count \.act-spin \{\s*left: auto;\s*right: calc\(50% \+ var\(--space-1\)\);\s*\}/);
   // 数の位置の規則（.act-btn.is-running .act-spin）より後ろにも置く。勝つのは has-count の分だけ詳細度が高いからで、順には頼らない
   assert.ok(css.indexOf(".act-btn.is-running.has-count .act-spin") > css.indexOf("left: calc(50% + var(--space-1));"));
-  const workbench = read("workbench.js");
-  assert.match(workbench, /btn\.classList\.add\("has-count"\)/);
-  assert.match(workbench, /parts\.join\("・"\)/);
-  assert.match(workbench, /el\("span", \{ class: "spinner spinner-sm act-spin", "aria-hidden": "true" \}\)/);
 });
 
 test("web static: ccStatusOf（chat.js）は 届け待ち > 作業中 > 届けた の順で 1 つだけ返す", () => {
@@ -1257,82 +999,6 @@ test("web static: 届け待ちの間は前面の Claude Code のセッション�
   assert.match(api, /return !!\(p && \(p\.state === "queued" \|\| p\.state === "delivering"\)\);/);
 });
 
-test("web static: 会話の一覧は 入口 → Claude Code → 進行中 → 待ち → 完了 で、Claude Code の群は起動中 → 一覧の順（サーバーの並び）・見出しの数は判断待ち・行は cc:<id> を開く", () => {
-  const { groups, titleOf, countOf, ccGroup, calls } = loadSidebar({
-    ccEnabled: true,
-    cc: {
-      sessions: [ccSession("s-need", "need", "needs_input"), ccSession("s-run", "run", "running"), ccSession("s-idle", "idle", "idle", { channel: { channelId: "x" } })],
-      starting: [{ title: "new-one", project: "p" }],
-      stale: true,
-      unreadable: false,
-      fetchedAt: new Date().toISOString(),
-    },
-  });
-  assert.deepEqual(groups.map(titleOf), ["入口", "Claude Code", "進行中", "待ち", "完了"]);
-  assert.ok(ccGroup);
-  assert.equal(countOf(ccGroup), "1");
-  const list = ccGroup.children.find((c) => c.tagName === "ul")!;
-  const labels = list.children.map((li) => descendants(li).find((n) => n.classes.has("sb-label"))!.text);
-  assert.deepEqual(labels, ["new-one", "need", "run", "idle"]);
-  // 判断待ちは点、実行中はスピナー、チャンネルのあるものは #（無いものは空の箱）
-  const rowOf = (i: number) => list.children[i]!;
-  assert.ok(descendants(rowOf(1)).some((n) => n.classes.has("dot-warn")));
-  assert.ok(descendants(rowOf(2)).some((n) => n.classes.has("spinner")));
-  const iconHref = (li: FakeNode) => descendants(li).find((n) => n.tagName === "use")?.getAttribute("href") ?? null;
-  assert.match(iconHref(rowOf(3)) ?? "", /#hash$/);
-  assert.ok(descendants(rowOf(1)).some((n) => n.classes.has("icon-blank")));
-  // 読めなかった注記は群の中、最後に読めた時刻は見出しの title。[Claude Code を起動] は群の外（新しいセッションと同じ形）
-  assert.match(ccGroup.textContent, /前に読めた一覧です/);
-  assert.doesNotMatch(ccGroup.textContent, /一覧は/);
-  assert.equal(ccGroup.children[0]!.getAttribute("title"), "一覧は 3 秒前のもの");
-  assert.equal(ccGroup.buttons().some((b) => b.textContent === "Claude Code を起動"), false);
-  const next = ccGroup.parent!.children[ccGroup.parent!.children.indexOf(ccGroup) + 1]!;
-  assert.ok(next.classes.has("sb-new-row"));
-  assert.ok(next.buttons().some((b) => b.textContent === "Claude Code を起動"));
-  rowOf(1).buttons()[0]!.dispatch("click");
-  assert.deepEqual(calls.opened, ["cc:s-need"]);
-  // 会話の一覧を出したら Claude Code の polling を始め直す
-  assert.equal(calls.kickCc, 1);
-});
-
-test("web static: Claude Code のチャンネルのある行は # で会話のタブ（ch:<id>）を開き、未読の点は会話と同じ。cc のチャンネルは入口に出ない（CC14）", () => {
-  const { groups, titleOf, ccGroup, calls } = loadSidebar({
-    ccEnabled: true,
-    cc: {
-      sessions: [
-        ccSession("s-ch", "with-channel", "idle", { channel: { channelId: "c9", state: "open" } }),
-        ccSession("s-gone", "deleted-channel", "idle", { channel: { channelId: "c8", state: "deleted" } }),
-        ccSession("s-none", "no-channel", "idle"),
-      ],
-      starting: [],
-      stale: false,
-      unreadable: false,
-      fetchedAt: null,
-    },
-    ccChannels: ["c9"],
-    unreadIds: ["c9"],
-  });
-  const entrances = groups.find((g) => titleOf(g) === "入口")!;
-  assert.doesNotMatch(entrances.textContent, /cc-c9/);
-  assert.ok(ccGroup);
-  const list = ccGroup.children.find((c) => c.tagName === "ul")!;
-  const rowOf = (i: number) => list.children[i]!;
-  assert.ok(descendants(rowOf(0)).some((n) => n.classes.has("dot-unread")));
-  assert.equal(descendants(rowOf(1)).some((n) => n.classes.has("dot-unread")), false);
-  for (let i = 0; i < 3; i++) rowOf(i).buttons()[0]!.dispatch("click");
-  assert.deepEqual(calls.opened, ["ch:c9", "cc:s-gone", "cc:s-none"]);
-});
-
-test("web static: Claude Code の群の見出しの数は、判断待ちが 0 なら全体（起動中を含む）の数", () => {
-  const { ccGroup, countOf } = loadSidebar({
-    ccEnabled: true,
-    cc: { sessions: [ccSession("a", "x", "running"), ccSession("b", "y", "idle")], starting: [{ title: "n", project: "p" }], stale: false, unreadable: false, fetchedAt: null },
-  });
-  assert.ok(ccGroup);
-  assert.equal(countOf(ccGroup), "3");
-  assert.equal(ccGroup.children[0]!.getAttribute("title"), null);
-});
-
 test("web static: load.cc（api.js）は中身が前と同じなら描き直さず、描き直すときはアクティビティだけを更新する", () => {
   const js = read("api.js");
   const body = /store\.load\.cc = \(opts\) =>[\s\S]*?\n {4}\}\);/.exec(js)?.[0] ?? "";
@@ -1340,27 +1006,6 @@ test("web static: load.cc（api.js）は中身が前と同じなら描き直さ�
   assert.match(body, /SA\.app\.refreshActivity\(\)/);
   assert.doesNotMatch(body, /refreshStatus/);
   assert.match(js, /JSON\.stringify\(\[c\.sessions, c\.starting, c\.stale, c\.unreadable\]\)/);
-});
-
-test("web static: Claude Code の連携が無効なら群を出さず polling もしない。一覧をまだ読んでいなければ読み込み中の群", () => {
-  const off = loadSidebar({ ccEnabled: false, cc: null });
-  assert.equal(off.ccGroup, undefined);
-  assert.equal(off.calls.kickCc, 0);
-  assert.equal(off.calls.loadCc, 0);
-  const loading = loadSidebar({ ccEnabled: true, cc: null });
-  assert.ok(loading.ccGroup);
-  assert.match(loading.ccGroup.textContent, /読み込んでいます…/);
-  assert.equal(loading.calls.loadCc, 1);
-  // 会話の一覧を出していなければ読まない
-  const hidden = loadSidebar({ ccEnabled: true, cc: null, shows: false });
-  assert.equal(hidden.calls.kickCc, 0);
-  assert.equal(hidden.calls.loadCc, 0);
-  // チャンネルの一覧をまだ読んでいなくても Claude Code の群は出す
-  const noChannels = loadSidebar({ ccEnabled: true, cc: { sessions: [ccSession("a", "x", "idle")], starting: [], stale: false, unreadable: false, fetchedAt: null }, channels: false });
-  assert.ok(noChannels.ccGroup);
-  // /setup 前でも Claude Code の群は出す
-  const notSetUp = loadSidebar({ ccEnabled: true, cc: { sessions: [ccSession("a", "x", "idle")], starting: [], stale: false, unreadable: false, fetchedAt: null }, setUp: false });
-  assert.ok(notSetUp.ccGroup);
 });
 
 // ===== 画面の言葉（docs/design/WEB-UI-GUIDELINES.md §7・§10） =====
@@ -1381,7 +1026,7 @@ test("web static: 画面の言葉に「！」・ツール名・HTTP の番号が
     // 応答の status をそのままトーストの文にしない
     assert.doesNotMatch(js, /toast\s*=\s*res\.status|toast\([^;]*\.status\s*\+/, name);
   }
-  for (const name of [CLASSIC_HTML, SHELL_HTML]) texts.push([name, read(name).replace(/<!doctype[^>]*>/i, "")]);
+  texts.push([SHELL_HTML, read(SHELL_HTML).replace(/<!doctype[^>]*>/i, "")]);
   for (const [name, text] of texts) {
     assert.doesNotMatch(text, /[！!]/, `${name}: ${text}`);
     assert.doesNotMatch(text, TOOL_NAME, `${name}: ${text}`);
@@ -1431,8 +1076,8 @@ function decodePng(buf: Buffer): { width: number; height: number; colorType: num
   return { width, height, colorType, pixels };
 }
 
-test("web static: 2 つの殻（index.html・classic.html）に manifest・favicon・theme-color 2 つ・apple の meta とアイコンがある", () => {
-  for (const name of [SHELL_HTML, CLASSIC_HTML]) {
+test("web static: 殻（index.html）に manifest・favicon・theme-color 2 つ・apple の meta とアイコンがある", () => {
+  for (const name of [SHELL_HTML]) {
     const html = read(name);
     assert.match(html, /<link rel="manifest" href="\/static\/manifest\.webmanifest">/, name);
     assert.match(html, /<link rel="icon" href="\/static\/app-icon\.svg" type="image\/svg\+xml">/, name);
@@ -1538,7 +1183,6 @@ test("web static: 会話のタブは Claude Code のチャンネル（kind cc）
   assert.match(chat, /SA\.views\.ccPendingBar\(/);
   // ターンが無いので実行中の行は出さない
   assert.match(chat, /const run = isCc \? null : store\.runningOf\(channelId\)/);
-  assert.match(read("workbench.js"), /ch\.kind !== "cc" && !busy \? \(\) => SA\.chat\.renew\(ch\.id\)/);
   // 画面の写しは cc のチャンネルの会話のタブでも読む（閉じていれば一覧と同じ間隔）
   assert.match(read("api.js"), /ccScreenIdle\(\) \? CC_LIST_INTERVAL_MS : CC_SCREEN_INTERVAL_MS/);
 });
@@ -1554,15 +1198,6 @@ test("web static: ≤639px でも Claude Code のチャンネルを閉じられ�
   assert.equal((ccHeader.match(/btn btn-ghost btn-sm hide-sm/g) ?? []).length, 2);
   // […] はこのチャンネルの操作だけのシートを開く（UI-7。fix の段ではパレットのコマンドだった）
   assert.match(ccHeader, /more\.addEventListener\("click", \(\) =>\n {6}SA\.app\.sheet\(/);
-  const wb = read("workbench.js");
-  // cc のタブでは /close・/wait の代わりに「このチャンネルを閉じる」などを並べる（無効の /close を先に出さない）
-  assert.match(wb, /\.\.\.\(ch && ch\.kind === "cc"\n {8}\? ccCommands\(ch\)\n {8}: \[\n {12}\{ label: "今のセッションを閉じる"/);
-  const ccCommands = /function ccCommands\(ch\) \{([\s\S]*?)\n  \}\n/.exec(wb)?.[1] ?? "";
-  assert.match(ccCommands, /const state = SA\.chat\.ccCommandState\(ch\.id\);/);
-  // 閉じるは終わったチャンネルでは無効（run が null で why「閉じています」）
-  assert.match(ccCommands, /label: "このチャンネルを閉じる"[\s\S]{0,200}run: state\.closable \? \(\) => SA\.chat\.closeCcChannel\(ch\.id\) : null,\n {8}why: "閉じています"/);
-  assert.match(ccCommands, /if \(rc\) items\.push\(\{ label: "RC で開く"/);
-  assert.match(ccCommands, /if \(discord\) items\.push\(\{ label: "Discord で開く"/);
   assert.match(chat, /\n {4}closeCcChannel,\n {4}ccCommandState,\n/);
   assert.match(chat, /return \{ closable: live\.state !== "ended", rc: live\.rc, discord: discordUrl\(ch\.link\) \};/);
 });
@@ -1584,33 +1219,12 @@ test("web static: スマホの殻（UI-7。#250）: ≤639px はタブの帯・�
   const css = read("app.css");
   assert.match(css, /\n\.ed-ops-more,\n\.ed-back \{\n {2}display: none;\n\}/);
   assert.match(css, /\n\.wb-brand-status,\n\.wb-title-current \{\n {2}display: none;\n\}/);
-  assert.match(read(CLASSIC_HTML), /<span class="wb-title-current" id="title-current"><\/span>/);
   // [‹] は ui.js の 1 つの部品で、会話の見出し（3 つ）と views.js の toolbar が使う
   assert.match(read("ui.js"), /class: "btn btn-ghost btn-sm btn-icon-sm ed-back"[^\n]*"aria-label": "一覧へ"/);
   assert.match(read("ui.js"), /addEventListener\("click", \(\) => SA\.app\.openDrawer\(\)\)/);
   assert.equal((read("chat.js").match(/SA\.ui\.backButton\(\)/g) ?? []).length, 3);
   assert.match(read("views.js"), /el\("div", \{ class: "ed-title" \}, \[SA\.ui\.backButton\(\), icon\(iconName\)/);
-  // 下タブ: タスク・リマインドはタブを直接開き、会話は押すたびに一覧を開く（トグルしない）
-  const sidebar = read("sidebar.js");
-  for (const id of ["tasks", "reminders"]) assert.match(sidebar, new RegExp(`\\{ id: "${id}",[^\\n]*phoneTab: true`), id);
-  assert.doesNotMatch(sidebar, /\{ id: "chat",[^\n]*phoneTab/);
-  const wb = read("workbench.js");
-  assert.match(wb, /if \(phone\(\) && a\.phoneTab\) \{\n {6}open\(a\.id\);\n {6}closeDrawer\(\);/);
-  // 一覧 → 本文は履歴に積み、戻る（popstate）で一覧へ
-  assert.match(wb, /history\.replaceState\(\{ saList: true \}, ""\);\n {8}history\.pushState\(\{ saBody: true \}/);
-  // popstate は印のある entry だけ: 一覧の entry（saList）で一覧を開き、本文の entry（saBody。「進む」）では積まずに閉じるだけ
-  assert.match(wb, /window\.addEventListener\("popstate", \(e\) => \{/);
-  assert.match(wb, /if \(st && st\.saList && !S\.drawerOpen\) \{/);
-  assert.match(wb, /\} else if \(st && st\.saBody && S\.drawerOpen\) \{\n {8}hideDrawer\(\);/);
-  // history.back() で開かなければ保険で開く・指の端末では絞り込みの欄に焦点を当てない
-  assert.match(wb, /setTimeout\(\(\) => \{\n {10}if \(!S\.drawerOpen\) showDrawer\(\);\n {8}\}, BACK_FALLBACK_MS\);/);
-  assert.match(wb, /mqCoarse\.matches \? refs\.sidebar\.querySelector\("button"\) \|\| refs\.sidebar/);
-  assert.match(wb, /history\.replaceState\(history\.state,/);
-  // パレットはスマホで PC の部品（サイドバー・パネル・タブを閉じる・テーマ）を出さない
-  assert.equal((wb.match(/pcOnly: true \}/g) ?? []).length, 4);
-  assert.match(wb, /\.filter\(\(it\) => !\(it\.pcOnly && phone\(\)\)\)/);
-  // 鈴はスマホでは知らせのタブ
-  assert.match(wb, /if \(phone\(\)\) \{\n {10}open\("notices"\);/);
+  // 知らせのタブ
   assert.match(read("views.js"), /notices: \{ title: "知らせ", icon: "bell", render: renderNotices/);
 });
 
@@ -1620,11 +1234,6 @@ test("web static: 会話・Claude Code の見出しの […] はそのチャン�
   // 会話の見出し・Claude Code の見出し・枠の見出し（frameHeader。#357）
   assert.equal((chat.match(/SA\.app\.sheet\(/g) ?? []).length, 3);
   for (const label of ["待ちにする", "閉じる", "会話を新しくする", "ページを開く", "Discord で開く", "RC で開く"]) assert.match(chat, new RegExp(`label: "${label}"`), label);
-  const wb = read("workbench.js");
-  assert.match(wb, /function openSheet\(label, items, opener\)/);
-  assert.match(wb, /sheet: openSheet,/);
-  // 「その他」の aria-expanded は「その他」のシートのときだけ
-  assert.match(wb, /"aria-expanded": String\(S\.moreOpen && S\.sheetKind === "more"\)/);
 });
 
 test("web static: スマホ（≤639px）のトーストはそれぞれ 1 つまでで、[取り消す] 付きも 4 秒で消える（UI-8。#251）", () => {
@@ -1663,12 +1272,6 @@ test("web static: ≤639px のダイアログは下からのシート・トー�
   assert.match(phone, /\.wb\.is-keyboard \.wb-activity \{\n {4}display: none;/);
   assert.match(phone, /\.more-row \.icon \{\n {4}width: var\(--icon-sm\);/);
   assert.match(read("app.css"), /\n\.wb \{\n {2}display: grid;\n {2}height: var\(--vvh, 100dvh\);/);
-  assert.match(read(CLASSIC_HTML), /<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">/);
-  assert.match(read(CLASSIC_HTML), /<p id="dlg-confirm-target" class="dlg-target" hidden><\/p>/);
-  const wb = read("workbench.js");
-  assert.match(wb, /vv\.addEventListener\("resize", fitViewport\)/);
-  assert.match(wb, /root\.style\.setProperty\("--vvh", /);
-  assert.match(wb, /sheetHead\("その他"\)/);
   // backdrop（箱の外）の click で閉じる
   assert.match(read("ui.js"), /if \(close\) closeDialog\(dialog\);/);
   // 確認の見出しは動詞だけ（対象は target）
@@ -1677,19 +1280,11 @@ test("web static: ≤639px のダイアログは下からのシート・トー�
   assert.match(read("views.js"), /title: "止めますか",\n {6}target: r\.text,/);
 });
 
-test("web static: UI-8 のレビュー: キーボードは幅ごとの最大の高さで判定・backdrop は押し始めも外・確認の説明・起動の詳しい設定", () => {
-  const wb = read("workbench.js");
-  assert.match(wb, /const keyboard = vv\.height < full - KEYBOARD_MIN_PX;/);
-  assert.match(wb, /root\.style\.setProperty\("--vvt", /);
-  assert.match(wb, /pinchTimer = setTimeout\(fitViewport, PINCH_RECHECK_MS\);/);
+test("web static: UI-8 のレビュー: backdrop は押し始めも外・確認の説明・キーボードの間の一覧の下と上", () => {
   const ui = read("ui.js");
   assert.match(ui, /dialog\.addEventListener\("pointerdown"/);
   assert.match(ui, /const close = downOutside && outside\(event\);/);
   assert.match(ui, /opts\.target\.trim\(\) !== ""/);
-  const html = read(CLASSIC_HTML);
-  assert.match(html, /<dialog id="dlg-confirm" aria-labelledby="dlg-confirm-title" aria-describedby="dlg-confirm-target dlg-confirm-body">/);
-  assert.match(html, /<textarea class="textarea" id="cc-start-text" rows="3"/);
-  assert.match(html, /<details class="dlg-more" id="cc-start-more">\s*<summary>詳しい設定<\/summary>\s*<div class="field">\s*<label for="cc-start-mode">/);
   const phone = phoneCss();
   assert.match(phone, /\.wb\.is-keyboard \.wb-sidebar \{\n {4}bottom: var\(--kb, 0px\);/);
   assert.match(phone, /top: var\(--vvt, 0px\);/);
@@ -1715,12 +1310,8 @@ test("web static: 視認性（UI-9。#252）: 刻む数字は本文の色と tab
   assert.match(phone, /:root\[data-theme="dark"\] \.composer \{\n {4}background: var\(--muted\);/);
   assert.match(phone, /\n {2}\.cc-permission \.card-head h2 \{\n {4}font-size: var\(--font-base\);/);
   assert.match(phone, /\n {2}\.cc-permission \.msg-actions \{\n {4}display: grid;\n {4}grid-template-columns: 1fr 1fr;/);
-  // 人格のバッジは人格が 2 体以上のときだけ。Claude Code の行は 2 行目に場所、スマホはバッジの代わりに点
+  // 人格のバッジは人格が 2 体以上のときだけ
   assert.match(read("chat.js"), /store\.channels\.personas\.length > 1 \? el\("span", \{ class: "badge"/);
-  const sidebar = read("sidebar.js");
-  assert.match(sidebar, /sub: s\.cwdLabel \|\| null,/);
-  assert.match(sidebar, /class: "sb-sub show-sm"/);
-  assert.match(sidebar, /class: "badge hide-sm "/);
 });
 
 // ===== 質問のカード（AskUserQuestion。docs/plan/claude-code-questions.md §4。Q3） =====
@@ -2393,14 +1984,11 @@ test("web static: 終わった質問のカードは answers から「1. <見出�
   assert.match(views.ccPermissionCard("s1", questionPermission(34, { state: "expired" }), null)!.textContent, /時間切れ/);
 });
 
-test("web static: 質問のカードは innerHTML を使わず、サイドバーの印は「質問」（title に最初の問）", () => {
+test("web static: 質問のカードは innerHTML を使わない", () => {
   const views = read("views.js");
   const start = views.indexOf("function ccQuestionCard");
   assert.ok(start > 0);
   assert.doesNotMatch(views, /innerHTML/);
-  const sidebar = read("sidebar.js");
-  assert.match(sidebar, /questions \? "質問" : "許可待ち"/);
-  assert.match(sidebar, /"質問: " \+ SA\.views\.oneLine\(String\(questions\[0\]\.question/);
 });
 
 test("web static: 許可のカードの説明はスマホで常設、残り 60 秒を切ったら is-urgent（UI-9）", () => {
@@ -2441,8 +2029,6 @@ test("web static: ≤639px はタスク・リマインド・使用量の表を�
     assert.match(phoneCss, new RegExp(`\\.${cls}\\b[^{]*\\{[^}]*grid-area:`), cls);
   }
   assert.match(views, /"ed-toolbar-kb"/);
-  // 会話の数のピルは桁区切り
-  assert.match(read("workbench.js"), /class: "act-count", text: count\(n\)/);
 
   // 積みの規則は 639px 以下のブロックの中だけ（PC は変えない）
   const css = read("app.css");
@@ -2556,24 +2142,6 @@ test("web static: 許可を待っている間は実行中の行に「許可を�
   assert.match(css, /\n\.run-waiting \{[^}]*color: var\(--text\);/);
 });
 
-test("web static: 新しいセッションのダイアログのプロジェクト（U1b）は /api/projects/workspace から「（なし）」を先頭に、選んだら projectDir。サイドバーの行にプロジェクトの印", () => {
-  const html = read(CLASSIC_HTML);
-  assert.match(html, /<div class="field" id="new-project-field" hidden>/);
-  const workbench = read("workbench.js");
-  assert.match(workbench, /SA\.api\.get\("\/api\/projects\/workspace", \{ quiet: true \}\)/);
-  assert.match(workbench, /el\("option", \{ value: "", text: "（なし）" \}\)/);
-  assert.match(workbench, /body\.projectDir = \$\("new-project"\)\.value;/);
-  assert.match(workbench, /err\.code === "not_set_up" && err\.status === 503/);
-  // 共有の link が済んでいなければセレクトを無効にし、説明に unify-setup の行の案内（textContent）
-  assert.match(workbench, /if \(status\.cc\.unifyReady === false\) \{\n {6}\$\("new-project"\)\.disabled = true;/);
-  assert.match(workbench, /\$\("new-project-hint"\)\.textContent = NEW_PROJECT_NOT_READY_HINT;/);
-  assert.match(workbench, /const NEW_PROJECT_NOT_READY_HINT = "設定が済んでいません。端末で npm run unify-setup -- --print の行を実行してから再起動してください";/);
-  // 古い殻（classic.html）の説明と同じ文
-  assert.ok(html.includes('<p class="meta" id="new-project-hint">選ぶと Claude Code と同じ装備（CLAUDE.md・skills・Bash）で動き、許可はボタンで答えます。人格は既定だけです</p>'));
-  const sidebar = read("sidebar.js");
-  assert.match(sidebar, /class: "badge badge-project", title: "プロジェクトのセッション", text: ch\.projectDir\.dir/);
-});
-
 // ===== 色・寸法・動き・重なりの変数（tokens.css） =====
 test("web static: tokens.css は変数だけで、app.css に :root の色のブロックが残っていない", () => {
   const tokens = read("tokens.css");
@@ -2610,7 +2178,7 @@ function appKeys(js: string): string[] {
   return [...js.slice(start, end).matchAll(/^ {4}([A-Za-z]+)\b/gm)].map((m) => m[1]!).sort();
 }
 
-test("web static: 新しい殻（index.html）の読み込みの順（base → tokens → app → shell → c-atoms → c-sheet → c-list → c-shell → c-talk → c-composer → c-cards → c-term → c-deck、ui → api → sound → chat → views → topics → takeover → flows → pins → c-app（module）→ shell）と、sidebar.js・workbench.js を読まないこと", () => {
+test("web static: 新しい殻（index.html）の読み込みの順（base → tokens → app → shell → c-atoms → c-sheet → c-list → c-shell → c-talk → c-composer → c-cards → c-term → c-deck、ui → api → sound → chat → views → topics → takeover → flows → pins → c-app（module）→ shell）と、ほかの script を読まないこと", () => {
   const html = read(SHELL_HTML);
   assert.match(html, /<html lang="ja" data-theme="dark">/);
   const links = [...html.matchAll(/<link rel="stylesheet" href="([^"]+)">/g)].map((m) => m[1]);
@@ -2624,9 +2192,6 @@ test("web static: 新しい殻（index.html）の読み込みの順（base → t
   ]);
   assert.equal([...html.matchAll(/<script\b/g)].length, scripts.length);
   assert.doesNotMatch(html, /sidebar\.js|workbench\.js/);
-  // head の meta・title・manifest・icon は古い殻（classic.html）と同じ
-  const headOf = (h: string) => h.slice(0, h.indexOf('<link rel="stylesheet"'));
-  assert.equal(headOf(html), headOf(read(CLASSIC_HTML)));
 });
 
 test("web static: 新しい殻（index.html）に inline の script・style・style 属性が無く、ui.js が引く id（dlg-confirm と中の 5 つ・toast・toast-alert・ed）と、知らせ・確認の部品の根（#v3 の外）がある", () => {
@@ -2653,10 +2218,39 @@ test("web static: 新しい殻（index.html）に古い殻の作る口が無い"
   for (const word of ["dlg-new", "dlg-cc-start", "palette"]) assert.equal(html.includes(word), false, word);
 });
 
-test("web static: 新しい殻の SA.app は古い殻と同じ名前を全部持つ", () => {
-  const now = appKeys(read("workbench.js"));
-  assert.ok(now.length >= 20);
-  assert.deepEqual(appKeys(read("shell.js")), now);
+/** SA.app の名前の契約（chat.js・views.js・api.js・ui.js・sound.js が呼ぶ。いちばん古い殻を消す前の殻の SA.app と同じ 27 個） */
+const APP_KEYS = [
+  "activeTabId",
+  "addOutput",
+  "ccStart",
+  "closeDrawer",
+  "draft",
+  "newSession",
+  "noticeLine",
+  "open",
+  "openDrawer",
+  "palette",
+  "pruneDrafts",
+  "readingChannelIds",
+  "refresh",
+  "refreshActivity",
+  "refreshNotices",
+  "refreshSidebar",
+  "refreshStatus",
+  "refreshTabMarks",
+  "refreshTabs",
+  "setDraft",
+  "setTheme",
+  "sheet",
+  "shownChannelIds",
+  "sidebarShows",
+  "theme",
+  "togglePanel",
+  "toggleSidebar",
+];
+
+test("web static: 新しい殻の SA.app は契約の名前（APP_KEYS）を全部持ち、ほかを持たない", () => {
+  assert.deepEqual(appKeys(read("shell.js")), APP_KEYS);
 });
 
 test("web static: 新しい殻の CSS の幅の段は 639 だけ。流れの列の 1340 は JS（c-deck.js の deckFit）が測る", () => {
@@ -3010,6 +2604,8 @@ function loadShell(
     status?: unknown;
     width?: number;
     storage?: Record<string, string>;
+    /** localStorage.removeItem が投げる（消せない環境） */
+    removeThrows?: boolean;
     initState?: unknown;
     asyncBack?: boolean;
     focusRow?: boolean;
@@ -3304,7 +2900,14 @@ function loadShell(
     fire("resize");
   };
   const storage = new Map<string, string>(Object.entries(opts.storage ?? {}));
-  const localStorage = { getItem: (k: string) => storage.get(k) ?? null, setItem: (k: string, v: string) => void storage.set(k, String(v)) };
+  const localStorage = {
+    getItem: (k: string) => storage.get(k) ?? null,
+    setItem: (k: string, v: string) => void storage.set(k, String(v)),
+    removeItem: (k: string) => {
+      if (opts.removeThrows) throw new Error("SecurityError");
+      storage.delete(k);
+    },
+  };
   const window = { matchMedia: () => mq, addEventListener: on(winListeners), innerHeight: 800, scrollY: 0, localStorage } as Record<string, unknown>;
   class FakeDate extends Date {
     static override now(): number {
@@ -5189,19 +4792,7 @@ const typeIn = (box: DomNode, text: string) => {
   ta.dispatch("input");
 };
 
-test("web static: SA.app.shownChannelIds は 2 つの殻にあり、前に出ている会話のタブのチャンネルだけを返す（会話でないタブ・[端末] の間は空）", () => {
-  // 古い殻（workbench.js）: S.active で決まる
-  const wb = read("workbench.js");
-  const run = (active: string | null) => {
-    const ctx: Record<string, unknown> = { S: { active } };
-    vm.runInNewContext(fnSource(wb, "shownChannelIds") + "\nresult = shownChannelIds();", ctx);
-    return JSON.parse(JSON.stringify(ctx.result)) as string[];
-  };
-  assert.deepEqual(run("ch:111"), ["111"]);
-  assert.deepEqual(run("tasks"), []);
-  assert.deepEqual(run("cc:s1"), []);
-  assert.deepEqual(run(null), []);
-  assert.ok(appKeys(wb).includes("shownChannelIds"));
+test("web static: SA.app.shownChannelIds は前に出ている会話のタブのチャンネルだけを返す（会話でないタブ・[端末] の間は空）", () => {
   // 新しい殻（shell.js）: 列 2 に出しているタブ。[端末] の間は cc: なので空
   const w = loadShell();
   const app = w.app as ShellApp & { shownChannelIds: () => string[] };
@@ -9060,13 +8651,12 @@ function renderMoveCard(proposal: unknown = MOVE_PROPOSAL) {
   return { c, box, card, button };
 }
 
-test("web static: 場所を変える確認のカードは、古い殻（classic.html）と新しい殻（index.html）の両方が読む chat.js・views.js にある", () => {
-  for (const html of [CLASSIC_HTML, SHELL_HTML]) {
+test("web static: 場所を変える確認のカードは、新しい殻（index.html）が読む chat.js・views.js にある", () => {
+  for (const html of [SHELL_HTML]) {
     const text = read(html);
     for (const js of ["chat.js", "views.js"]) assert.match(text, new RegExp(`<script src="/static/${js.replace(".", "\\.")}" defer></script>`), `${html}: ${js}`);
   }
-  // 2 つの殻はどちらも会話のタブを views.info の render で描き、views.info("ch:<id>") は chat.js の info
-  assert.match(read("workbench.js"), /SA\.views\.info\(/);
+  // 殻は会話のタブを views.info の render で描き、views.info("ch:<id>") は chat.js の info
   assert.match(read("shell.js"), /SA\.views\.info\(/);
   assert.match(read("views.js"), /SA\.chat\.info\(channelId\)/);
 });
@@ -9277,8 +8867,12 @@ function loadApiReads(opts: { storage?: Record<string, string> } = {}) {
   const storage = new Map<string, string>(Object.entries(opts.storage ?? {}));
   const writes: string[] = [];
   const removes: string[] = [];
+  const gets: string[] = [];
   const localStorage = {
-    getItem: (k: string) => storage.get(k) ?? null,
+    getItem: (k: string) => {
+      gets.push(k);
+      return storage.get(k) ?? null;
+    },
     setItem: (k: string, v: string) => {
       writes.push(k);
       storage.set(k, String(v));
@@ -9339,20 +8933,25 @@ function loadApiReads(opts: { storage?: Record<string, string> } = {}) {
   const seen = () => JSON.parse(JSON.stringify(store.seen)) as Record<string, number>;
   const sent = () => posts.map((p) => [p.path, p.body.lastId]);
   const fail = (status: number) => Object.assign(new Error(String(status)), { status });
-  return { store, posts, sent, seen, storage, writes, removes, winListeners, calls, flush, fail, setChannels: (v: unknown) => (channels = v) };
+  /** store.seen を直に置く（送らない） */
+  const seed = (v: Record<string, number>) => Object.assign(store.seen, v);
+  return { store, posts, sent, seen, seed, storage, gets, writes, removes, winListeners, calls, flush, fail, setChannels: (v: unknown) => (channels = v) };
 }
 
 const OLD_SEEN = "self-agent-web:seen";
 const SEEN_SENT = "self-agent-web:seen-sent";
 const readPath = (id: string) => "/api/topics/ch:" + id + "/read";
 
-test("web static: 既読の始めは、旗が無ければ古い鍵の値（数でない値は落とす）、旗が \"1\" なら古い鍵があっても空", () => {
-  const h = loadApiReads({ storage: { [OLD_SEEN]: JSON.stringify({ "1": 10, "2": "x", "3": 0 }) } });
-  assert.deepEqual(h.seen(), { "1": 10 });
+test("web static: 既読の始めは空で、古い鍵（seen）と旗（seen-sent）が在っても読まない（M8b）", () => {
+  const h = loadApiReads({ storage: { [OLD_SEEN]: JSON.stringify({ "1": 10 }) } });
+  assert.deepEqual(h.seen(), {});
   const sent = loadApiReads({ storage: { [OLD_SEEN]: JSON.stringify({ "1": 10 }), [SEEN_SENT]: "1" } });
   assert.deepEqual(sent.seen(), {});
-  assert.deepEqual(loadApiReads({ storage: { [OLD_SEEN]: "{壊れた" } }).seen(), {});
   assert.deepEqual(loadApiReads().seen(), {});
+  for (const x of [h, sent]) {
+    assert.deepEqual([x.gets, x.writes, x.removes], [[], [], []]);
+    assert.equal(x.storage.get(OLD_SEEN), JSON.stringify({ "1": 10 }));
+  }
 });
 
 test("web static: markSeen は進めば POST /api/topics/ch:<id>/read に { lastId } を quiet で送って true、進まなければ送らず false、数字でない ID は送らない", () => {
@@ -9435,7 +9034,8 @@ test("web static: 応答の lastReadId がこちらより大きければ store.s
 });
 
 test("web static: syncReads は reads の大きい値を取り込み（下げない）、自分の方が大きい ids の会話だけを送り、残りの有無を返す", () => {
-  const h = loadApiReads({ storage: { [OLD_SEEN]: JSON.stringify({ "1": 10, "2": 20, "3": 30, "9": 90 }) } });
+  const h = loadApiReads();
+  h.seed({ "1": 10, "2": 20, "3": 30, "9": 90 });
   // reads が無い（古いサーバー）・形が違う: 何もせず false
   assert.equal(h.store.syncReads(undefined, ["1"]), false);
   assert.equal(h.store.syncReads(null, ["1"]), false);
@@ -9453,47 +9053,36 @@ test("web static: syncReads は reads の大きい値を取り込み（下げな
   assert.equal(done.seen()["1"], 3);
 });
 
-test("web static: load.channels は reads を取り込み、残りが無くなった回に旗を書く。reads の無い応答では書かない。古い鍵には書かない・消さない", async () => {
-  const h = loadApiReads({ storage: { [OLD_SEEN]: JSON.stringify({ "1": 10, "2": 20, "77": 70 }) } });
+test("web static: load.channels は reads を取り込み、一覧の会話のうちこちらが進んでいる分だけを送る。localStorage には読みも書きもしない（旗も書かない）", async () => {
+  const h = loadApiReads({ storage: { [OLD_SEEN]: JSON.stringify({ "1": 10 }) } });
+  h.seed({ "1": 10, "2": 20, "77": 70 });
   // reads の無い応答（M7a の前のサーバー）
   h.setChannels({ guilds: [], personas: [], channels: [{ id: "1" }, { id: "2" }] });
   await h.store.load.channels();
-  assert.equal(h.storage.has(SEEN_SENT), false);
   assert.equal(h.posts.length, 0);
-  // 2 だけサーバーより進んでいる: 送るが、まだ旗は書かない（一覧に無い 77 は送らない）
+  // 2 だけサーバーより進んでいる: 送る（一覧に無い 77 は送らない）
   h.setChannels({ guilds: [], personas: [], channels: [{ id: "1" }, { id: "2" }], reads: { "1": 12, "2": 5 } });
   await h.store.load.channels();
   assert.deepEqual(h.sent(), [[readPath("2"), 20]]);
-  assert.equal(h.storage.has(SEEN_SENT), false);
   assert.equal(h.seen()["1"], 12);
-  // 返らないうちは残りのまま（送っている最中は送り直さない）
+  // 返らないうちは送り直さない
   await h.store.load.channels();
   assert.equal(h.posts.length, 1);
-  assert.equal(h.storage.has(SEEN_SENT), false);
   h.posts[0]!.resolve({ lastReadId: 20 });
   await h.flush();
-  await h.store.load.channels();
-  assert.equal(h.storage.get(SEEN_SENT), "1");
-  // 次の回は書き直さない
-  const writes = h.writes.length;
+  // 追いついたら送らない
   h.setChannels({ guilds: [], personas: [], channels: [{ id: "1" }, { id: "2" }], reads: { "1": 12, "2": 20 } });
   await h.store.load.channels();
-  assert.equal(h.writes.length, writes);
-  // 既読を進めても localStorage には書かない
+  assert.equal(h.posts.length, 1);
+  // 既読を進めても localStorage に触らない（古い鍵も旗も）
   h.store.markSeen("1", 99);
-  assert.equal(h.writes.includes(OLD_SEEN), false);
-  assert.equal(h.removes.includes(OLD_SEEN), false);
-  assert.equal(h.storage.get(OLD_SEEN), JSON.stringify({ "1": 10, "2": 20, "77": 70 }));
-  // 一覧の応答が reads 込みで最初から揃っていれば、1 回目で旗
-  const fresh = loadApiReads({ storage: { [OLD_SEEN]: JSON.stringify({ "1": 10 }) } });
-  fresh.setChannels({ guilds: [], personas: [], channels: [{ id: "1" }], reads: { "1": 10 } });
-  await fresh.store.load.channels();
-  assert.equal(fresh.storage.get(SEEN_SENT), "1");
-  assert.equal(fresh.posts.length, 0);
+  assert.deepEqual([h.gets, h.writes, h.removes], [[], [], []]);
+  assert.equal(h.storage.has(SEEN_SENT), false);
+  assert.equal(h.storage.get(OLD_SEEN), JSON.stringify({ "1": 10 }));
 });
 
 test("web static: load.channels は refreshSidebar より前に reads を store.seen に取り込む", async () => {
-  const h = loadApiReads({ storage: { [OLD_SEEN]: JSON.stringify({ "1": 10 }), [SEEN_SENT]: "1" } });
+  const h = loadApiReads();
   assert.deepEqual(h.seen(), {});
   h.setChannels({ guilds: [], personas: [], channels: [{ id: "1" }, { id: "2" }], reads: { "1": 12, "2": 4 } });
   await h.store.load.channels();
@@ -9501,18 +9090,19 @@ test("web static: load.channels は refreshSidebar より前に reads を store.
   assert.deepEqual(h.calls.sidebarSeen[0], { "1": 12, "2": 4 });
 });
 
-test("web static: 空の一覧（channels: []・reads: {}）では旗を書かない", async () => {
-  const h = loadApiReads({ storage: { [OLD_SEEN]: JSON.stringify({ "1": 10 }) } });
+test("web static: 空の一覧（channels: []・reads: {}）では送らず、localStorage に書かない", async () => {
+  const h = loadApiReads();
+  h.seed({ "1": 10 });
   h.setChannels({ guilds: [], personas: [], channels: [], reads: {} });
   await h.store.load.channels();
-  assert.equal(h.storage.has(SEEN_SENT), false);
-  assert.equal(h.writes.includes(SEEN_SENT), false);
+  assert.deepEqual(h.writes, []);
   assert.equal(h.posts.length, 0);
-  assert.equal(h.seen()["1"], 10, "古い既読はメモリに残る");
+  assert.equal(h.seen()["1"], 10, "メモリの既読は残る");
 });
 
 test("web static: isUnread は最後の行が返事（agent）で store.seen より新しいときだけ（notice・divider・owner は未読にしない）", () => {
-  const h = loadApiReads({ storage: { [OLD_SEEN]: JSON.stringify({ "1": 10 }) } });
+  const h = loadApiReads();
+  h.seed({ "1": 10 });
   const ch = (kind: string, id: number) => ({ id: "1", last: { kind, id } });
   assert.equal(h.store.isUnread(ch("agent", 11)), true);
   assert.equal(h.store.isUnread(ch("agent", 10)), false);
@@ -9522,11 +9112,40 @@ test("web static: isUnread は最後の行が返事（agent）で store.seen よ
   assert.equal(h.store.isUnread(ch("agent", 11)), false, "サーバーの既読で消える");
 });
 
-test("web static: api.js は storage イベントを受けず、古い鍵に書かない", () => {
+test("web static: api.js は storage イベントを受けず、localStorage に触らない（古い既読の鍵は shell.js が起動で消す）", () => {
   const js = read("api.js");
   assert.doesNotMatch(js, /addEventListener\("storage"/);
-  assert.doesNotMatch(js, /setItem\(SEEN_KEY|removeItem\(/);
+  assert.doesNotMatch(js, /localStorage\s*[.[]/);
   assert.equal(loadApiReads().winListeners.includes("storage"), false);
+});
+
+test("web static: shell.js の起動で localStorage の古い既読の鍵（self-agent-web:seen・self-agent-web:seen-sent）を消し、テーマと書きかけの鍵は残す（M8b）", async () => {
+  const h = loadShell({
+    storage: {
+      [OLD_SEEN]: JSON.stringify({ "1": 10 }),
+      [SEEN_SENT]: "1",
+      "self-agent-web:theme": "light",
+      "self-agent-web:drafts": JSON.stringify({ "1": "書きかけ" }),
+    },
+  });
+  await h.flush();
+  assert.equal(h.storage.has(OLD_SEEN), false);
+  assert.equal(h.storage.has(SEEN_SENT), false);
+  assert.equal(h.storage.get("self-agent-web:theme"), "light");
+  assert.equal(h.storage.get("self-agent-web:drafts"), JSON.stringify({ "1": "書きかけ" }));
+  // 鍵が無くても同じ（消すだけで書かない）
+  const empty = loadShell();
+  await empty.flush();
+  assert.equal(empty.storage.has(OLD_SEEN), false);
+  assert.equal(empty.storage.has(SEEN_SENT), false);
+});
+
+test("web static: 古い既読の鍵を消せなくても（removeItem が投げる）shell.js は起動を続け、テーマを読む", async () => {
+  const h = loadShell({ storage: { [OLD_SEEN]: JSON.stringify({ "1": 10 }), "self-agent-web:theme": "light" }, removeThrows: true });
+  await h.flush();
+  assert.equal(h.storage.get(OLD_SEEN), JSON.stringify({ "1": 10 }), "消せなければ残る");
+  assert.equal((h.app as unknown as { theme: () => string }).theme(), "light");
+  assert.deepEqual(h.errors, []);
 });
 
 // ----- shell.js の readingChannelIds と、列が見えたときの付け直し -----
@@ -9586,9 +9205,9 @@ test("web static: スマホで会話を開いて一覧に戻した後に幅が�
   assert.deepEqual(readingIds(h), ["1"]);
 });
 
-// ----- 設定のキーの表（M8-0。views.js の KEYS_COMMON・KEYS_CLASSIC・KEYS_V3） -----
-function settingsKeys(v3: boolean): Array<[string, string]> {
-  const { SA, views } = loadViews({ v3 });
+// ----- 設定のキーの表（M8-0。views.js の KEYS_COMMON・KEYS_V3） -----
+function settingsKeys(): Array<[string, string]> {
+  const { SA, views } = loadViews();
   (SA.app as Record<string, unknown>).theme = () => "system";
   const container = new FakeNode("div");
   (views as unknown as { info: (id: string) => { render: (c: FakeNode) => void } }).info("settings").render(container);
@@ -9599,34 +9218,16 @@ function settingsKeys(v3: boolean): Array<[string, string]> {
     .map((k) => [k.textContent, k.parent!.parent!.textContent.slice(k.textContent.length)] as [string, string]);
 }
 
-test("web static: 古い殻の設定のキーの表は今までどおりの 9 行（M8-0）", () => {
-  // 並び・キー・説明の組の全文一致（main 09387b6 の KEYS と同じ文）
-  assert.deepEqual(settingsKeys(false), [
-    ["Enter / Shift+Enter", "送る / 改行（タッチの端末では Enter で改行）"],
-    ["Ctrl+Enter / ⌘+Enter", "送る"],
-    ["Ctrl+K / Ctrl+P", "移動（画面）"],
-    ["Ctrl+Shift+P", "コマンド"],
-    ["Ctrl+B", "サイドバーの表示"],
-    ["Ctrl+J", "パネルの表示"],
-    ["Alt+W", "タブを閉じる"],
-    ["Alt+数字", "その番号のタブ（1 から 9）"],
-    ["Esc", "パレット・ドロワーを閉じる"],
-  ]);
-});
-
 test("web static: 新しい殻の設定のキーの表は共通の 2 行と新しい殻の 3 行で、古い殻だけのキーを載せない（M8-0）", () => {
   // 並び・キー・説明の組の全文一致（古い殻だけのキー Ctrl+B・Ctrl+J・Alt+W・Alt+数字・Ctrl+Shift+P・Ctrl+P は載らない）
-  assert.deepEqual(settingsKeys(true), [
+  assert.deepEqual(settingsKeys(), [
     ["Enter / Shift+Enter", "送る / 改行（タッチの端末では Enter で改行）"],
     ["Ctrl+Enter / ⌘+Enter", "送る"],
     ["Ctrl+K / ⌘+K", "話題を絞り込む"],
     ["↑ / ↓ / Home / End", "一覧の行を移る"],
     ["Esc", "絞り込み・重ねた右腕を閉じる"],
   ]);
-  // 殻は描くときに見分ける（読み込みのときに 1 度だけ決めない）
-  const views = read("views.js");
-  assert.match(fnSource(views, "isV3Shell"), /return document\.getElementById\("v3"\) !== null;/);
-  assert.match(fnSource(views, "renderSettings"), /KEYS_COMMON\.concat\(isV3Shell\(\) \? KEYS_V3 : KEYS_CLASSIC\)/);
+  assert.match(fnSource(read("views.js"), "renderSettings"), /KEYS_COMMON\.concat\(KEYS_V3\)/);
 });
 
 test("web static: 新しい殻のキーの表は shell.js の処理と合っている（M8-0）", () => {
@@ -9641,37 +9242,23 @@ test("web static: 新しい殻のキーの表は shell.js の処理と合って�
   assert.match(listJs, /key === "End"/);
 });
 
-// ----- 設定の殻を行き来するリンク（M8。views.js の shellLink） -----
-function settingsShellLink(v3: boolean): FakeNode {
-  const { SA, views } = loadViews({ v3 });
+// ----- 設定の「この画面の表示」（殻を行き来するリンクは M8b で消した） -----
+test("web static: 設定の「この画面の表示」はテーマの 1 行だけで、「画面」の行とリンクが無い（M8b）", () => {
+  const { SA, views } = loadViews();
   (SA.app as Record<string, unknown>).theme = () => "system";
   const container = new FakeNode("div");
   (views as unknown as { info: (id: string) => { render: (c: FakeNode) => void } }).info("settings").render(container);
-  const links = descendants(container).filter((n) => n.tagName === "a");
-  assert.equal(links.length, 1);
-  // 「この画面の表示」のテーマの次の行（kv("画面", …)）
-  assert.match(links[0]!.parent!.parent!.textContent, /^画面/);
-  return links[0]!;
-}
+  assert.equal(descendants(container).filter((n) => n.tagName === "a").length, 0);
+  const display = descendants(container).find((n) => n.tagName === "section" && n.textContent.startsWith("この画面の表示"));
+  assert.ok(display, "この画面の表示の節");
+  const list = descendants(display).find((n) => n.classes.has("kv-list"))!;
+  assert.equal(list.children.length, 1);
+  assert.match(list.children[0]!.textContent, /^テーマ/);
+  assert.doesNotMatch(container.textContent, /前の画面を開く|新しい画面を開く/);
 
-test("web static: 新しい殻の設定に「前の画面を開く」（/static/classic.html）があり、同じ窓で開く（M8）", () => {
-  const a = settingsShellLink(true);
-  assert.equal(a.textContent, "前の画面を開く");
-  assert.equal(a.getAttribute("href"), "/static/classic.html");
-  assert.equal(a.getAttribute("target"), null);
-  assert.equal(a.getAttribute("class"), "btn btn-ghost btn-sm");
 });
 
-test("web static: 古い殻の設定に「新しい画面を開く」（/）があり、同じ窓で開く（M8）", () => {
-  const a = settingsShellLink(false);
-  assert.equal(a.textContent, "新しい画面を開く");
-  assert.equal(a.getAttribute("href"), "/");
-  assert.equal(a.getAttribute("target"), null);
-  assert.equal(a.getAttribute("class"), "btn btn-ghost btn-sm");
-});
-
-test("web static: 古い殻の readingChannelIds は shownChannelIds と同じ関数", () => {
-  assert.match(read("workbench.js"), /\n {4}readingChannelIds: shownChannelIds,\n/);
+test("web static: 新しい殻の SA.app に readingChannelIds がある", () => {
   assert.ok(appKeys(read("shell.js")).includes("readingChannelIds"));
 });
 
@@ -9708,8 +9295,9 @@ test("web static: GitHub のタブの [対応] は起動の確認・/start・[�
   for (const word of ["起動して送る", "no_session", "startable", "やめる", "cancelCcSend", "confirm("]) assert.equal(body.includes(word), false, word);
   assert.match(body, /label: "開く"/);
   assert.match(body, /SA\.app\.open\("ch:" \+ channelId\)/);
-  // 開く前に会話の一覧を読み直す（新しい殻は話題、古い殻はチャンネル）
-  assert.match(body, /if \(isV3Shell\(\) && SA\.topics\) SA\.topics\.load\(\);\s+else SA\.store\.load\.channels\(\);\s+SA\.app\.open\(/);
+  // 開く前に会話の一覧を読み直す（話題の一覧。topics.js が無ければチャンネル）
+  assert.match(body, /if \(SA\.topics\) SA\.topics\.load\(\);\s+else SA\.store\.load\.channels\(\);\s+SA\.app\.open\(/);
+  assert.equal(body.includes("isV3Shell"), false);
   assert.ok(source.includes("この通知の PR・Issue の話題を作り、対応依頼（リポジトリ、番号、URL の 1 行）を最初の一言として送ります"));
   assert.ok(source.includes("この通知は対応できません。この機械に無いリポジトリか、[対応] を足す前の通知です"));
   assert.equal(source.includes("起動して送る"), false);
@@ -10883,11 +10471,8 @@ test("web static: 何もしていない札を閉じたら忘れ、開き直す�
   assert.equal(u.raw().phase, "lost");
 });
 
-test("web static: takeover.js を読むのは新しい殻（index.html）だけ（古い殻の classic.html・workbench.js は読まない・名前を出さない）", () => {
+test("web static: 新しい殻（index.html）は takeover.js を読む", () => {
   assert.match(read(SHELL_HTML), /<script src="\/static\/takeover\.js" defer><\/script>/);
-  for (const name of [CLASSIC_HTML, "workbench.js"]) {
-    assert.doesNotMatch(read(name), /takeover\.js|SA\.takeover/, name);
-  }
 });
 
 test("web static: 新しい殻の Claude Code のチャンネルの『…』の板に『取り込む』が出て、押すと cc:<sessionId> の札を開く", async () => {
@@ -11452,7 +11037,7 @@ test("web static: 流れの列: 「探す」の板の右腕の行（open(右腕)
   assert.equal(h.document.activeElement, findBtn);
 });
 
-test("web static: 流れの列: 入口（SA.deck）が無ければ属性を書かず、下のバーは広い幅のまま（今の落ち先。右腕の列は #514 の R3b で無くした）。SA.app のキーは古い殻と同じ", async () => {
+test("web static: 流れの列: 入口（SA.deck）が無ければ属性を書かず、下のバーは広い幅のまま（今の落ち先。右腕の列は #514 の R3b で無くした）。SA.app のキーは契約の名前（APP_KEYS）", async () => {
   const h = await loadHand({ width: 1400 });
   assert.deepEqual(deckAttrs(h), [null, null, null]);
   assert.equal(h.nodes.v3.getAttribute("data-hand-mode"), null);
@@ -11461,7 +11046,7 @@ test("web static: 流れの列: 入口（SA.deck）が無ければ属性を書�
   h.app.open("ch:1");
   assert.equal(h.calls.push, 0);
   assert.equal(h.lastTop().close, false);
-  assert.deepEqual(appKeys(read("shell.js")), appKeys(read("workbench.js")));
+  assert.deepEqual(appKeys(read("shell.js")), APP_KEYS);
 });
 
 test("web static: shell.css の流れの列の規則は .v3[data-deck] 始まりか、素の display: none の 1 つだけで、スマホの塊に流れの列の字が無い", () => {
@@ -11799,11 +11384,11 @@ test("web static: 古い履歴の entry（history.state に v3Hand: true。R3a �
   assert.deepEqual(f.errors, []);
 });
 
-test("web static: 右腕の枠・丸・［広げる］のファイルと字が新しい殻に無い（c-hand.js・c-hand.css が無く、どのファイルも import・link しない。HandOrb・HandHead・drawOrb・v3Hand・withViewing の字が無い。古い殻が読むファイルと chat.js は除く。#514 の R3b。帯の右の通り道 --c-deck-lane・--c-orb・DECK.LANE の字も無い。R4）", () => {
+test("web static: 右腕の枠・丸・［広げる］のファイルと字が新しい殻に無い（c-hand.js・c-hand.css が無く、どのファイルも import・link しない。HandOrb・HandHead・drawOrb・v3Hand・withViewing の字が無い。app.css・views.js・chat.js は除く。#514 の R3b。帯の右の通り道 --c-deck-lane・--c-orb・DECK.LANE の字も無い。R4）", () => {
   const files = readdirSync(STATIC_DIR);
   assert.ok(!files.includes("c-hand.js") && !files.includes("c-hand.css"));
-  // 古い殻（classic.html）が読むファイルと、枠の鍵を読む側を残す chat.js（M8b まで）
-  const OLD = new Set(["classic.html", "app.css", "views.js", "sidebar.js", "workbench.js", "chat.js"]);
+  // 古い殻と共有だった app.css・views.js と、枠の鍵を読む側を残す chat.js
+  const OLD = new Set(["app.css", "views.js", "chat.js"]);
   const own = files.filter((n) => /\.(?:js|css|html)$/.test(n) && !OLD.has(n) && !n.startsWith("vendor-"));
   assert.ok(own.includes("shell.js") && own.includes("index.html") && own.includes("c-app.js") && own.includes("gallery.html"));
   for (const name of files.filter((n) => /\.(?:js|css|html)$/.test(n))) assert.doesNotMatch(read(name), /c-hand\.(?:js|css)/, name);
@@ -12107,7 +11692,7 @@ test("web static: 流れの列: 古い行き先（起動の hash・hashchange �
 });
 
 test("web static: 流れの列の操作: ［完了］は POST /complete → 知らせ「…を完了にしました」→［取り消す］で /reopen、［対応］は POST /api/github/<id>/act。応答までの二度押しは送らず、失敗したら busy が外れてもう一度押せる", async () => {
-  const { SA, posts, toasts, toastActions, setReply } = loadViews({ v3: true });
+  const { SA, posts, toasts, toastActions, setReply } = loadViews();
   const tick = async () => {
     for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
   };
@@ -12194,7 +11779,7 @@ test("web static: 流れの列の操作: ［完了］は POST /complete → 知�
 });
 
 test("web static: 流れの列の操作: busy は応答と読み直しが終わるまで続き（間を置いた 2 回目も送らない）、終わると外れる。［対応］は応答まで", async () => {
-  const { SA, posts, setReply } = loadViews({ v3: true });
+  const { SA, posts, setReply } = loadViews();
   const tick = async () => {
     for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
   };
@@ -12242,7 +11827,7 @@ test("web static: 流れの列の操作: busy は応答と読み直しが終わ�
 });
 
 test("web static: 流れの列の操作: views.js の呼び出しが同期で投げても busy を残さず、もう一度押せる", async () => {
-  const { SA } = loadViews({ v3: true });
+  const { SA } = loadViews();
   const store = SA.store as Record<string, unknown>;
   store.openTasks = [{ id: 5, title: "買い物", due: null, status: "open" }];
   SA.topics = { data: () => null };
@@ -12266,7 +11851,7 @@ test("web static: 流れの列の操作: views.js の呼び出しが同期で投
 
 /** 流れの列の操作のリマインドの場: 繰り返し（id 7）と 1 回だけ（id 8）。確認は記録だけ（opts を返す） */
 function remindFlows() {
-  const loaded = loadViews({ v3: true });
+  const loaded = loadViews();
   const { SA } = loaded;
   const store = SA.store as Record<string, unknown>;
   const reloads: string[] = [];

@@ -30,7 +30,7 @@ Discord の 1 チャンネル（#inbox・#tasks と /new で作ったセッシ�
 | ゲスト利用の簡易モード（他のサーバーで、ツールなしで答える） | `guest-mode.md` | #147 | 途中 |
 | 配布（npm）・入口の統一・Mac 対応 | `distribution.md` | #157 | 途中 |
 | Web UI（tailnet の中のブラウザから使う。別ポート・`Tailscale-User-Login` 必須。PWA は §11） | `web-ui.md` | #157・#224 | 途中（W7 まで。W8 は作らない） |
-| 新しい殻（入口 `/`。古い殻は `/static/classic.html`） | `web-ui-v3.md` | #349 | 入れ替え済み（古い殻は M8b で消す） |
+| 新しい殻（入口 `/`） | `web-ui-v3.md` | #349 | 入れ替え済み |
 | Web UI の見た目の決まり（色・型・間隔・部品・動き・言葉・a11y） | `docs/design/WEB-UI-GUIDELINES.md` | #225 | 守る決まり |
 | Web UI の作り直しの準備（持ち越す物と白紙に戻す物・進め方の案・止める段） | `web-ui-rebuild.md` | #528 | 途中（方向 = 案 D・別の入口に作る。段は `web-ui-home.md`） |
 | 新しい入口（会話が家。スマホ 5 タブ・PC 3 本柱・色の組） | `web-ui-home.md` | #528・#539 | 途中（設計だけ） |
