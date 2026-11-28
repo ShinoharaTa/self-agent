@@ -22,7 +22,7 @@ Discord の 1 チャンネル（#inbox・#tasks と /new で作ったセッシ�
 | 何の設計か | 文書 | issue | 今 |
 |---|---|---|---|
 | 人格（1 プロセスに複数の Bot・共有 DB・codex） | `personas.md` | #114 | 途中（codex のエンジンは無い） |
-| Bot を持たない人格（Web だけ）と、話題ごとに選ぶ Antigravity のモデル（`agy` をサブスクのサインインで回す） | `personas-web-antigravity.md` | #530 | 途中（設計だけ） |
+| Bot を持たない人格（Web だけ）と、話題ごとに選ぶ Antigravity のモデル（`agy` をサブスクのサインインで回す） | `personas-web-antigravity.md` | #530 | 途中 |
 | 定型チャンネル（領収書・予定など）・#inbox からの引き渡し・画像の受け取り・スキル | `routines.md` | #119 | 途中（定型チャンネルの振る舞いは無い） |
 | GitHub の通知を #github に流し、［対応］で PR・Issue ごとの話題を作る | `github-notifications.md` | #122 | 済み（PR-G4・PR-G5 は作らない） |
 | シェル（sandbox 付きの Bash。`SELF_AGENT_SHELL=1` のときだけ） | `shell.md` | | 済み |

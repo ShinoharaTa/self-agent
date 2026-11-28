@@ -91,7 +91,7 @@ test("TopicSessionStore: place を local で保存すると読める（ほかの
   assert.deepEqual(topics.get(id), created);
 });
 
-test("GuildSettingsStore.setPersonaInbox: place を渡したときだけ場所を書き、省略すれば今の場所のまま", (t) => {
+test("GuildSettingsStore.setPersonaInbox: 場所を番号と一緒に必ず書く（省略すれば discord）", (t) => {
   const db = tempDb(t);
   const guildSettings = new GuildSettingsStore(db, () => NOW);
   const id = new LocalIdStore(db).next();
@@ -100,12 +100,24 @@ test("GuildSettingsStore.setPersonaInbox: place を渡したときだけ場所�
   assert.deepEqual(guildSettings.entryChannel(id), { guildId: "guild-1", persona: "sora", kind: "inbox", place: "local" });
   assert.deepEqual(guildSettings.personaInbox("guild-1", "sora"), { channelId: id, rotatedDate: null, rotatedAt: null, place: "local" });
 
-  // 切り替えの日・時刻を書いても、place を省いて番号を書き直しても、場所は変わらない
+  // 切り替えの日・時刻を書いても場所は変わらない
   guildSettings.setInboxRotated("guild-1", "2026-11-28", NOW, "sora");
-  guildSettings.setPersonaInbox("guild-1", "sora", id);
   assert.equal(guildSettings.personaInbox("guild-1", "sora")?.place, "local");
-  guildSettings.setPersonaInbox("guild-1", "sora", id, "discord");
-  assert.equal(guildSettings.personaInbox("guild-1", "sora")?.place, "discord");
+  // place を省いて番号を書き直すと discord になる（番号だけ Discord の ID に変わって local のまま残る行を作らない）
+  guildSettings.setPersonaInbox("guild-1", "sora", "sora-in");
+  assert.deepEqual(guildSettings.entryChannel("sora-in"), { guildId: "guild-1", persona: "sora", kind: "inbox", place: "discord" });
+  guildSettings.setPersonaInbox("guild-1", "sora", id, "local");
+  assert.equal(guildSettings.personaInbox("guild-1", "sora")?.place, "local");
+});
+
+test("LocalIdStore.next: トランザクションの中で呼ぶと投げ（巻き戻ると同じ番号が出るため）、ROLLBACK の後に外で呼ぶと番号が出る", (t) => {
+  const db = tempDb(t);
+  const ids = new LocalIdStore(db);
+  assert.equal(ids.next(), "100000000000000000001");
+  db.exec("BEGIN");
+  assert.throws(() => ids.next(), /トランザクションの外/);
+  db.exec("ROLLBACK");
+  assert.equal(ids.next(), "100000000000000000002");
 });
 
 test("LocalIdStore.next: 先頭が 1 の数字 21 桁で、続けて取ると違う値（連番。取った行は残さず、DB を開き直しても使い直さない）", (t) => {
