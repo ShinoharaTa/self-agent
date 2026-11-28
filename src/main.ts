@@ -52,7 +52,7 @@ import { ReminderScheduler } from "./app/reminders.ts";
 import { createRightHand } from "./app/right-hand.ts";
 import { Scheduler, TICK_INTERVAL_MS } from "./app/scheduler.ts";
 import { PersonaStatus, startPersonaGateways } from "./app/persona-status.ts";
-import { PersonaRouter, type PersonaRuntime } from "./app/personas.ts";
+import { type LocalPersonaPlaces, PersonaRouter, type PersonaRuntime } from "./app/personas.ts";
 import { createShutdown } from "./app/shutdown.ts";
 import { ShellState, shellRefresher } from "./app/shell-state.ts";
 import { createSystemNotifier } from "./app/system-notice.ts";
@@ -106,6 +106,7 @@ import { backupBeforeMigration, openDb } from "./store/db.ts";
 import { GuildSettingsStore } from "./store/guild-settings.ts";
 import { HistoryStore } from "./store/history.ts";
 import { InboxSummaryStore } from "./store/inbox-summaries.ts";
+import { LocalIdStore } from "./store/local-places.ts";
 import { JobStore } from "./store/jobs.ts";
 import { KnowledgeStore } from "./store/knowledge.ts";
 import { MemoryStore } from "./store/memories.ts";
@@ -571,6 +572,9 @@ const sessionMode: SessionModeDeps | undefined =
 // 右腕の場所を変える確認（move: のボタンと Web の「あなたの番」。期限の判定は topicMoves と同じ時計）
 const topicProposals = createTopicProposals({ move: moveDeps, moves: topicMoves, ownerPosts, now, log });
 // コマンドは既定の人格のアプリだけが登録して受ける。/close・/renew のターンはチャンネルの持ち主の人格で動かし、結果は持ち主の Bot が投稿する
+// 場所がローカルの人格（Web だけ。docs/plan/personas-web-antigravity.md §3.1）。まだ無いので述語は常に false（WP5 で config の _SURFACE につなぐ）。
+// /new・ホームパネル・POST /api/topics・右腕の session_open・POST /api/sessions・/setup が同じ 1 つを見る
+const localPlaces: LocalPersonaPlaces = { isLocalPersona: () => false, ids: new LocalIdStore(db) };
 const commands = createCommands({
   cfg: config,
   gateway,
@@ -604,6 +608,7 @@ const commands = createCommands({
   move: { ...moveDeps, personas, ownerPosts },
   // /mode（SELF_AGENT_CC=1 のときだけ登録する）
   ...(sessionMode === undefined ? {} : { mode: sessionMode }),
+  localPlaces,
   log,
 });
 // GitHub の通知の [対応]（下の Claude Code の配線の後で作る。ボタンは押されたときに読む）
@@ -656,6 +661,7 @@ const handleInteraction = createInteractionHandler({
     ...(config.github && config.cc ? { githubTopics: () => githubTopics, githubHandoff: () => githubHandoff } : {}),
     // /close の確定の区切りの行（Web UI が有効なときだけ）
     ...history,
+    localPlaces,
     log,
   }).concat(
     // 右腕の場所を変える確認の [変える][このまま]（move:。DB だけで動くので SELF_AGENT_CC が無効でも登録する）
@@ -1266,6 +1272,7 @@ const topicStart = {
   seeds,
   ...(projectSessions === undefined ? {} : { projectSessions }),
   placeSettings,
+  localPlaces,
   log,
 };
 // GET /api/topics の元（右腕の topic_list と共有する。Web が無効なら undefined）
@@ -1520,6 +1527,7 @@ if (config.web && config.webPort !== undefined && config.webAllowedLogin !== und
         history: historyStore,
         ...(projectSessions === undefined ? {} : { projectSessions }),
         placeSettings,
+        localPlaces,
         log,
       }),
     ],

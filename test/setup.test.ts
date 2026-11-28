@@ -2,6 +2,7 @@ import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { createSetupCommand, ensureGuildLayout, homePanelMessage } from "../src/app/commands/setup.ts";
 import { KeyedSerialQueue } from "../src/app/queue.ts";
+import type { PersonaConfig } from "../src/config.ts";
 import type { Interaction } from "../src/discord/gateway.ts";
 import { GuildSettingsStore } from "../src/store/guild-settings.ts";
 import { createStores, tempDb } from "./helpers/db.ts";
@@ -547,4 +548,77 @@ test("ホームパネル: ピン留め・投稿・存在の確認に失敗して
     await run();
     assert.deepEqual(gateway.panelCalls.map((call) => call.method), next, label);
   }
+});
+
+/** #530 の WP3（/setup）の足した人格。sora は場所がローカル（Web だけ）、mika は Discord */
+function persona(id: string, name: string): PersonaConfig {
+  return {
+    id,
+    name,
+    discordTokenEnv: `SELF_AGENT_PERSONA_${id.toUpperCase()}_DISCORD_TOKEN`,
+    promptFile: `personas/${id}.md`,
+    model: undefined,
+    engine: "claude",
+    effort: undefined,
+  };
+}
+const WP3_PERSONAS = [persona("mika", "Mika"), persona("sora", "Sora")];
+
+test("ensureGuildLayout（#530 の WP3）: 述語が true の人格（入口の行なし）は #<NAME> を作らず行も無いまま。並べた Discord の人格の #<NAME> は今と同じに作る", async (t) => {
+  const db = tempDb(t);
+  const gateway = new SetupGateway();
+  const { guildSettings } = createStores(db, () => NOW);
+  const asked: string[] = [];
+  const localPlaces = {
+    isLocalPersona: (id: string): boolean => {
+      asked.push(id);
+      return id === "sora";
+    },
+  };
+  const result = await ensureGuildLayout("guild-1", { cfg: { personas: WP3_PERSONAS }, gateway, guildSettings, localPlaces });
+  assert.equal(result.failure, null);
+  assert.deepEqual(
+    gateway.callsOf("createTextChannel").map((call) => (call.method === "createTextChannel" ? call.options.name : undefined)),
+    ["inbox", "tasks", "mika", "system"],
+  );
+  assert.equal(guildSettings.personaInbox("guild-1", "sora"), undefined);
+  const mika = guildSettings.personaInbox("guild-1", "mika");
+  assert.equal(mika?.place, "discord");
+  assert.ok(typeof mika?.channelId === "string" && result.created.includes(mika.channelId));
+  assert.deepEqual(asked, ["mika", "sora"]);
+});
+
+test("/setup（#530 の WP3）: 入口の行が place local なら述語が false でも、その番号を Discord に訊かず・作らず、行（番号・場所・日替わりの 2 列）も結果も前のまま", async (t) => {
+  const db = tempDb(t);
+  const gateway = new SetupGateway();
+  const { guildSettings } = createStores(db, () => NOW);
+  const local = "100000000000000000001";
+  guildSettings.setPersonaInbox("guild-1", "sora", local, "local");
+  guildSettings.setInboxRotated("guild-1", "2026-10-01", NOW, "sora");
+  const before = guildSettings.personaInbox("guild-1", "sora");
+  const command = createSetupCommand({
+    cfg: { personas: WP3_PERSONAS },
+    gateway,
+    guildSettings,
+    queue: new KeyedSerialQueue(1),
+    localPlaces: { isLocalPersona: () => false },
+    log: () => {},
+  });
+  const responder = new FakeResponder();
+  await command.handle(SETUP, responder);
+  const reply = responder.calls[1];
+  assert.ok(reply?.method === "reply");
+  assert.doesNotMatch(reply.message.text, new RegExp(local));
+
+  assert.deepEqual(
+    gateway.callsOf("channelExists").filter((call) => call.method === "channelExists" && call.channelId === local),
+    [],
+  );
+  assert.deepEqual(
+    gateway.callsOf("createTextChannel").map((call) => (call.method === "createTextChannel" ? call.options.name : undefined)),
+    ["inbox", "tasks", "mika", "system"],
+  );
+  assert.deepEqual(guildSettings.personaInbox("guild-1", "sora"), before);
+  assert.equal(before?.place, "local");
+  assert.equal(before?.rotatedDate, "2026-10-01");
 });

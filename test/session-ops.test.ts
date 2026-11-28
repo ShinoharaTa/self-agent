@@ -36,7 +36,9 @@ import {
   waitSession,
   welcomeText,
 } from "../src/app/session-ops.ts";
+import { DEFAULT_PERSONA_ID } from "../src/config.ts";
 import type { SummaryChannelKind } from "../src/store/inbox-summaries.ts";
+import { LocalIdStore } from "../src/store/local-places.ts";
 import { WEB_MESSAGE_MAX_LENGTH } from "../src/web/routes/turns.ts";
 import { createStores, tempDb, tempDir } from "./helpers/db.ts";
 import { FakeGateway } from "./helpers/gateway.ts";
@@ -167,6 +169,152 @@ test("createTopicChannel: 作ると sessions に行が無く、名前・topic・
   assert.equal(channelOptions.length, 1);
   assert.equal(channel.categoryId, channelOptions[0]?.parentId);
   assert.equal(topicSessions.get(session.channelId)?.categoryId, channel.categoryId);
+});
+
+/** Web だけの人格（#530 の WP3。作る道）の作り物 */
+const SORA = { id: "sora", name: "Sora" };
+/** ローカルの番号（先頭が 1 の数字 21 桁） */
+const LOCAL_ID = /^1\d{20}$/;
+
+/**
+ * #530 の WP3（作る道）: /setup 済みのサーバーと、述語を差し替えられる localPlaces（番号は本物の LocalIdStore）。
+ * 述語を呼んだ回数と番号を取った回数を数える。Discord の操作は record して回数を見る（setup を外すと /setup 前）
+ */
+async function localSetup(t: TestContext, options: { isLocal?: (id: string) => boolean; setup?: boolean; localPlaces?: boolean } = {}) {
+  const db = tempDb(t);
+  const gateway = new FakeGateway({
+    allow: ["getParentId", "sendMessage", "pinMessage", "messageExists", "moveChannel"],
+    record: ["createCategory", "createTextChannel", "channelExists", "countChannelsIn", "send"],
+  });
+  const { guildSettings, topicSessions } = createStores(db, () => NOW);
+  const counts = { predicate: 0, next: 0 };
+  const ids = new LocalIdStore(db);
+  const isLocal = options.isLocal ?? (() => true);
+  const localPlaces = {
+    isLocalPersona: (id: string): boolean => {
+      counts.predicate += 1;
+      return isLocal(id);
+    },
+    ids: {
+      next: (): string => {
+        counts.next += 1;
+        return ids.next();
+      },
+    },
+  };
+  const deps = {
+    gateway,
+    guildSettings,
+    topicSessions,
+    queue: new KeyedSerialQueue(1),
+    log: () => {},
+    ...(options.localPlaces === false ? {} : { localPlaces }),
+  };
+  if (options.setup !== false) assert.equal((await ensureGuildLayout("guild-1", deps)).failure, null);
+  gateway.reset();
+  /** Discord のチャンネル・カテゴリを作る・数える・在るかを訊く呼び出し */
+  const layoutCalls = () => gateway.callsOf("createCategory", "createTextChannel", "channelExists", "countChannelsIn");
+  return { db, gateway, guildSettings, topicSessions, deps, counts, layoutCalls };
+}
+
+test("createTopicSession（#530 の WP3）: 場所がローカルの人格は Discord を呼ばず、ローカルの番号で place local・category_id local・その人格の行を作る", async (t) => {
+  const env = await localSetup(t);
+  const created = await createTopicSession("guild-1", "旅行", env.deps, "command", SORA);
+  assert.ok(created.result === "created");
+  assert.match(created.channelId, LOCAL_ID);
+  assert.deepEqual(env.layoutCalls(), []);
+  const row = env.topicSessions.get(created.channelId);
+  assert.equal(row?.place, "local");
+  assert.equal(row?.categoryId, "local");
+  assert.equal(row?.state, "active");
+  assert.equal(row?.title, "旅行");
+  assert.equal(env.topicSessions.personaOf(created.channelId), "sora");
+  assert.deepEqual(env.counts, { predicate: 1, next: 1 });
+});
+
+test("createTopicSession（#530 の WP3）: ローカルを続けて作ると番号が違い、何個作っても空きを数えない。その後の Discord の話題は今と同じカテゴリに 1 回作る", async (t) => {
+  const env = await localSetup(t, { isLocal: (id) => id === "sora" });
+  const active = env.guildSettings.getStateCategory("guild-1", "active", 1)!;
+  // 進行中カテゴリの空きは残り 1 つ。ローカルの話題が数えられると満杯になり、Discord の話題は新しいカテゴリに行く
+  env.gateway.manual.set(active, 49);
+  const made: string[] = [];
+  for (const title of ["一", "二", "三"]) {
+    const created = await createTopicSession("guild-1", title, env.deps, "command", SORA);
+    assert.ok(created.result === "created");
+    made.push(created.channelId);
+  }
+  assert.equal(new Set(made).size, 3);
+  assert.deepEqual(env.layoutCalls(), []);
+
+  const discord = await createTopicSession("guild-1", "相談", env.deps, "command", { id: "mika", name: "Mika" });
+  assert.ok(discord.result === "created");
+  assert.deepEqual(
+    env.gateway.callsOf("createTextChannel", "createCategory").map((call) => (call.method === "createTextChannel" ? call.options.parentId : call.method)),
+    [active],
+  );
+  assert.equal(env.topicSessions.get(discord.channelId)?.place, "discord");
+  assert.equal(env.topicSessions.get(discord.channelId)?.categoryId, active);
+});
+
+test("openTopicSession（#530 の WP3）: ローカルの話題には最初の投稿をしない（既定の Bot の send も gatewayFor も 0 回）。onCreated に番号が渡り、結果は created", async (t) => {
+  const env = await localSetup(t);
+  const gatewayFor: string[] = [];
+  const personas = {
+    gatewayFor: (channelId: string) => {
+      gatewayFor.push(channelId);
+      return env.gateway;
+    },
+  };
+  const onCreated: string[] = [];
+  const result = await openTopicSession("guild-1", "旅行", SORA, { ...env.deps, personas }, "Web から", undefined, undefined, {
+    onCreated: (channelId) => onCreated.push(channelId),
+  });
+  assert.ok(result.result === "created");
+  assert.match(result.channelId, LOCAL_ID);
+  assert.deepEqual(result, { result: "created", channelId: result.channelId });
+  assert.deepEqual(onCreated, [result.channelId]);
+  assert.deepEqual(env.gateway.callsOf("send"), []);
+  assert.deepEqual(env.gateway.sent, []);
+  assert.deepEqual(gatewayFor, []);
+  assert.equal(env.topicSessions.get(result.channelId)?.place, "local");
+});
+
+test("createTopicSession（#530 の WP3）: /setup 前のサーバーではローカルの人格も not_set_up で、番号を取らず行も増えない", async (t) => {
+  const env = await localSetup(t, { setup: false });
+  assert.deepEqual(await createTopicSession("guild-1", "旅行", env.deps, "command", SORA), { result: "not_set_up" });
+  assert.equal(env.counts.next, 0);
+  assert.deepEqual(env.topicSessions.listUndeleted("guild-1"), []);
+  assert.deepEqual(env.layoutCalls(), []);
+});
+
+test("createTopicSession（#530 の WP3）: localPlaces が無い・述語が false なら、足した人格の話題は今と同じく Discord に 1 回作り、行は place discord", async (t) => {
+  for (const options of [{ localPlaces: false }, { isLocal: () => false }]) {
+    const env = await localSetup(t, options);
+    const created = await createTopicSession("guild-1", "旅行", env.deps, "command", SORA);
+    assert.ok(created.result === "created");
+    assert.equal(env.gateway.callsOf("createTextChannel").length, 1, JSON.stringify(options));
+    assert.equal(env.topicSessions.get(created.channelId)?.place, "discord");
+    assert.equal(env.topicSessions.personaOf(created.channelId), "sora");
+    assert.equal(env.counts.next, 0);
+  }
+});
+
+test("createTopicSession（#530 の WP3）: owner が無い（既定の人格）なら、述語が常に true でも Discord に作り、述語は呼ばない", async (t) => {
+  const env = await localSetup(t, { isLocal: () => true });
+  const created = await createTopicSession("guild-1", "旅行", env.deps, "command");
+  assert.ok(created.result === "created");
+  assert.equal(env.gateway.callsOf("createTextChannel").length, 1);
+  assert.equal(env.topicSessions.get(created.channelId)?.place, "discord");
+  assert.deepEqual(env.counts, { predicate: 0, next: 0 });
+});
+
+test("createTopicSession（#530 の WP3）: owner が既定の人格なら、述語が常に true でも Discord に作り、述語は呼ばない（既定の人格のローカルの話題は作れない）", async (t) => {
+  const env = await localSetup(t, { isLocal: () => true });
+  const created = await createTopicSession("guild-1", "旅行", env.deps, "command", { id: DEFAULT_PERSONA_ID, name: "default" });
+  assert.ok(created.result === "created");
+  assert.equal(env.gateway.callsOf("createTextChannel").length, 1);
+  assert.equal(env.topicSessions.get(created.channelId)?.place, "discord");
+  assert.deepEqual(env.counts, { predicate: 0, next: 0 });
 });
 
 test("waitSession・continueSession: 結果の種類と、変えたときだけ history の知らせ", (t) => {

@@ -133,6 +133,11 @@ export function resolveTopicModel(input: TopicModelInput): ModelChoice | undefin
 /** created の model は sessions.model に置いた完全な ID（無ければ欄ごと無い） */
 export type NewSessionResult = { result: "not_set_up" } | { result: "created"; channelId: string; model?: string };
 
+/** /setup 前か（サーバーの設定の行か、最初の進行中カテゴリが無い）。createTopicChannel と createTopicSession のローカルの枝で同じ条件 */
+function isNotSetUp(guildId: string, guildSettings: NewSessionDeps["guildSettings"]): boolean {
+  return guildSettings.get(guildId) === undefined || guildSettings.getStateCategory(guildId, "active", FIRST_ORDINAL) === undefined;
+}
+
 /** createTopicChannel の結果（created は作ったチャンネルとその親の進行中カテゴリ） */
 export type NewTopicChannelResult = { result: "not_set_up" } | { result: "created"; channelId: string; categoryId: string };
 
@@ -148,12 +153,7 @@ export async function createTopicChannel(
   projectDir?: string,
 ): Promise<NewTopicChannelResult> {
   const { gateway, guildSettings } = deps;
-  if (
-    guildSettings.get(guildId) === undefined ||
-    guildSettings.getStateCategory(guildId, "active", FIRST_ORDINAL) === undefined
-  ) {
-    return { result: "not_set_up" };
-  }
+  if (isNotSetUp(guildId, guildSettings)) return { result: "not_set_up" };
   const categoryId = await findStateCategory(guildId, "active", deps);
   // name は作成時にだけ設定する。topic は場所の付け替え（topic-move.ts）で書き換える
   const channelId = await gateway.createTextChannel(guildId, {
@@ -168,18 +168,36 @@ export async function createTopicChannel(
  * 空きのある進行中カテゴリにセッション用のチャンネルを作り、sessions に保存する。/setup 前（進行中カテゴリが無い）なら何もしない。
  * origin は作られ方（/new・ホームパネルは command、#inbox・#<NAME> の session_open は inbox）。
  * owner は作る人格（チャンネルの持ち主。省略は既定の人格）。足した人格ならチャンネル名に `<NAME>-` を付け、topic に表示名を添える。
- * model はその話題のモデル（完全な ID。省略は NULL）
+ * model はその話題のモデル（完全な ID。省略は NULL）。
+ * owner が場所がローカルの人格（deps.localPlaces の述語。既定の人格は見ない）なら、Discord を呼ばずにローカルの番号で sessions に保存する
+ * （docs/plan/personas-web-antigravity.md §3.1）
  */
 export async function createTopicSession(
   guildId: string,
   title: string,
-  deps: Pick<NewSessionDeps, "gateway" | "guildSettings" | "topicSessions" | "log">,
+  deps: Pick<NewSessionDeps, "gateway" | "guildSettings" | "topicSessions" | "log" | "localPlaces">,
   origin: TopicSessionOrigin = "command",
   owner?: SessionOwner,
   projectDir?: string,
   model?: string,
 ): Promise<NewSessionResult> {
-  const { topicSessions, log } = deps;
+  const { topicSessions, log, localPlaces } = deps;
+  if (owner !== undefined && owner.id !== DEFAULT_PERSONA_ID && localPlaces?.isLocalPersona(owner.id) === true) {
+    if (isNotSetUp(guildId, deps.guildSettings)) return { result: "not_set_up" };
+    // 番号はトランザクションの外で取る（LocalIdStore.next）。Discord に何も作らないので、保存の失敗はそのまま投げる
+    const channelId = localPlaces.ids.next();
+    topicSessions.create({
+      channelId,
+      guildId,
+      title,
+      categoryId: "local",
+      origin,
+      persona: owner.id,
+      place: "local",
+      ...(model === undefined ? {} : { model }),
+    });
+    return { result: "created", channelId };
+  }
   const created = await createTopicChannel(guildId, title, deps, owner, projectDir);
   if (created.result === "not_set_up") return created;
   const { channelId, categoryId } = created;
@@ -219,7 +237,7 @@ export async function openTopicSession(
   guildId: string,
   rawTitle: string,
   owner: SessionOwner | undefined,
-  deps: Pick<NewSessionDeps, "gateway" | "personas" | "guildSettings" | "topicSessions" | "queue" | "log" | "projectSessions" | "placeSettings">,
+  deps: Pick<NewSessionDeps, "gateway" | "personas" | "guildSettings" | "topicSessions" | "queue" | "log" | "projectSessions" | "placeSettings" | "localPlaces">,
   via: string,
   onAccepted?: () => Promise<void>,
   projectDir?: string,
@@ -255,6 +273,9 @@ export async function openTopicSession(
   log(
     `${via}セッションを作りました（guild=${guildId}${owner === undefined ? "" : `、人格 ${owner.id}`}${projectDir === undefined ? "" : "、プロジェクトのセッション"}）`,
   );
+  const opened = { ...result, ...(chosen === undefined ? {} : { model: chosen.model }) };
+  // ローカルの話題には最初の投稿をしない（履歴に残すかは WP4）。personas が無いと既定の Bot に落ちるので、gatewayFor 任せにせず行の place で見る
+  if (deps.topicSessions.get(result.channelId)?.place === "local") return opened;
   try {
     // 最初の投稿はチャンネルの持ち主の Bot が行う（足した人格のセッションはその人格の Bot）
     await (personas?.gatewayFor(result.channelId) ?? gateway).send(
@@ -265,7 +286,7 @@ export async function openTopicSession(
     // チャンネルと DB の行はできているので、失敗の返信にはしない
     log(`セッションの最初の投稿に失敗しました: ${describeError(error)}`);
   }
-  return { ...result, ...(chosen === undefined ? {} : { model: chosen.model }) };
+  return opened;
 }
 
 // ---- 話題を始める（POST /api/topics。docs/plan/web-ui-v3.md §5・§11 の M4） ----
@@ -329,7 +350,7 @@ export type StartTopicResult =
       /** sessions.model に置いた完全な ID（無ければ欄ごと無い） */
       model?: string;
     };
-export type StartTopicDeps = Pick<NewSessionDeps, "gateway" | "personas" | "guildSettings" | "topicSessions" | "queue" | "log" | "placeSettings"> & {
+export type StartTopicDeps = Pick<NewSessionDeps, "gateway" | "personas" | "guildSettings" | "topicSessions" | "queue" | "log" | "placeSettings" | "localPlaces"> & {
   history: Pick<HistoryStore, "add"> | undefined;
   submitText: Handler["submitText"];
   /** SELF_AGENT_CC=1 のときだけ。places には generalDir が入っている */

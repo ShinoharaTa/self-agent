@@ -5,7 +5,7 @@ import type { GuildSettingsStore } from "../../store/guild-settings.ts";
 import type { PlaceSettingStore } from "../../store/place-settings.ts";
 import type { TopicSessionStore } from "../../store/topic-sessions.ts";
 import type { CommandHandler } from "../interactions.ts";
-import type { PersonaRouter } from "../personas.ts";
+import type { LocalPersonaPlaces, PersonaRouter } from "../personas.ts";
 import type { KeyedSerialQueue } from "../queue.ts";
 import { listProjects } from "../../cc/starter.ts";
 import {
@@ -64,6 +64,8 @@ export type NewSessionDeps = {
   projectSessions?: ProjectSessionGate;
   /** 場所の既定のモデル（docs/plan/models.md §3）。無ければ明示の指定だけが効く */
   placeSettings?: Pick<PlaceSettingStore, "get">;
+  /** 場所がローカルの人格（docs/plan/personas-web-antigravity.md §3.1）。無い・述語が false なら今と同じ（Discord に作る） */
+  localPlaces?: LocalPersonaPlaces;
   log: (message: string) => void;
 };
 

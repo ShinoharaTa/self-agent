@@ -147,8 +147,8 @@ Web には通知（Web Push）が無い【事実: `src` に実装が無い】。
 | 設定 | トークン必須 | `_SURFACE=web` で Web だけ |
 | 起動の配線 | 人格ごとに `DiscordGateway` | Web だけの人格にはローカルの Gateway。`connected` は常に true |
 | DB | 鍵は Discord のチャンネル ID | 連番の表と、列 `place`（マイグレーション 1 つ） |
-| 話題を作る | 必ず Discord のチャンネル | ローカルなら Discord を呼ばず、番号を振る。`category_id` は `local` |
-| 入口 `#<NAME>` | `/setup` が Discord に作る。在るかを Discord に訊き、無ければ作り直して番号を上書きする（`src/app/commands/setup.ts:129・155-164`） | 起動のときに、ローカルの入口を無ければ作る。`/setup` は Web だけの人格を飛ばす |
+| 話題を作る | 必ず Discord のチャンネル | ローカルなら Discord を呼ばず、番号を振る。`category_id` は `local`。ローカルかは deps の `localPlaces`（型 `LocalPersonaPlaces` の述語。`main.ts` では常に false、WP5 で config の `_SURFACE` につなぐ）で、既定の人格の話題はローカルにしない。最初の文は送らない（履歴に残すかは WP4） |
+| 入口 `#<NAME>` | `/setup` が Discord に作る。在るかを Discord に訊き、無ければ作り直して番号を上書きする（`src/app/commands/setup.ts:129・155-164`） | 起動のときに、ローカルの入口を無ければ作る。`/setup` は Web だけの人格を飛ばす（同じ `localPlaces` の述語か、入口の行の `place` が `local`） |
 | 状態 | カテゴリの移動（`src/app/channel-ops.ts`） | ローカルは DB の状態だけ |
 | 削除 | Discord のチャンネルを消す | ローカルは DB だけ |
 | 再同期 | Discord に無ければ削除済み | ローカルを飛ばす |
@@ -181,7 +181,7 @@ Web には通知（Web Push）が無い【事実: `src` に実装が無い】。
 3. **設定から人格を外したとき**。`PersonaRouter.ownerOf` は、設定に無い人格の場所を既定の人格の物として扱う（`src/app/personas.ts:65-68`）。だからローカルかどうかは DB の列で決める
 4. **管理の操作にローカルの番号が渡る**。関所を入れる所は `channel-ops.ts`（移す）・`commands/delete.ts`（消す）・`session-ops.ts`（作る）・`commands/setup.ts`（入口）と、`store/topic-sessions.ts` の `listDeleteDue`（削除の確認。呼び手で飛ばすと古い順の先頭に居座って件数の上限を埋めるので、SQL で外す）。ほかはローカルの番号が届かないので関所を足さない:
    - `categories.ts`: 渡るのはカテゴリの番号だけ。呼び手は `channel-ops.ts` と `session-ops.ts` で、どちらも関所で止まる
-   - `topic-move.ts`: 足した人格の話題は検査の 3 が `persona` で断る。ローカルの話題は必ず足した人格の物（今はコードで守られていない前提。作る道 = WP3 の 2 つ目で、既定の人格のローカルの話題を作れないようにして守る。`place = 'local'` で既定の人格の行が在ると検査を通り、`setChannelTopic` に届く）。断るのは保存した列（`personaOf`）なので、設定から人格を外した後も断る
+   - `topic-move.ts`: 足した人格の話題は検査の 3 が `persona` で断る。ローカルの話題は必ず足した人格の物（作る道で守った: 既定の人格のローカルの話題は作れない（WP3 の 2 つ目。`createTopicSession` の枝は既定の人格で述語を呼ばない）。`place = 'local'` で既定の人格の行が在ると検査を通り、`setChannelTopic` に届くため）。断るのは保存した列（`personaOf`）なので、設定から人格を外した後も断る
    - `reminders.ts`: `channelExists` は直前の送信が投げた後にだけ来る。ローカルの場所への送信はローカルの Gateway で、投げない（`localGateway` を配線している間。番号を取れずに投げたとき・WP5 を戻したときは届き得る。WP5 で見る）
    - `main.ts` の配線: topic の書き換え・リマインド・取り込み・GitHub の話題は、どれも上の理由か、既定の人格の Discord の場所だけを扱う
 5. **Discord にだけ出て、履歴に無い文**（§3.3）
@@ -623,6 +623,7 @@ self-agent が自分でしない事: `agy` を入れる・サインインする�
   - 削除の確認を出さない（§3.3 の 2）は、WP4 から WP3 の 1 つ目に前倒しした（門の前に要る）。完了から N 日経ったローカルの話題は `listDeleteDue` に出ず、その後ろの Discord の話題には今と同じに出る
   - 申し送り（WP2 のレビュー）: 関所は呼び手の側に作る。移動は `channelOps.enqueueMove` が要（WP3 の 1 つ目で、その先頭の 1 か所に入れた。呼び手は `src/app/session-state.ts:55`・`src/app/session-ops.ts:554`・`src/app/scheduler.ts:258` ほかで、全部ここを通る）。抜けると本物の Discord に 21 桁の番号が渡り、`src/app/channel-ops.ts:105` は Unknown Channel を log なしで捨てる。Discord が 21 桁の番号に何を返すか（10003 か 50035 か）は【未確認】
   - 申し送り（WP3 の 1 つ目のレビュー）: 作る道（2 つ目）で、既定の人格のローカルの話題を作れないようにする（枝の条件か store で。テスト 1 つ）。取り込みは `createTopicChannel` を直に呼ぶので、ローカルの枝は `createTopicSession` の側に入れる。完了したローカルの話題は、消す口（WP6）ができるまで溜まる（害は見つかっていない）。既定の Gateway を直に持つ送信（管理でない操作）の配線の洗い直しは WP4・WP5
+  - 2 つ目のテスト: 述語が true の足した人格の話題は `createTextChannel`・`createCategory`・`channelExists`・`countChannelsIn` が 0 回で、続けて作ると番号が違い、その後の Discord の話題は今と同じカテゴリに作る。最初の投稿は既定の Bot の `send` も `gatewayFor` も 0 回。`/setup` 前は番号を取らない。`localPlaces` が無い・述語が false・owner が無い・owner が既定の人格は今と同じく Discord に作る（後ろの 2 つは述語を呼ばない）。`/setup` は述語が true の人格の入口を作らず、入口の行が `local` なら述語が false でもその番号を Discord に訊かず、行を変えない。`POST /api/sessions` も同じ行を作る
 - WP4
   - ローカルの話題のまとめ: 履歴の行は `終わりました: <#` で始まり（`isLeadText` が真）、Discord に投げた文には `<#` が無く、題名が在る。Discord の話題のまとめは 2 つとも今と同じ
   - まとめの投稿（Discord）に失敗したら、履歴の行も書かない（今と同じ。ローカルの話題のまとめも、既定の Bot が落ちている間は Web の右腕に出ない）
@@ -642,10 +643,13 @@ self-agent が自分でしない事: `agy` を入れる・サインインする�
   - 既定の人格のシステムプロンプトとツールの定義が、変更の前とバイト単位で同じ
   - 実機: Claude で動く Web だけの人格の入口で 2 ターン話し、`session_open` で話題を 1 つ作り、終わりのまとめが右腕の #inbox に題名で出て、Web の右腕には札で出る
   - 申し送り（WP2 のレビュー）: `ownerConnected`（`src/app/personas.ts:95`）は場所を見ない。設定に無い人格のローカルの場所は、既定の Bot が切れていると Web の発言が `bot_disconnected` で断られる（`src/app/handler.ts:637`）ので、`gatewayFor` と同じく場所を先に見る。`localGateway` を渡すと `gatewayFor` 1 回の DB の読みが 2 回から 4 回になる（途中経過の編集ごと）ので、持ち主と場所を 1 回で引く形にする
+  - 申し送り（WP3）: `src/app/reminders.ts:610・639` の `ownerConnected` も場所を見ない。Web だけの人格の話題のリマインドが #tasks に流れる。上の `ownerConnected` と同じ所で直す
+  - 申し送り（WP3）: `/setup` の応答の件数に、飛ばした人格は出ない。Web だけの人格の入口を作った事をどこで言うかを決める
 - WP6
   - Web だけの人格の `persona` を付けると、その人格のローカルの話題ができる。既定の Bot が切れていても 201。知らない `persona` は 400。`place` や `model` と一緒なら 400。`persona` 無しは今と同じ（Bot が切れていれば 503）
   - ローカルの話題・入口の `link` は `null`。Discord の話題の `link` は今と同じ
   - 消す口: 完了したローカルの話題は消せる（行が削除済みになる）。Discord の話題・完了していない話題は 409
+  - 申し送り（WP3）: `POST /api/sessions` の `defaultConnected`（`src/web/routes/sessions.ts`。既定の Bot が切れていると 503）は、ローカルの人格の話題でも効く
 - WP6b
   - Web だけの人格の入口の返事に在る `<#番号>` が、題名と［開く］で出る。右腕の会話の出方は変わらない（`ui-shots` の前後の絵）
 - AG1

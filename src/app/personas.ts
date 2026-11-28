@@ -7,7 +7,7 @@ import type { AgentRunner } from "../agent/runner.ts";
 import { DEFAULT_PERSONA_ID, type Engine } from "../config.ts";
 import type { Gateway, InteractionResponder, OutgoingMessage } from "../discord/gateway.ts";
 import type { GuildSettingsStore } from "../store/guild-settings.ts";
-import type { ChannelPlace } from "../store/local-places.ts";
+import type { ChannelPlace, LocalIdStore } from "../store/local-places.ts";
 import type { TopicSessionStore } from "../store/topic-sessions.ts";
 
 /** 既定の人格の表示（表示名の変数が無いので、/sessions・/usage ではこの名前で出す） */
@@ -23,6 +23,15 @@ export type PersonaRuntime = TurnPersona & {
   gateway: Gateway;
   /** その Bot が Discord に接続しているか（リマインドの投稿先を選ぶのに使う） */
   connected: () => boolean;
+};
+
+/**
+ * 場所がローカルの人格（Web だけ。docs/plan/personas-web-antigravity.md §3.1）の見分けと、ローカルの番号。
+ * 話題を作る所（session-ops.ts の createTopicSession）と /setup が見る。WP5 で config の _SURFACE につなぐ
+ */
+export type LocalPersonaPlaces = {
+  isLocalPersona: (personaId: string) => boolean;
+  ids: Pick<LocalIdStore, "next">;
 };
 
 /** 持ち主の Bot で行う投稿（返事・途中経過・入力中表示・リマインド・記憶の知らせ・kb_delete の確認） */
