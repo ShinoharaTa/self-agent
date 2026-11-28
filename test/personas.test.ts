@@ -220,6 +220,33 @@ test("PersonaRouter.gatewayFor: ローカルの Gateway を渡さない振り分
   assert.equal(env.router.gatewayFor("local-entry"), env.defaultGateway);
 });
 
+/** store の呼ばれたメソッドの名前を残す（tracked の store 版。振り分けが DB を何回読むかを確かめる） */
+function trackedStore<T extends object>(store: T): { store: T; called: string[] } {
+  const called: string[] = [];
+  const proxy = new Proxy(store, {
+    get(target, prop, receiver) {
+      const value: unknown = Reflect.get(target, prop, receiver);
+      if (typeof value !== "function") return value;
+      return (...args: unknown[]) => {
+        called.push(String(prop));
+        return (value as (...a: unknown[]) => unknown).apply(target, args);
+      };
+    },
+  });
+  return { store: proxy, called };
+}
+
+test("PersonaRouter.gatewayFor: ローカルの Gateway を渡さない振り分けは、場所を引く読み（entryChannel・get）をせず、持ち主の読みだけ（今と同じ回数）", (t) => {
+  const env = localSetup(t, false);
+  const guildSettings = trackedStore(env.guildSettings);
+  const topicSessions = trackedStore(env.topicSessions);
+  const router = new PersonaRouter({ personas: env.personas.all, guildSettings: guildSettings.store, topicSessions: topicSessions.store });
+  for (const id of ["local-topic", "local-mika", "local-entry", "topic-m", "unknown"]) router.gatewayFor(id);
+  // 入口の行が在る local-entry だけは sessions.persona を引かない（ownerOf の今の読み方）
+  assert.deepEqual(guildSettings.called, Array(5).fill("personaOfChannel"));
+  assert.deepEqual(topicSessions.called, Array(4).fill("personaOf"));
+});
+
 test("2 つの Bot が同じ発言を受け取ると、持ち主の Bot の分だけがターンになり、返信は持ち主の Bot から出る", async (t) => {
   const env = setup(t, { default: [ok("既定の返事", "s-d")], mika: [ok("ミカの返事", "s-m")] });
   const handler = createHandler({
