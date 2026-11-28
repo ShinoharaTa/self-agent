@@ -344,6 +344,10 @@ test("リマインド（T24）: 出せたら頼んだ場所に notice が 1 行�
   assert.deepEqual(env.rows(LOCAL_ENTRY), [["notice", "system", "mika", `リマインド: 買い物\n${LOCAL_POSTED_NOTE}`]]);
   assert.deepEqual(env.rows(TASKS), []);
   assert.equal(env.reminders.get(entry.id)?.status, "fired");
+  // 行のサーバーは頼んだリマインドの物
+  for (const channelId of [LOCAL_TOPIC, LOCAL_ENTRY]) {
+    assert.deepEqual(env.history.list(channelId, { limit: 50 }).map((row) => [row.guildId, row.messageId]), [[GUILD, null]], channelId);
+  }
 });
 
 test("リマインド（T24）: 投稿が reject の回と、投稿の間に止められた回は履歴に書かない", async (t) => {
@@ -390,6 +394,7 @@ test("リマインド（T25）: #tasks も #inbox も無ければ Discord 0 回�
   await env.scheduler.tick();
   assert.deepEqual(env.defaultGateway.posts, []);
   assert.deepEqual(env.rows(LOCAL_TOPIC), [["notice", "system", "mika", `リマインド: 薬を飲む\n${LOCAL_GAVE_UP_NOTE}`]]);
+  assert.deepEqual(env.history.list(LOCAL_TOPIC, { limit: 50 }).map((row) => row.guildId), [GUILD]);
   assert.equal(env.reminders.get(added.id)?.status, "done");
   env.assertMikaAndLocalUntouched("行き先なし");
 });
@@ -569,6 +574,15 @@ test("リマインド（T30）: places を渡しても場所が全部 Discord �
       expected: [[TASKS, `リマインド: 薬を飲む\n${MOVED_NOTE}`]],
       row: TASKS,
     },
+    {
+      label: "削除済みの Discord の話題",
+      channelId: DEFAULT_TOPIC,
+      prepare: (env) => {
+        env.topicSessions.markDeleted(DEFAULT_TOPIC);
+      },
+      expected: [[TASKS, `リマインド: 薬を飲む\n${MOVED_NOTE}`]],
+      row: TASKS,
+    },
   ];
   for (const { label, channelId, prepare, expected, row } of cases) {
     const withPlaces = await fireOnce(t, { places: true }, channelId, prepare);
@@ -581,26 +595,95 @@ test("リマインド（T30）: places を渡しても場所が全部 Discord �
   }
 });
 
-test("リマインド: 場所を引く所（isLocal・refOf）が投げたら log を 1 行出し、places 無しと同じ道で出す（リマインドは落とさない）", async (t) => {
-  const failing = (where: "isLocal" | "refOf"): Pick<PlaceRefs, "isLocal" | "refOf"> => ({
-    isLocal: () => {
-      if (where === "isLocal") throw new Error("database is locked");
-      return true;
+/** 呼ぶたびに投げるかを切り替えられる places（本物の placeRefs を包む） */
+function flakyPlaces(real: PlaceRefs, where: "isLocal" | "refOf"): { places: Pick<PlaceRefs, "isLocal" | "refOf">; failing: { on: boolean } } {
+  const failing = { on: true };
+  return {
+    failing,
+    places: {
+      isLocal: (channelId) => {
+        if (failing.on && where === "isLocal") throw new Error("database is locked");
+        return real.isLocal(channelId);
+      },
+      refOf: (channelId) => {
+        if (failing.on && where === "refOf") throw new Error("database is locked");
+        return real.refOf(channelId);
+      },
     },
-    refOf: () => {
-      throw new Error("database is locked");
+  };
+}
+
+test("リマインド: 場所を引く所（isLocal・refOf）が投げた回は投稿の失敗と同じ（出さず・DB を変えず・log 1 行）。次の tick で引ければ #tasks に出して履歴に 1 行", async (t) => {
+  for (const where of ["isLocal", "refOf"] as const) {
+    let flaky: ReturnType<typeof flakyPlaces> | undefined;
+    const env = setup(t, {
+      places: {
+        isLocal: (channelId) => flaky!.places.isLocal(channelId),
+        refOf: (channelId) => flaky!.places.refOf(channelId),
+      },
+    });
+    flaky = flakyPlaces(env.placeRefs, where);
+    const added = env.add(LOCAL_TOPIC);
+    await env.scheduler.tick();
+    assert.deepEqual(env.defaultGateway.calls, [], where);
+    assert.deepEqual(env.defaultGateway.posts, [], where);
+    env.assertMikaAndLocalUntouched(where);
+    assert.deepEqual(env.rows(LOCAL_TOPIC), [], where);
+    const pending = env.reminders.get(added.id)!;
+    assert.deepEqual([pending.status, pending.fireSeq, pending.channelId], ["active", 0, LOCAL_TOPIC], where);
+    assert.deepEqual(env.logs, [`リマインドの場所を引けなかったため、次の回にやり直します（#${added.id}）: database is locked`], where);
+
+    flaky.failing.on = false;
+    await env.scheduler.tick();
+    assert.deepEqual(env.posted(env.defaultGateway), [[TASKS, `リマインド: 薬を飲む\n${TOPIC_NOTE}`]], where);
+    env.assertMikaAndLocalUntouched(where);
+    assert.deepEqual(env.rows(LOCAL_TOPIC), [["notice", "system", "mika", `リマインド: 薬を飲む\n${LOCAL_POSTED_NOTE}`]], where);
+    assert.equal(env.reminders.get(added.id)?.status, "fired", where);
+  }
+});
+
+test("リマインド: Discord の場所で場所を引く所が 1 回投げた回も出さず、次の tick で今までどおりの文で頼んだ場所に出す", async (t) => {
+  let flaky: ReturnType<typeof flakyPlaces> | undefined;
+  const env = setup(t, {
+    places: {
+      isLocal: (channelId) => flaky!.places.isLocal(channelId),
+      refOf: (channelId) => flaky!.places.refOf(channelId),
     },
   });
-  for (const where of ["isLocal", "refOf"] as const) {
-    const thrown = await fireOnce(t, { places: failing(where) }, LOCAL_TOPIC);
-    const without = await fireOnce(t, { places: false }, LOCAL_TOPIC);
-    assert.deepEqual(thrown.seen, without.seen, where);
-    const extra = thrown.env.logs.filter((line) => !without.env.logs.includes(line));
-    assert.deepEqual(extra, [`リマインドの場所を引けなかったため、今までどおりに出します（#1）: database is locked`], where);
-    assert.deepEqual(thrown.env.logs.filter((line) => line !== extra[0]), without.env.logs, where);
-    // places 無しの今の道（ローカルの Gateway に出して「出した」と記録する）。WP5 で localGateway を渡す前提の筋
-    assert.equal(thrown.env.reminders.get(1)?.status, "fired", where);
-  }
+  flaky = flakyPlaces(env.placeRefs, "isLocal");
+  const added = env.add(DEFAULT_TOPIC);
+  await env.scheduler.tick();
+  assert.deepEqual(env.defaultGateway.calls, [], "投げた回");
+  assert.equal(env.reminders.get(added.id)?.status, "active");
+  flaky.failing.on = false;
+  await env.scheduler.tick();
+  assert.deepEqual(env.posted(env.defaultGateway), [[DEFAULT_TOPIC, "リマインド: 薬を飲む"]]);
+  assert.deepEqual([env.reminders.get(added.id)?.channelId, env.reminders.get(added.id)?.status], [DEFAULT_TOPIC, "fired"]);
+  assert.deepEqual(env.rows(DEFAULT_TOPIC), []);
+  env.assertMikaAndLocalUntouched("Discord の場所");
+});
+
+test("リマインド: 場所を 30 回引けなければ今在る失敗の数え方で諦め（1 回だけの物は完了）、ローカルかが分からないので履歴に書かない", async (t) => {
+  const env = setup(t, {
+    places: {
+      isLocal: () => {
+        throw new Error("database is locked");
+      },
+      refOf: () => {
+        throw new Error("database is locked");
+      },
+    },
+  });
+  const added = env.add(LOCAL_TOPIC);
+  for (let attempt = 1; attempt < REMINDER_MAX_ATTEMPTS; attempt++) await env.scheduler.tick();
+  assert.equal(env.reminders.get(added.id)?.status, "active");
+  await env.scheduler.tick();
+  assert.equal(env.reminders.get(added.id)?.status, "done");
+  assert.deepEqual(env.defaultGateway.calls, []);
+  env.assertMikaAndLocalUntouched("30 回");
+  assert.deepEqual(env.rows(LOCAL_TOPIC), []);
+  assert.equal(env.logs.length, REMINDER_MAX_ATTEMPTS);
+  assert.match(env.logs.at(-1)!, new RegExp(`^リマインドの投稿に ${REMINDER_MAX_ATTEMPTS} 回失敗したため、この回を諦めました（#${added.id}、guild=${GUILD}）: database is locked$`));
 });
 
 // ---- 配線の見張り ----
