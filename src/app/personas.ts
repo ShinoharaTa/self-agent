@@ -1,11 +1,13 @@
 // 人格（docs/plan/personas.md §2.2）の Bot と runner への振り分け。チャンネルの持ち主の人格は 1 つで、入口のチャンネルは persona_channels、
 // セッションのチャンネルは sessions.persona で引き、どちらにも無ければ既定の人格。
 // 返事・途中経過・入力中表示・リマインドの投稿・記憶の知らせ・kb_delete の確認は持ち主の Bot（gatewayFor）、
-// カテゴリ・チャンネルの作成・移動・削除、ピン留め、#system、再同期、コマンドの登録は既定の人格の Bot（admin）が行う
+// カテゴリ・チャンネルの作成・移動・削除、ピン留め、#system、再同期、コマンドの登録は既定の人格の Bot（admin）が行う。
+// ローカルの場所（place = 'local'。docs/plan/personas-web-antigravity.md §3.1）の gatewayFor は、localGateway があればそれを返す
 import type { AgentRunner } from "../agent/runner.ts";
 import { DEFAULT_PERSONA_ID, type Engine } from "../config.ts";
 import type { Gateway, InteractionResponder, OutgoingMessage } from "../discord/gateway.ts";
 import type { GuildSettingsStore } from "../store/guild-settings.ts";
+import type { ChannelPlace } from "../store/local-places.ts";
 import type { TopicSessionStore } from "../store/topic-sessions.ts";
 
 /** 既定の人格の表示（表示名の変数が無いので、/sessions・/usage ではこの名前で出す） */
@@ -29,10 +31,12 @@ export type OwnerPosts = Pick<Gateway, "send" | "sendMessage" | "editMessage" | 
 export type PersonaRouterDeps = {
   /** 動かす人格（設定の順）。最初は既定の人格 */
   personas: readonly PersonaRuntime[];
-  /** 入口のチャンネル（#inbox・#tasks・#<NAME>）の持ち主 */
-  guildSettings: Pick<GuildSettingsStore, "personaOfChannel">;
-  /** セッションのチャンネルの持ち主 */
-  topicSessions: Pick<TopicSessionStore, "personaOf">;
+  /** 入口のチャンネル（#inbox・#tasks・#<NAME>）の持ち主と場所 */
+  guildSettings: Pick<GuildSettingsStore, "personaOfChannel" | "entryChannel">;
+  /** セッションのチャンネルの持ち主と場所 */
+  topicSessions: Pick<TopicSessionStore, "personaOf" | "get">;
+  /** ローカルの場所の Gateway（discord/local-gateway.ts）。無ければローカルの場所も持ち主の Bot に振り分ける（今と同じ） */
+  localGateway?: Gateway;
 };
 
 export class PersonaRouter {
@@ -72,9 +76,19 @@ export class PersonaRouter {
     return this.byId.get(this.ownerOf(channelId)) ?? this.defaultPersona;
   }
 
-  /** チャンネルの持ち主の Bot */
+  /**
+   * チャンネルの持ち主の Bot。場所（入口は persona_channels.place、セッションは sessions.place）が local で localGateway があれば、
+   * 持ち主の人格が設定に無くてもローカルの Gateway
+   */
   gatewayFor(channelId: string): Gateway {
+    const local = this.deps.localGateway;
+    if (local !== undefined && this.placeOf(channelId) === "local") return local;
     return this.runtimeFor(channelId).gateway;
+  }
+
+  /** チャンネルの場所。persona_channels（入口）→ sessions（セッション）の順に引き、どちらにも無ければ discord */
+  private placeOf(channelId: string): ChannelPlace {
+    return this.deps.guildSettings.entryChannel(channelId)?.place ?? this.deps.topicSessions.get(channelId)?.place ?? "discord";
   }
 
   /** チャンネルの持ち主の Bot が Discord に接続しているか */

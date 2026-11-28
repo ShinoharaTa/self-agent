@@ -132,7 +132,8 @@ Web には通知（Web Push）が無い【事実: `src` に実装が無い】。
 - **番号**: DB の連番から作る数字 21 桁。先頭の桁は `1` に固定し、後ろは連番を 0 で埋めた 20 桁。Discord の ID（64 ビット。20 桁まで）と重ならない。先頭を 0 にしない理由は、`<#ID>` を読む正規表現が `[1-9]\d*` の形のため。今の `\d{1,25}` の正規表現（Web の道の 15 か所と右腕の `topic_move`）もそのまま通る。チャンネルにもメッセージにも同じ連番を使う
 - **ローカルかどうか**: `sessions` と `persona_channels` に列 `place`（`discord` / `local`。既定 `discord`）。番号の形や設定では決めない
 - **ローカルの行の `category_id`**: `sessions.category_id` は NOT NULL（`src/store/db.ts:81`）。ローカルの行には決まった文字列 `local` を入れる（Discord の ID にならない値。カテゴリを見る道は `place` で先に分かれる）
-- **ローカルの Gateway**: `Gateway` を満たす。`start` は何もしない。`send`・`sendMessage` は番号を振って返す。編集・ピン・リアクション・入力中は何もしない。`messageExists` は true。管理の操作は呼ばれたら投げる
+- **ローカルの Gateway**: `Gateway` を満たす。`start` は何もしない。`sendMessage` は番号を振って返す。`send` は何もしない（戻り値が無いので番号を振らない）。編集・ピン・リアクション・入力中は何もしない。`messageExists` は true。管理の操作は呼ばれたら投げる
+  - 名前の出ていなかった 6 つ（WP2 で決めた）: `stop` は何もしない。`channelExists` は true（在るかは DB の行が決め、Gateway は「消えた」と言わない）。`isInGuild`・`registerGuildCommands`・`countChannelsIn`・`getParentId` は投げる（サーバーの形に触る物は、関所（WP3）の抜けを黙って通さない）
 - **サーバー**: ローカルの場所も `guild_id` を持つ。既定の Bot と `/setup` は今まで通り要る。ただし `/setup` は Web だけの人格の入口を Discord に作らず、入口の番号も上書きしない
 - **知らせ**: ローカルの話題のターンの終わりは、今の L2 のまとめで右腕（Discord の #inbox）に出る。**履歴の行は今と同じ `終わりました: <#ID>` の形のまま**にし、Discord に投げる文だけ題名で書く（§3.3 の 1）。入口の返事は知らせない
 - **止まったとき**: 話題は今と同じく「あなたの番」に数える。入口は数えない（今の入口と同じ。§2.3）。入口で止まった事は、その入口を開けば理由の行で分かる
@@ -606,7 +607,7 @@ self-agent が自分でしない事: `agy` を入れる・サインインする�
   - `place = 'discord'` の話題の再同期は今と同じ
   - 連番から作った番号は、先頭が `1` の数字 21 桁で、続けて取ると違う値
 - WP2
-  - ローカルの Gateway の `send`・`sendMessage` は、毎回違う数字 21 桁を返す。管理の操作は投げる
+  - ローカルの Gateway の `sendMessage` は、毎回違う数字 21 桁を返す。`send` は何もしない（戻り値が無いので番号を振らない）。管理の操作は投げる
   - `place = 'local'` の場所の `gatewayFor` は、持ち主の人格が設定に無くてもローカルの Gateway を返す
 - WP3
   - ローカルの人格の話題を作ると、偽の Gateway の `createTextChannel` が呼ばれず、`sessions` に `place = 'local'`・`category_id = 'local'` の行ができる
