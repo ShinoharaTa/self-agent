@@ -148,7 +148,7 @@ Web には通知（Web Push）が無い【事実: `src` に実装が無い】。
 | 起動の配線 | 人格ごとに `DiscordGateway` | Web だけの人格にはローカルの Gateway。`connected` は常に true |
 | DB | 鍵は Discord のチャンネル ID | 連番の表と、列 `place`（マイグレーション 1 つ） |
 | 話題を作る | 必ず Discord のチャンネル | ローカルなら Discord を呼ばず、番号を振る。`category_id` は `local`。ローカルかは deps の `localPlaces`（型 `LocalPersonaPlaces` の述語。`main.ts` では常に false、WP5 で config の `_SURFACE` につなぐ）で、既定の人格の話題はローカルにしない。最初の文は送らない（履歴に残すかは WP4） |
-| 入口 `#<NAME>` | `/setup` が Discord に作る。在るかを Discord に訊き、無ければ作り直して番号を上書きする（`src/app/commands/setup.ts:129・155-164`） | 起動のときに、ローカルの入口を無ければ作る。`/setup` は Web だけの人格を飛ばす（同じ `localPlaces` の述語か、入口の行の `place` が `local`） |
+| 入口 `#<NAME>` | `/setup` が Discord に作る。在るかを Discord に訊き、無ければ作り直して番号を上書きする（`src/app/commands/setup.ts:134・160-174`） | 起動のときに、ローカルの入口を無ければ作る。`/setup` は Web だけの人格を飛ばす（同じ `localPlaces` の述語か、入口の行の `place` が `local`） |
 | 状態 | カテゴリの移動（`src/app/channel-ops.ts`） | ローカルは DB の状態だけ |
 | 削除 | Discord のチャンネルを消す | ローカルは DB だけ |
 | 再同期 | Discord に無ければ削除済み | ローカルを飛ばす |
@@ -643,6 +643,8 @@ self-agent が自分でしない事: `agy` を入れる・サインインする�
   - 既定の人格のシステムプロンプトとツールの定義が、変更の前とバイト単位で同じ
   - 実機: Claude で動く Web だけの人格の入口で 2 ターン話し、`session_open` で話題を 1 つ作り、終わりのまとめが右腕の #inbox に題名で出て、Web の右腕には札で出る
   - 申し送り（WP2 のレビュー）: `ownerConnected`（`src/app/personas.ts:95`）は場所を見ない。設定に無い人格のローカルの場所は、既定の Bot が切れていると Web の発言が `bot_disconnected` で断られる（`src/app/handler.ts:637`）ので、`gatewayFor` と同じく場所を先に見る。`localGateway` を渡すと `gatewayFor` 1 回の DB の読みが 2 回から 4 回になる（途中経過の編集ごと）ので、持ち主と場所を 1 回で引く形にする
+  - 申し送り（WP3 の 2 つ目のレビュー）: 設定（述語）と入口の行の `place` が食い違うと、`/setup` はどちらでも飛ばすだけ。Discord → Web だけに替えた人格（述語 true・行 `discord`）は、古い `#<NAME>` が Discord に残り、行も `discord` のままで、以後の話題だけローカルにできる。Web だけ → Bot を足した人格（述語 false・行 `local`。WP5 を戻したときも同じ）は、`#<NAME>` がいつまでも作られず、`/setup` の応答は「すべて揃っています」になり、以後の話題は Discord にできる。場所の切り替えをどう扱うか（断る・行を直す）を WP5 で決める
+  - 申し送り（同）: `localPlaces` は任意の deps なので、新しい呼び手が渡し忘れると Web だけの人格の話題を黙って Discord に作る。門を開けるときに必須にするか、`main.ts` の配線をテストで固定する。`startTopic`（`session_open`・`POST /api/topics` の道）にローカルの人格を渡すテストはまだ無い（区切りの履歴と `submitText` に進む。最初に届くのは WP5）
   - 申し送り（WP3）: `src/app/reminders.ts:610・639` の `ownerConnected` も場所を見ない。Web だけの人格の話題のリマインドが #tasks に流れる。上の `ownerConnected` と同じ所で直す
   - 申し送り（WP3）: `/setup` の応答の件数に、飛ばした人格は出ない。Web だけの人格の入口を作った事をどこで言うかを決める
 - WP6
