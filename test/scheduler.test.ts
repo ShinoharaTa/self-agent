@@ -918,6 +918,71 @@ test("待ちへの移動（#530 の WP3）: 放置したローカルの話題は
   assert.equal(topicSessions.get("topic-1")?.categoryId, "waiting-1");
 });
 
+test("待ちへの移動（#530 の WP4）: 放置したローカルの話題を待ちに移すと、その話題の履歴に知らせの notice が 1 行（persona は持ち主）。既定の Bot には何も行かない", async (t) => {
+  const db = tempDb(t);
+  const clock = { now: ago(13 * HOUR_MS) };
+  const { topicSessions, guildSettings, sessions, seeds, history } = createStores(db, () => clock.now);
+  const gateway = new FakeGateway({
+    allow: ["listChannelParents", "isInGuild"],
+    record: ["send", "sendMessage", "getParentId", "moveChannel", "channelExists", "countChannelsIn", "createCategory"],
+  });
+  guildSettings.setChannel("guild-1", "systemChannelId", "system-1");
+  for (const state of ["active", "waiting", "done"] as const) {
+    guildSettings.setStateCategory("guild-1", state, 1, `${state}-1`);
+    gateway.alive.add(`${state}-1`);
+    gateway.parents.set(`${state}-1`, null);
+  }
+  const local = "100000000000000000001";
+  topicSessions.create({ channelId: local, guildId: "guild-1", title: local, categoryId: "local", persona: "mika", place: "local" });
+  clock.now = NOW;
+  const logs: string[] = [];
+  const log = (line: string): void => void logs.push(line);
+  const channelOps = new ChannelOpsQueue({ gateway, guildSettings, topicSessions, gapMs: 0, timers: { sleep: async () => {} }, log });
+  const mika = new FakeGateway({ record: ["send", "sendMessage"] });
+  const personas = new PersonaRouter({
+    personas: [
+      { id: "default", name: "default", engine: "claude", runner: new FakeRunner([]), gateway, connected: () => true },
+      { id: "mika", name: "ミカ", engine: "claude", runner: new FakeRunner([]), gateway: mika, connected: () => true },
+    ],
+    guildSettings,
+    topicSessions,
+    localGateway: new LocalGateway(new LocalIdStore(db)),
+  });
+  const scheduler = new Scheduler({
+    cfg: { allowedGuildIds: ["guild-1"], idleHours: 12, deleteAfterDays: 30 },
+    topicSessions,
+    guildSettings,
+    sessions,
+    seeds,
+    channelOps,
+    gateway,
+    notify: createSystemNotifier({ guildSettings, gateway, log }),
+    personas,
+    inboxRotator: new RecordingRotator(),
+    pruneDevLogs: () => {},
+    pruneProjectTrash: async () => {},
+    pruneWorkDir: async () => {},
+    turnQueue: new RecordingQueue(2),
+    history,
+    now: () => clock.now,
+    timers: new FakeTimers(),
+    log,
+  });
+
+  await scheduler.tick();
+  for (let i = 0; i < 10; i++) await flush();
+  await channelOps.idle();
+
+  assert.equal(topicSessions.get(local)?.state, "waiting");
+  assert.deepEqual(
+    history.list(local, { limit: 10 }).map(({ guildId, kind, source, persona, text }) => ({ guildId, kind, source, persona, text })),
+    [{ guildId: "guild-1", kind: "notice", source: "system", persona: "mika", text: idleNotice(12, local).text }],
+  );
+  assert.deepEqual(gateway.calls, []);
+  assert.deepEqual(gateway.edits, []);
+  assert.deepEqual(mika.calls, []);
+});
+
 test("削除の確認（#530 の WP3）: 古いローカルの完了の話題が limit 件より多くても確認を出さず、その後ろの Discord の話題に 1 回出す", async (t) => {
   const env = setup(t);
   const local = Array.from({ length: DELETE_PROMPT_BATCH_LIMIT + 2 }, (_, index) => `1${String(index + 1).padStart(20, "0")}`);

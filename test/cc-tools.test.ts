@@ -13,7 +13,8 @@ import {
   type TextToolResult,
 } from "../src/agent/tools.ts";
 import type { RunContext } from "../src/agent/runner.ts";
-import { createCcTools, CC_LIST_MAX, CONFIRM_TOO_LONG_MESSAGE } from "../src/app/cc-tools.ts";
+import { createCcTools, CC_LIST_MAX, CC_LOCAL_PLACE_MESSAGE, CONFIRM_TOO_LONG_MESSAGE, type CcToolsDeps } from "../src/app/cc-tools.ts";
+import { createPlaceRefs } from "../src/app/place-refs.ts";
 import {
   CC_CONFIRM_MAX_PAGES,
   CC_CONFIRM_PAGE_CHARS,
@@ -38,7 +39,7 @@ import { CcSessionStore } from "../src/store/cc-sessions.ts";
 import { CcStartStore } from "../src/store/cc-starts.ts";
 import { MIGRATIONS, openDb } from "../src/store/db.ts";
 import { createTmux, type RunCommand } from "../src/tmux/tmux.ts";
-import { tempDb, tempDir } from "./helpers/db.ts";
+import { createStores, tempDb, tempDir } from "./helpers/db.ts";
 import { FakeResponder, type ResponderCall } from "./helpers/responder.ts";
 import { TAKEOVER_SEND_REJECT_TEXT } from "../src/cc/takeover-rules.ts";
 
@@ -107,9 +108,9 @@ function buttonId(message: OutgoingMessage, label: string): string {
 
 /**
  * 本物の CcSender（偽の tmux。S1 は %1 の claude で作業中、S2 は %2 のシェル、S3 は tmux の外）・ストア・一時 SQLite と、
- * 偽の starter（check・launch を記録）・偽の Bot（投稿・書き換えを記録）
+ * 偽の starter（check・launch を記録）・偽の Bot（投稿・書き換えを記録）。places は cc_tools に渡す場所の引き方（省略は渡さない）
  */
-function setup(t: TestContext) {
+function setup(t: TestContext, places?: CcToolsDeps["places"]) {
   const db = tempDb(t);
   const clock = { now: BASE };
   const now = (): Date => new Date(clock.now);
@@ -198,7 +199,7 @@ function setup(t: TestContext) {
     },
   };
   const cfg = { workspaceDir: "/w", timeZone: "Asia/Tokyo" };
-  const cc = createCcTools({ cfg, registry, panes, sender, starter, sends, starts, gateway: bot, home: "/home/owner", log });
+  const cc = createCcTools({ cfg, registry, panes, sender, starter, sends, starts, gateway: bot, home: "/home/owner", ...(places === undefined ? {} : { places }), log });
   const runtime: { value: CcConfirmRuntime | undefined } = { value: { sender, starter, registry, panes } };
   const component = createCcComponent({
     cfg,
@@ -796,4 +797,33 @@ test("[起動する]: 起動の後の記録（cc_starts の書き込み）が投
   assert.ok(message.text.includes("起動しました"), message.text);
   assert.deepEqual(message.components, []);
   assert.ok(s.logs.some((line) => line.includes("起動の記録を書けませんでした（#1、Error）")), s.logs.join("\n"));
+});
+
+test("cc_send・cc_start（#530 の WP4）: ローカルの場所では確かめる前に not_available と固定の文を返し、行を作らず確認も出さない。Discord の場所は今と同じ", async (t) => {
+  const stores = createStores(tempDb(t), () => new Date(BASE));
+  const local = "100000000000000000001";
+  stores.topicSessions.create({ channelId: local, guildId: "guild-1", title: "ローカルの話題", categoryId: "local", persona: "mika", place: "local" });
+  stores.guildSettings.setPersonaInbox("guild-1", "mika", "100000000000000000002", "local");
+  const places = createPlaceRefs({ guildSettings: stores.guildSettings, topicSessions: stores.topicSessions, personaName: () => undefined });
+  const s = setup(t, places);
+  const refused = { result: "not_available", message: CC_LOCAL_PLACE_MESSAGE };
+  assert.equal(CC_LOCAL_PLACE_MESSAGE, "Web だけの場所では確認を出せないので、ここからは端末の Claude Code に送れません。右腕（#inbox）から頼んでください");
+  for (const channelId of [local, "100000000000000000002"]) {
+    const context: RunContext = { guildId: "guild-1", channelId, kind: channelId === local ? "session" : "inbox" };
+    assert.deepEqual(parse(await s.handlers(context).ccSend({ session_id: S1, text: "x" })), refused, channelId);
+    assert.deepEqual(parse(await s.handlers(context).ccStart({ project: "alpha", title: "fix login" })), refused, channelId);
+  }
+  assert.equal(s.sends.get(1), undefined);
+  assert.equal(s.starts.get(1), undefined);
+  assert.deepEqual(s.checks, []);
+  assert.equal(s.posted.length, 0);
+  assert.equal(s.edited.length, 0);
+  assert.deepEqual(pasteOps(s.commands), []);
+  assert.deepEqual(s.logs, []);
+  // Discord の場所（同じ places を渡したまま）は今と同じ
+  assert.deepEqual(parse(await s.handlers().ccSend({ session_id: S1, text: "x" })), { result: "confirmation_posted", send_id: 1 });
+  assert.deepEqual(parse(await s.handlers().ccStart({ project: "alpha", title: "fix login" })), { result: "confirmation_posted", start_id: 1 });
+  assert.deepEqual(s.posted.map((post) => post.channelId), [CHANNEL, CHANNEL]);
+  // cc_list は場所を見ない
+  assert.equal((parse(await s.handlers({ guildId: "guild-1", channelId: local, kind: "session" }).ccList({})).sessions as unknown[]).length, 3);
 });

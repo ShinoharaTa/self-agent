@@ -3,6 +3,7 @@ import type { ConfirmKbDelete } from "../../agent/tools.ts";
 import type { Gateway, OutgoingMessage } from "../../discord/gateway.ts";
 import type { KbEntry, KnowledgeStore } from "../../store/knowledge.ts";
 import type { ComponentHandler } from "../interactions.ts";
+import type { PlaceRefs } from "../place-refs.ts";
 import { STALE_TEXT } from "./delete.ts";
 
 /** [やめる] を押した後の、確認メッセージの本文 */
@@ -37,9 +38,16 @@ export function kbDeletedText(entry: Pick<KbEntry, "id" | "title">): string {
   return `${entry.title}（#${entry.id}）を削除しました`;
 }
 
-/** kb_delete の確認の投稿（run のチャンネルに投稿する）。失敗したら投げる */
-export function createConfirmKbDelete(deps: { gateway: Pick<Gateway, "sendMessage"> }): ConfirmKbDelete {
+/** ローカルの場所（Discord のボタンを押せない）で kb_delete を頼まれたときに投げる文（ツールの結果としてモデルに返る） */
+export const KB_DELETE_LOCAL_MESSAGE = "Web だけの場所では削除の確認を出せません。右腕（#inbox）から頼んでください";
+
+/**
+ * kb_delete の確認の投稿（run のチャンネルに投稿する）。失敗したら投げる。
+ * ローカルの場所（docs/plan/personas-web-antigravity.md §3.3 の 4）では送らずに投げる（投稿に失敗したときと同じく、項目は消えない）
+ */
+export function createConfirmKbDelete(deps: { gateway: Pick<Gateway, "sendMessage">; places?: Pick<PlaceRefs, "isLocal"> }): ConfirmKbDelete {
   return async (entry, context) => {
+    if (deps.places?.isLocal(context.channelId) === true) throw new Error(KB_DELETE_LOCAL_MESSAGE);
     await deps.gateway.sendMessage(context.channelId, kbDeletePrompt(entry));
   };
 }
