@@ -1,6 +1,7 @@
 import type { DatabaseSync, SQLOutputValue } from "node:sqlite";
 import { isProjectPermissionMode, type ProjectPermissionMode } from "../agent/runner.ts";
 import { DEFAULT_PERSONA_ID } from "../config.ts";
+import { type ChannelPlace, toChannelPlace } from "./local-places.ts";
 
 /** セッションの状態。deleted はチャンネルを消した後も要約を残すための行 */
 export type TopicSessionState = "active" | "waiting" | "done" | "deleted";
@@ -33,6 +34,8 @@ export type TopicSession = {
   renewedSummary: string | null;
   /** /renew で会話を新しくした時刻。まだ新しくしていなければ null */
   renewedAt: string | null;
+  /** 場所（docs/plan/personas-web-antigravity.md §3.1）。local は Discord にチャンネルが無い */
+  place: ChannelPlace;
 };
 
 /** session_report の summary の文字数の上限 */
@@ -65,6 +68,8 @@ export type NewTopicSession = {
   permissionMode?: ProjectPermissionMode;
   /** その話題のモデル（完全な ID。docs/plan/models.md §4）。省略すれば NULL（全体の既定に従う） */
   model?: string;
+  /** 場所（docs/plan/personas-web-antigravity.md §3.1）。省略すれば discord */
+  place?: ChannelPlace;
 };
 
 const STATES: readonly TopicSessionState[] = ["active", "waiting", "done", "deleted"];
@@ -103,6 +108,7 @@ function toSession(row: Record<string, SQLOutputValue>): TopicSession {
     deletedAt: nullableString(row.deleted_at),
     renewedSummary: nullableString(row.renewed_summary),
     renewedAt: nullableString(row.renewed_at),
+    place: toChannelPlace(row.place, "sessions.place"),
   };
 }
 
@@ -144,8 +150,8 @@ export class TopicSessionStore {
     const at = this.now().toISOString();
     const row = this.db
       .prepare(
-        "INSERT INTO sessions (channel_id, guild_id, title, state, category_id, created_at, last_activity_at, origin, persona, project_dir, permission_mode, model) " +
-          "VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
+        "INSERT INTO sessions (channel_id, guild_id, title, state, category_id, created_at, last_activity_at, origin, persona, project_dir, permission_mode, model, place) " +
+          "VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
       )
       .get(
         session.channelId,
@@ -159,6 +165,7 @@ export class TopicSessionStore {
         session.projectDir ?? null,
         session.permissionMode ?? "default",
         session.model ?? null,
+        session.place ?? "discord",
       );
     return toSession(row!);
   }

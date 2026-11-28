@@ -65,8 +65,9 @@ test("openDb: v46 の DB を v47 に上げると sessions・usage_log に model�
     )
     .run();
   old.prepare("INSERT INTO usage_log (at, key, ok) VALUES ('a', 'k', 1)").run();
-  // 後の移行が足す表（v48 の topic_pins）は除く（その移行のテストで見る）
-  const others = "SELECT name, sql FROM sqlite_master WHERE tbl_name NOT IN ('sessions', 'usage_log', 'place_settings', 'topic_pins') ORDER BY name";
+  // 後の移行が足す・変える表（v48 の topic_pins、v49 の persona_channels・local_ids）は除く（その移行のテストで見る）
+  const others =
+    "SELECT name, sql FROM sqlite_master WHERE tbl_name NOT IN ('sessions', 'usage_log', 'place_settings', 'topic_pins', 'persona_channels', 'local_ids') ORDER BY name";
   const defsBefore = old.prepare(others).all().map((row) => ({ ...row }));
   old.close();
 

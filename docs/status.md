@@ -90,7 +90,8 @@ CC9 は済（Web の会話のサイドバーの群「Claude Code」。アクテ�
 
 ## Bot を持たない人格と Antigravity のエンジン（#530）
 
-- Discord の Bot を持たない人格（Web だけ）と、話題を始めるときのモデルの一覧から選ぶ Antigravity（`agy`）のモデルの設計: `docs/plan/personas-web-antigravity.md`（#530。場所の線 WP0〜WP7・エンジンの線 AG0〜AG8）。Antigravity の人格は立てない（エンジンは話題ごと）。今は設計書（WP0）だけ。WP1〜WP7・AG0〜AG8 はまだ
+- Discord の Bot を持たない人格（Web だけ）と、話題を始めるときのモデルの一覧から選ぶ Antigravity（`agy`）のモデルの設計: `docs/plan/personas-web-antigravity.md`（#530。場所の線 WP0〜WP7・エンジンの線 AG0〜AG8）。Antigravity の人格は立てない（エンジンは話題ごと）。今は WP1 まで。WP2〜WP7・AG0〜AG8 はまだ
+- WP1 は main に入った（コードの DB は v49: `sessions.place`・`persona_channels.place`（`discord` / `local`。今ある行は `discord`）・連番の表 `local_ids`。store `src/store/local-places.ts` の `LocalIdStore` がローカルの番号（先頭が `1` の数字 21 桁）を作る。再同期はローカルの話題を飛ばす）。ローカルの行を作る道はまだ無い（WP3 から）。効くのは再起動の後
 - WP6b（どの会話でも `<#番号>` を題名に替える）・WP7（画面で人格を選ぶ）と AG8（画面のモデルの一覧に Antigravity を出す）は #528 の向きが決まるまで止める（`docs/plan/web-ui-rebuild.md` §8）
 - AG0（この機械での実測。サブスクの枠を使う）は、オーナーが `agy` を入れてサインインした後に、回して良いかを訊いてから
 

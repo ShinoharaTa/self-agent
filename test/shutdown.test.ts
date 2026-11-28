@@ -378,6 +378,7 @@ test("停止を始めたら scheduler を止め（以後 tick しない）、実
                 deletedAt: null,
                 renewedSummary: null,
                 renewedAt: null,
+                place: "discord",
               },
             ]
           : [];

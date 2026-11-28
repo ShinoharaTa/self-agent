@@ -901,6 +901,16 @@ export const MIGRATIONS: readonly string[] = [
     created_at TEXT NOT NULL
   );
   `,
+  // v49（#530。docs/plan/personas-web-antigravity.md §3.1・§3.2 の WP1）: 話題と入口の場所。place は discord（Discord のチャンネル）か
+  // local（Web だけの人格の、Discord に何も作らない場所）。今ある行はすべて discord。local_ids はローカルの番号を作る連番
+  // （store/local-places.ts の LocalIdStore。番号を取ったら行は消し、AUTOINCREMENT の番号だけを残す）。ほかの表は変えない
+  `
+  ALTER TABLE sessions ADD COLUMN place TEXT NOT NULL DEFAULT 'discord' CHECK (place IN ('discord', 'local'));
+  ALTER TABLE persona_channels ADD COLUMN place TEXT NOT NULL DEFAULT 'discord' CHECK (place IN ('discord', 'local'));
+  CREATE TABLE local_ids (
+    id INTEGER PRIMARY KEY AUTOINCREMENT
+  );
+  `,
 ];
 
 function userVersion(db: DatabaseSync): number {
