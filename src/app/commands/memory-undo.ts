@@ -35,8 +35,9 @@ export function memoryNotice(change: MemoryChange): OutgoingMessage {
 }
 
 /**
- * 記憶の変更を run のチャンネルに知らせる。変更は済んでいるので、投稿の失敗は log に出すだけ。
- * ローカルの場所では送らず、その場所の履歴に知らせの文を notice の行で書く（[取り消す] は付けない。Web の記憶の画面で直す）
+ * 記憶の変更を run のチャンネルに知らせる。変更は済んでいるので、投稿の失敗（ローカルの場所かを引く所の失敗も）は log に出すだけ。
+ * ローカルの場所では送らず、その場所の履歴に知らせの文を notice の行で書く（[取り消す] は付けない）。記憶した側は Web の記憶の画面の
+ * 「忘れる」で取り消せる。忘れた側（memory_forget、replace_id の古い側）は画面から戻せないので、履歴の notice の文（全文が在る）から覚え直す
  */
 export function createNotifyMemoryChange(deps: {
   gateway: Pick<Gateway, "sendMessage">;
@@ -50,22 +51,23 @@ export function createNotifyMemoryChange(deps: {
 }): NotifyMemoryChange {
   const { gateway, log } = deps;
   return async (change, context) => {
-    if (deps.places?.isLocal(context.channelId) === true) {
-      recordHistory(
-        deps.history,
-        {
-          guildId: context.guildId,
-          channelId: context.channelId,
-          kind: "notice",
-          source: "system",
-          persona: deps.personaOf?.(context.channelId) ?? DEFAULT_PERSONA_ID,
-          text: memoryNotice(change).text,
-        },
-        log,
-      );
-      return;
-    }
+    // 場所を引く所も、変更が済んだ後なので失敗は log だけ（送らず、履歴も書かない）
     try {
+      if (deps.places?.isLocal(context.channelId) === true) {
+        recordHistory(
+          deps.history,
+          {
+            guildId: context.guildId,
+            channelId: context.channelId,
+            kind: "notice",
+            source: "system",
+            persona: deps.personaOf?.(context.channelId) ?? DEFAULT_PERSONA_ID,
+            text: memoryNotice(change).text,
+          },
+          log,
+        );
+        return;
+      }
       await gateway.sendMessage(context.channelId, memoryNotice(change));
     } catch (error) {
       log(`記憶の変更の知らせの投稿に失敗しました: ${describeError(error)}`);

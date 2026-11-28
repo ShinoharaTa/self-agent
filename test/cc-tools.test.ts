@@ -13,7 +13,14 @@ import {
   type TextToolResult,
 } from "../src/agent/tools.ts";
 import type { RunContext } from "../src/agent/runner.ts";
-import { createCcTools, CC_LIST_MAX, CC_LOCAL_PLACE_MESSAGE, CONFIRM_TOO_LONG_MESSAGE, type CcToolsDeps } from "../src/app/cc-tools.ts";
+import {
+  createCcTools,
+  CC_LIST_MAX,
+  CC_LOCAL_PLACE_MESSAGE,
+  CC_START_LOCAL_PLACE_MESSAGE,
+  CONFIRM_TOO_LONG_MESSAGE,
+  type CcToolsDeps,
+} from "../src/app/cc-tools.ts";
 import { createPlaceRefs } from "../src/app/place-refs.ts";
 import {
   CC_CONFIRM_MAX_PAGES,
@@ -806,12 +813,16 @@ test("cc_send・cc_start（#530 の WP4）: ローカルの場所では確かめ
   stores.guildSettings.setPersonaInbox("guild-1", "mika", "100000000000000000002", "local");
   const places = createPlaceRefs({ guildSettings: stores.guildSettings, topicSessions: stores.topicSessions, personaName: () => undefined });
   const s = setup(t, places);
-  const refused = { result: "not_available", message: CC_LOCAL_PLACE_MESSAGE };
   assert.equal(CC_LOCAL_PLACE_MESSAGE, "Web だけの場所では確認を出せないので、ここからは端末の Claude Code に送れません。右腕（#inbox）から頼んでください");
+  assert.equal(CC_START_LOCAL_PLACE_MESSAGE, "Web だけの場所では確認を出せないので、ここからは端末の Claude Code を起動できません。右腕（#inbox）から頼んでください");
   for (const channelId of [local, "100000000000000000002"]) {
     const context: RunContext = { guildId: "guild-1", channelId, kind: channelId === local ? "session" : "inbox" };
-    assert.deepEqual(parse(await s.handlers(context).ccSend({ session_id: S1, text: "x" })), refused, channelId);
-    assert.deepEqual(parse(await s.handlers(context).ccStart({ project: "alpha", title: "fix login" })), refused, channelId);
+    assert.deepEqual(parse(await s.handlers(context).ccSend({ session_id: S1, text: "x" })), { result: "not_available", message: CC_LOCAL_PLACE_MESSAGE }, channelId);
+    assert.deepEqual(
+      parse(await s.handlers(context).ccStart({ project: "alpha", title: "fix login" })),
+      { result: "not_available", message: CC_START_LOCAL_PLACE_MESSAGE },
+      channelId,
+    );
   }
   assert.equal(s.sends.get(1), undefined);
   assert.equal(s.starts.get(1), undefined);

@@ -26,8 +26,11 @@ import type { PlaceRefs } from "./place-refs.ts";
 export const CC_LIST_MAX = 30;
 /** 本文が確認（最大 3 通）に出しきれないとき（``` を崩すと長くなる）の message */
 export const CONFIRM_TOO_LONG_MESSAGE = "本文に ` が多く、確認に全文を出しきれないため使えません。短くしてください";
-/** ローカルの場所で cc_send・cc_start を頼まれたときの message */
+/** ローカルの場所で cc_send を頼まれたときの message */
 export const CC_LOCAL_PLACE_MESSAGE = "Web だけの場所では確認を出せないので、ここからは端末の Claude Code に送れません。右腕（#inbox）から頼んでください";
+/** ローカルの場所で cc_start を頼まれたときの message */
+export const CC_START_LOCAL_PLACE_MESSAGE =
+  "Web だけの場所では確認を出せないので、ここからは端末の Claude Code を起動できません。右腕（#inbox）から頼んでください";
 
 export type CcToolsDeps = {
   cfg: Pick<Config, "workspaceDir" | "timeZone">;
@@ -163,7 +166,7 @@ export function createCcTools(deps: CcToolsDeps): CcToolDeps {
     },
 
     async start(args, context): Promise<CcStartResult> {
-      if (isLocal(context.channelId)) return { result: "not_available", message: CC_LOCAL_PLACE_MESSAGE };
+      if (isLocal(context.channelId)) return { result: "not_available", message: CC_START_LOCAL_PLACE_MESSAGE };
       const checked = await starter.check({
         project: args.project,
         title: args.title,

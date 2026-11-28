@@ -183,6 +183,32 @@ test("記憶の知らせ: Discord の場所は今と同じ 1 通（［取り消�
   }
 });
 
+test("記憶の知らせ: ローカルの場所かを引く所が投げても呼び手に例外を出さず、送信 0 回・履歴 0 行・log 1 行（本文・チャンネル ID を出さない）", async (t) => {
+  const env = setup(t);
+  const notify = createNotifyMemoryChange({
+    gateway: env.personas.ownerPosts(),
+    places: {
+      isLocal: () => {
+        throw new Error("database is locked");
+      },
+    },
+    history: env.history,
+    personaOf: (channelId) => env.personas.ownerOf(channelId),
+    log: env.log,
+  });
+  // 1 回の変更ごとに log 1 行
+  for (const [index, channelId] of [LOCAL_TOPIC, DISCORD_TOPIC].entries()) {
+    const tools = createMemoryToolHandlers({ memories: env.memories, notifyMemoryChange: notify }, context(channelId));
+    assert.equal(parse(await tools.memorySave({ text: `秘密のメモ ${channelId}` })).result, "saved", channelId);
+    assert.deepEqual(env.rows(channelId), [], channelId);
+    assert.equal(env.logs.length, index + 1, channelId);
+  }
+  env.assertNothingSent("場所を引けない");
+  for (const line of env.logs) {
+    assert.ok(!line.includes("秘密のメモ") && !line.includes(LOCAL_TOPIC) && !line.includes(DISCORD_TOPIC), line);
+  }
+});
+
 // ---- kb_delete（T13） ----
 
 test("kb_delete（§8.4）: ローカルの場所では確認を送らずに固定の文で投げ、項目は残る。Discord の場所は今と同じ confirm_posted と確認の 1 通", async (t) => {
