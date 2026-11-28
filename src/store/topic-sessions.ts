@@ -189,6 +189,15 @@ export class TopicSessionStore {
   }
 
   /**
+   * そのセッションのチャンネルの持ち主の人格の id と場所（削除済みの行も返す。人格の振り分けが送信のたびに読む）。セッションでなければ undefined。
+   * get と違い、ほかの列（close_draft など）は読まない
+   */
+  ownerPlaceOf(channelId: string): { persona: string; place: ChannelPlace } | undefined {
+    const row = this.db.prepare("SELECT persona, place FROM sessions WHERE channel_id = ?").get(channelId);
+    return row === undefined ? undefined : { persona: String(row.persona), place: toChannelPlace(row.place, "sessions.place") };
+  }
+
+  /**
    * プロジェクトのセッション（docs/plan/unify.md §5.2）なら、そのプロジェクト（SELF_AGENT_WORKSPACE_DIR の直下の名前）と許可のモード。
    * 行が無い・project_dir が NULL（軽いモード）なら undefined。モードが決まった語でなければ default
    */

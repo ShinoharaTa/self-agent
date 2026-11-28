@@ -145,7 +145,7 @@ Web には通知（Web Push）が無い【事実: `src` に実装が無い】。
 | 領域 | 今 | 変える事 |
 |---|---|---|
 | 設定 | トークン必須 | `_SURFACE=web` で Web だけ |
-| 起動の配線 | 人格ごとに `DiscordGateway` | Web だけの人格にはローカルの Gateway。`connected` は常に true |
+| 起動の配線 | 人格ごとに `DiscordGateway` | Web だけの人格にはローカルの Gateway。`connected` は常に true。振り分けの側は WP5 の 1 つ目で入れた: `PersonaRouter` に `localGateway` を必ず渡し（`main.ts` は `LocalIdStore` を 1 つ作って `localPlaces` と同じ物を使う）、場所が `local` のチャンネルは `gatewayFor` がローカルの Gateway、`ownerConnected` が真（持ち主の人格が設定に無くても） |
 | DB | 鍵は Discord のチャンネル ID | 連番の表と、列 `place`（マイグレーション 1 つ） |
 | 話題を作る | 必ず Discord のチャンネル | ローカルなら Discord を呼ばず、番号を振る。`category_id` は `local`。ローカルかは deps の `localPlaces`（型 `LocalPersonaPlaces` の述語。`main.ts` では常に false、WP5 で config の `_SURFACE` につなぐ）で、既定の人格の話題はローカルにしない。最初の文は送らない（履歴に残すかは WP4） |
 | 入口 `#<NAME>` | `/setup` が Discord に作る。在るかを Discord に訊き、無ければ作り直して番号を上書きする（`src/app/commands/setup.ts:134・160-174`） | 起動のときに、ローカルの入口を無ければ作る。`/setup` は Web だけの人格を飛ばす（同じ `localPlaces` の述語か、入口の行の `place` が `local`） |
@@ -651,12 +651,12 @@ self-agent が自分でしない事: `agy` を入れる・サインインする�
   - `/new` の `persona` の選択肢に出ない。#system に接続の知らせが出ない
   - 既定の人格のシステムプロンプトとツールの定義が、変更の前とバイト単位で同じ
   - 実機: Claude で動く Web だけの人格の入口で 2 ターン話し、`session_open` で話題を 1 つ作り、終わりのまとめが右腕の #inbox に題名で出て、Web の右腕には札で出る
-  - 申し送り（WP2 のレビュー）: `ownerConnected`（`src/app/personas.ts:95`）は場所を見ない。設定に無い人格のローカルの場所は、既定の Bot が切れていると Web の発言が `bot_disconnected` で断られる（`src/app/handler.ts:637`）ので、`gatewayFor` と同じく場所を先に見る。`localGateway` を渡すと `gatewayFor` 1 回の DB の読みが 2 回から 4 回になる（途中経過の編集ごと）ので、持ち主と場所を 1 回で引く形にする
+  - 申し送り（WP2 のレビュー。WP5 の 1 つ目で入れた）: `ownerConnected`（`src/app/personas.ts:101`）は場所を見ない。設定に無い人格のローカルの場所は、既定の Bot が切れていると Web の発言が `bot_disconnected` で断られる（`src/app/handler.ts:637`）ので、`gatewayFor` と同じく場所を先に見る。`localGateway` を渡すと `gatewayFor` 1 回の DB の読みが 2 回から 4 回になる（途中経過の編集ごと）ので、持ち主と場所を 1 回で引く形にする。→ 場所が `local` なら `ownerConnected` は真。持ち主と場所は 1 回の引き（入口は `entryChannel`、話題は `TopicSessionStore.ownerPlaceOf`。`get` は使わない）で、読みは入口 1 回・話題と知らない番号 2 回（WP2 より前と同じ）。`localGateway` は必須の deps にした（`test/personas.test.ts`）
   - 申し送り（WP3 の 2 つ目のレビュー）: 設定（述語）と入口の行の `place` が食い違うと、`/setup` はどちらでも飛ばすだけ。Discord → Web だけに替えた人格（述語 true・行 `discord`）は、古い `#<NAME>` が Discord に残り、行も `discord` のままで、以後の話題だけローカルにできる。Web だけ → Bot を足した人格（述語 false・行 `local`。WP5 を戻したときも同じ）は、`#<NAME>` がいつまでも作られず、`/setup` の応答は「すべて揃っています」になり、以後の話題は Discord にできる。場所の切り替えをどう扱うか（断る・行を直す）を WP5 で決める
   - 申し送り（同）: `localPlaces` は任意の deps なので、新しい呼び手が渡し忘れると Web だけの人格の話題を黙って Discord に作る。門を開けるときに必須にするか、`main.ts` の配線をテストで固定する。`startTopic`（`session_open`・`POST /api/topics` の道）にローカルの人格を渡すテストはまだ無い（区切りの履歴と `submitText` に進む。最初に届くのは WP5）
   - 申し送り（WP3。WP4 の 3 つ目で直した）: 知らせの型のリマインドは WP4 で `place` の枝にしたので、ローカルの場所で頼んだ物が #tasks に出るのが決めで、`ownerConnected` を直しても変わらない（`test/local-reminders.test.ts`）。`src/app/reminders.ts` の `ownerConnected` を訊く 2 か所に、ローカルの番号は来ない。`ownerConnected` を直した後に変わるのは Web の発言の関所（`src/app/handler.ts:637`）だけ
   - 申し送り（WP3）: `/setup` の応答の件数に、飛ばした人格は出ない。Web だけの人格の入口を作った事をどこで言うかを決める
-  - 申し送り（WP4 の 1 つ目のレビュー）: まとめの長さ: ローカルの行は題名ぶん長い。逃がす字ばかりの 100 字の題名が 60 秒の窓に 9 つ並ぶと 2000 字を超え、投稿が落ちて履歴にも書かれない（`sendMessage` は分けない）。WP5 の実機で、まとめと `/sessions` のローカルの行の見え方を見る
+  - 申し送り（WP4 の 1 つ目のレビュー）: まとめの長さ: ローカルの行は題名ぶん長い。逃がす字ばかりの 100 字の題名が 60 秒の窓に 9 つ並ぶと 2000 字を超え、投稿が落ちて履歴にも書かれない（`sendMessage` は分けない）。WP5 の実機で、まとめと `/sessions` のローカルの行の見え方を見る。→ 長さは WP5 の 1 つ目で入れた: Discord に投げる文（mention の字を含む）が 2000 字を超えるときだけ、話題の行の上限を 1 ずつ減らして作り直す（2 まで。それでも超えれば履歴の `<#ID>` の文を投げる）。2000 字以内なら今と 1 字も変わらず、履歴の文も変えない（`test/place-refs.test.ts`）。見え方は実機で見る
   - 申し送り（WP4 の 2 つ目のレビュー）: Web が無効だと `history` が空（`src/main.ts` の `history` の組み立て）で、その状態でローカルの場所が在ると、記憶の知らせは送信も履歴も log も無く消える。`_SURFACE=web` の人格が在るなら Web の有効を設定で必須にする
   - 申し送り（WP4 の 3 つ目のレビュー）: 同じく Web が無効だと、ローカルの場所で頼んだリマインドの跡（出せた回・諦めた回の notice）は書かれない（#tasks には出る）
   - 申し送り（同）: 設定から外した人格のローカルの入口に残る依頼の型のリマインドは、右腕の #tasks で既定の人格として動く（Discord の入口と同じ今の落とし先。`resolveChannel` は設定に在る人格の入口だけを #inbox と同じ種類にする）

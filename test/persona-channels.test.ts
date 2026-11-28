@@ -24,6 +24,8 @@ import { formatDevLogRecord, selectDevLogRecords } from "../src/devlog/format.ts
 import type { DevLogRecord } from "../src/devlog/log.ts";
 import { toCommandData } from "../src/discord/convert.ts";
 import type { IncomingMessage, Interaction } from "../src/discord/gateway.ts";
+import { LocalGateway } from "../src/discord/local-gateway.ts";
+import { LocalIdStore } from "../src/store/local-places.ts";
 import { createStores, tempDb } from "./helpers/db.ts";
 import { FakeGateway, type GatewayMethod } from "./helpers/gateway.ts";
 import { RecordingChannelOps } from "./helpers/recording.ts";
@@ -107,6 +109,7 @@ function setup(t: TestContext, steps: { default?: RunResult[]; mika?: RunResult[
     ],
     guildSettings,
     topicSessions,
+    localGateway: new LocalGateway(new LocalIdStore(db)),
   });
   guildSettings.setChannel("guild-1", "inboxChannelId", "inbox-1");
   guildSettings.setChannel("guild-1", "tasksChannelId", "tasks-1");

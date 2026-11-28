@@ -8,6 +8,8 @@ import { KeyedSerialQueue } from "../src/app/queue.ts";
 import type { PersonaConfig } from "../src/config.ts";
 import { turnRoutes, WEB_DUPLICATE_WINDOW_MS, WEB_MESSAGE_MAX_LENGTH } from "../src/web/routes/turns.ts";
 import { createWebServer, type WebServer } from "../src/web/server.ts";
+import { LocalGateway } from "../src/discord/local-gateway.ts";
+import { LocalIdStore } from "../src/store/local-places.ts";
 import { createStores, tempDb, tempDir } from "./helpers/db.ts";
 import { FakeGateway } from "./helpers/gateway.ts";
 import { RecordingChannelOps } from "./helpers/recording.ts";
@@ -308,7 +310,7 @@ test("POST /messages（本物の handler）: 持ち主の Bot で echo を投稿
 });
 
 test("POST /messages（本物の handler）: 設定にある人格の #<NAME> は 202 で、echo と返事はその人格の Bot から。設定から外した人格の #<NAME> は 404 で投稿しない", async (t) => {
-  const { stores } = prepare(t);
+  const { db, stores } = prepare(t);
   stores.guildSettings.setPersonaInbox(GUILD, "mika", "102");
   const mika: PersonaConfig = {
     id: "mika",
@@ -338,6 +340,7 @@ test("POST /messages（本物の handler）: 設定にある人格の #<NAME> �
       ],
       guildSettings: stores.guildSettings,
       topicSessions: stores.topicSessions,
+      localGateway: new LocalGateway(new LocalIdStore(db)),
     });
     const handler = createHandler({
       cfg: { ...cfg, ownerUserId: "owner-1", timeZone: "Asia/Tokyo" },

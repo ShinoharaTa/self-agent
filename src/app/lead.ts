@@ -1,8 +1,10 @@
 // 統括のまとめ（docs/plan/lead.md の L2。#457）。話題のターンの終わりの事象を 60 秒の窓でサーバーごとに束ね、#inbox に 1 通と history の notice 1 行を出す。
 // LLM は使わない。題名・本文は入れない。失敗は log だけ。再起動で窓の中の分は出さない
 import { DEFAULT_PERSONA_ID, type LeadRing, type LeadScope } from "../config.ts";
+import { mentionPrefix } from "../discord/convert.ts";
 import type { OutgoingMessage } from "../discord/gateway.ts";
 import { type HistoryStore, recordHistory } from "../store/history.ts";
+import { MESSAGE_MAX_LENGTH } from "./commands/sessions.ts";
 import { type ProgressTimers, REAL_TIMERS, type TurnOutcome } from "./progress.ts";
 import type { TopicsResult } from "./topics.ts";
 
@@ -109,18 +111,19 @@ function countsLine(counts: LeadCounts): string {
 
 /**
  * まとめの本文（mention の字は入れない）。counts が null なら残りの行を出さない。
- * refOf は話題の書き方（place-refs.ts。既定は `<#ID>`）
+ * refOf は話題の書き方（place-refs.ts。既定は `<#ID>`）。maxLines は話題の行の上限（超えれば maxLines - 1 行 + 「ほか n 件」）
  */
 export function leadText(
   events: readonly TurnEndEvent[],
   counts: LeadCounts | null,
   refOf: (channelId: string) => string = channelRef,
+  maxLines: number = LEAD_MAX_LINES,
 ): string {
   const sorted = events
     .map((event, index) => ({ event, index }))
     .sort((a, b) => OUTCOME_ORDER[a.event.outcome] - OUTCOME_ORDER[b.event.outcome] || a.index - b.index)
     .map(({ event }) => event);
-  const shown = sorted.length > LEAD_MAX_LINES ? sorted.slice(0, LEAD_MAX_LINES - 1) : sorted;
+  const shown = sorted.length > maxLines ? sorted.slice(0, maxLines - 1) : sorted;
   const lines = shown.map((event) => eventLine(event, refOf));
   if (shown.length < sorted.length) lines.push(`ほか ${sorted.length - shown.length} 件`);
   if (counts !== null) lines.push(countsLine(counts));
@@ -205,6 +208,19 @@ export function createLead(deps: LeadDeps): Lead {
     // 鳴らし方は出す時点の設定を 1 回だけ読む
     const ringSetting = deps.settings().ring;
     const ring = ownerUserId !== undefined && events.some((event) => ringsFor(event, ringSetting));
+    // 1 通の上限（mention の字も同じ 1 通に乗る）を超えるときだけ、行の上限を 1 ずつ減らして作り直す（2 まで。ローカルの話題の長い題名）。
+    // それでも超える・作り直せなければ、履歴の文（`<#ID>`）を投げる
+    const limit = MESSAGE_MAX_LENGTH - (ring && ownerUserId !== undefined ? mentionPrefix(ownerUserId).length : 0);
+    for (let maxLines = LEAD_MAX_LINES - 1; posted.length > limit && maxLines >= 2; maxLines--) {
+      try {
+        posted = leadText(events, counts, deps.refOf, maxLines);
+      } catch {
+        log("まとめの場所の書き方を引けませんでした");
+        posted = text;
+        break;
+      }
+    }
+    if (posted.length > limit) posted = text;
     try {
       await deps.post(inbox, { text: posted, ...(ring ? { mentionUserId: ownerUserId } : {}) });
     } catch (error) {

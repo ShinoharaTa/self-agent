@@ -19,10 +19,12 @@ import { buildTopics } from "../src/app/topics.ts";
 import type { CcSessionView } from "../src/cc/registry.ts";
 import type { PersonaConfig } from "../src/config.ts";
 import type { Gateway } from "../src/discord/gateway.ts";
+import { LocalGateway } from "../src/discord/local-gateway.ts";
 import { CcChannelStore } from "../src/store/cc-channels.ts";
 import { CcPermissionStore } from "../src/store/cc-permissions.ts";
 import { CcSendStore } from "../src/store/cc-sends.ts";
 import { CcStartStore } from "../src/store/cc-starts.ts";
+import { LocalIdStore } from "../src/store/local-places.ts";
 import { PlaceSettingStore } from "../src/store/place-settings.ts";
 import { TopicMoveStore } from "../src/store/topic-moves.ts";
 import { TOPIC_PIN_MAX, TopicPinStore } from "../src/store/topic-pins.ts";
@@ -197,6 +199,7 @@ async function setup(
     ],
     guildSettings,
     topicSessions,
+    localGateway: new LocalGateway(new LocalIdStore(db)),
   });
   const running = options.running ?? [];
   const handler = {
@@ -830,6 +833,7 @@ async function startServer(
     personas: [{ id: "default", name: "default", engine: "claude", runner: {} as AgentRunner, gateway, connected: () => connected.value }],
     guildSettings,
     topicSessions,
+    localGateway: new LocalGateway(new LocalIdStore(db)),
   });
   const allowed = options.allowed ?? [GUILD, GUILD_NOT_SET_UP];
   const logs: string[] = [];
@@ -1361,6 +1365,7 @@ test("createTopicCollector: 同じ依存で集めて buildTopics した物が GE
     personas: [{ id: "default", name: "default", engine: "claude", runner: {} as AgentRunner, gateway: {} as Gateway, connected: () => true }],
     guildSettings,
     topicSessions,
+    localGateway: new LocalGateway(new LocalIdStore(db)),
   });
   const deps: TopicRouteDeps = {
     cfg: { allowedGuildIds: [GUILD], personas: [], workspaceDir: workspace },
@@ -1415,6 +1420,7 @@ test("createTopicCollector: 種の queued は順番待ち（queuedChannels）に
     personas: [{ id: "default", name: "default", engine: "claude", runner: {} as AgentRunner, gateway: {} as Gateway, connected: () => true }],
     guildSettings,
     topicSessions,
+    localGateway: new LocalGateway(new LocalIdStore(db)),
   });
   const seeds = createTopicCollector({
     cfg: { allowedGuildIds: [GUILD], personas: [], workspaceDir: workspace },

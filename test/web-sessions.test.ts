@@ -114,7 +114,7 @@ async function until(condition: () => boolean): Promise<void> {
 async function setup(
   t: TestContext,
   steps: (topicSessions: TopicSessionStore) => Array<RunResult | Error | ((input: RunInput) => RunResult)> = () => [],
-  options: { projectSessions?: ProjectSessionGate; isLocalPersona?: (personaId: string) => boolean; localGateway?: boolean } = {},
+  options: { projectSessions?: ProjectSessionGate; isLocalPersona?: (personaId: string) => boolean } = {},
 ) {
   const db = tempDb(t);
   const stores = createStores(db, () => NOW);
@@ -149,7 +149,7 @@ async function setup(
     ],
     guildSettings,
     topicSessions,
-    ...(options.localGateway === true ? { localGateway: new LocalGateway(new LocalIdStore(db)) } : {}),
+    localGateway: new LocalGateway(new LocalIdStore(db)),
   });
   const cfg = { allowedGuildIds: [GUILD, GUILD_NOT_SET_UP], personas: [MIKA], publicBaseUrl: undefined, inboxChannelId: undefined };
   const resolveChannel = createChannelResolver(cfg, guildSettings, topicSessions);
@@ -525,7 +525,7 @@ test("POST /renew: #inbox は rotateNow。区切りの行を書かない結果�
 
 test("POST /close（#530 の WP4）: ローカルの話題は確認の notice と確定の後の divider が履歴に在り、既定の人格・mika の Bot には何も行かない", async (t) => {
   const local = "100000000000000000001";
-  const env = await setup(t, (topicSessions) => [reports(DRAFT, topicSessions)], { localGateway: true });
+  const env = await setup(t, (topicSessions) => [reports(DRAFT, topicSessions)]);
   env.topicSessions.create({ channelId: local, guildId: GUILD, title: "ローカルの話題", categoryId: "local", persona: "mika", place: "local" });
   env.sessions.set(local, "session-3");
 

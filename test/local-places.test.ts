@@ -91,6 +91,23 @@ test("TopicSessionStore: place を local で保存すると読める（ほかの
   assert.deepEqual(topics.get(id), created);
 });
 
+test("TopicSessionStore.ownerPlaceOf: 持ち主の人格と場所（discord・local）を返し、行が無ければ undefined。close_draft が壊れた行でも投げない", (t) => {
+  const db = tempDb(t);
+  const topics = new TopicSessionStore(db, () => NOW);
+  const id = new LocalIdStore(db).next();
+  topics.create({ channelId: "111", guildId: "guild-1", title: "Discord の話題", categoryId: "category-1" });
+  topics.create({ channelId: id, guildId: "guild-1", title: "調べ物", categoryId: "local", persona: "sora", place: "local" });
+
+  assert.deepEqual(topics.ownerPlaceOf("111"), { persona: "default", place: "discord" });
+  assert.deepEqual(topics.ownerPlaceOf(id), { persona: "sora", place: "local" });
+  assert.equal(topics.ownerPlaceOf("424242"), undefined);
+
+  // ownerPlaceOf は close_draft の列を読まない（壊れた下書きは getCloseDraft では投げる）
+  db.prepare("UPDATE sessions SET close_draft = ? WHERE channel_id = ?").run("{壊れた", id);
+  assert.throws(() => topics.getCloseDraft(id));
+  assert.deepEqual(topics.ownerPlaceOf(id), { persona: "sora", place: "local" });
+});
+
 test("GuildSettingsStore.setPersonaInbox: 場所を番号と一緒に必ず書く（省略すれば discord）", (t) => {
   const db = tempDb(t);
   const guildSettings = new GuildSettingsStore(db, () => NOW);
