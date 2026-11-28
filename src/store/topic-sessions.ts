@@ -197,6 +197,12 @@ export class TopicSessionStore {
     return row === undefined ? undefined : { persona: String(row.persona), place: toChannelPlace(row.place, "sessions.place") };
   }
 
+  /** その人格の削除済みでない話題に、場所が place でない物が 1 つでもあるか（起動のときの場所の検査。app/local-entries.ts） */
+  hasPlaceOtherThan(persona: string, place: ChannelPlace): boolean {
+    const row = this.db.prepare("SELECT 1 FROM sessions WHERE persona = ? AND place <> ? AND state <> 'deleted' LIMIT 1").get(persona, place);
+    return row !== undefined;
+  }
+
   /**
    * プロジェクトのセッション（docs/plan/unify.md §5.2）なら、そのプロジェクト（SELF_AGENT_WORKSPACE_DIR の直下の名前）と許可のモード。
    * 行が無い・project_dir が NULL（軽いモード）なら undefined。モードが決まった語でなければ default
