@@ -261,7 +261,7 @@ test("PersonaRouter: gatewayFor・ownerOf・ownerConnected・turnPersona は 1 �
       guildSettings.called.length = 0;
       topicSessions.called.length = 0;
       call(id);
-      // personaOfChannel・personaOf・get は読まない
+      // 読むのは entryChannel と ownerPlaceOf だけ（personaOf・get は読まない）
       assert.deepEqual(guildSettings.called, entryReads, `${name} ${id}`);
       assert.deepEqual(topicSessions.called, topicReads, `${name} ${id}`);
     }

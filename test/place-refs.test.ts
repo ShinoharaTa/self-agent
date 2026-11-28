@@ -297,6 +297,36 @@ test("まとめ: 文だけなら 2000 字ちょうどの 9 行は、鳴らさな
   );
 });
 
+test("まとめ: 1 行がとても長い書き方なら、行の上限を 2 まで減らして収める（1 行 +「ほか n 件」+ 残り）", async (t) => {
+  const refOf = (): string => "x".repeat(990);
+  const { run, posts, rows } = leadSetup(t, { refOf });
+  const events = Array.from({ length: 9 }, (_, i) => event(String(300 + i)));
+  const counts: LeadCounts = { running: 1, queued: 0, yourTurn: 1 };
+  // 2 行（上限 3）では 2000 字を超える
+  assert.ok(leadText(events, counts, refOf, 3).length > 2000);
+  await run(events);
+  assert.equal(posts.length, 1);
+  const message = posts[0]!.message;
+  assert.equal(message.mentionUserId, OWNER);
+  assert.equal(message.text, leadText(events, counts, refOf, 2));
+  assert.deepEqual(message.text.split("\n").slice(1), ["ほか 8 件", "残り: 動いている 1・あなたの番 1"]);
+  assert.ok(message.text.length + `<@${OWNER}> `.length <= 2000);
+  assert.deepEqual(rows().map((row) => row.text), [leadText(events, counts)]);
+});
+
+test("まとめ: 行の上限を 2 にしても 2000 字を超える書き方なら、履歴と同じ <#ID> の文を投げる（履歴は今と同じ文で 1 行）", async (t) => {
+  const refOf = (): string => "x".repeat(2000);
+  const { run, posts, rows, logs } = leadSetup(t, { refOf });
+  const events = Array.from({ length: 9 }, (_, i) => event(String(300 + i)));
+  const counts: LeadCounts = { running: 1, queued: 0, yourTurn: 1 };
+  await run(events);
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0]!.message.text, leadText(events, counts));
+  assert.equal(posts[0]!.message.mentionUserId, OWNER);
+  assert.deepEqual(rows().map((row) => row.text), [leadText(events, counts)]);
+  assert.deepEqual(logs, []);
+});
+
 test("まとめ: Discord の話題だけ 12 件は、文が今と同じ（9 行 +「ほか 3 件」+ 残り）。ローカルの話題 1 つ（100 字の題名）は削られない", async (t) => {
   const discord = leadSetup(t, { settings: () => ({ ring: "all", scope: "all" }) });
   const events = Array.from({ length: 12 }, (_, i) => event(String(200 + i)));
