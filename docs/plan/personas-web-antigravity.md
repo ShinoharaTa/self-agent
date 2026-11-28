@@ -133,7 +133,8 @@ Web には通知（Web Push）が無い【事実: `src` に実装が無い】。
 - **ローカルかどうか**: `sessions` と `persona_channels` に列 `place`（`discord` / `local`。既定 `discord`）。番号の形や設定では決めない
 - **ローカルの行の `category_id`**: `sessions.category_id` は NOT NULL（`src/store/db.ts:81`）。ローカルの行には決まった文字列 `local` を入れる（Discord の ID にならない値。カテゴリを見る道は `place` で先に分かれる）
 - **ローカルの Gateway**: `Gateway` を満たす。`start` は何もしない。`sendMessage` は番号を振って返す。`send` は何もしない（戻り値が無いので番号を振らない）。編集・ピン・リアクション・入力中は何もしない。`messageExists` は true。管理の操作は呼ばれたら投げる
-  - 名前の出ていなかった 6 つ（WP2 で決めた）: `stop` は何もしない。`channelExists` は true（在るかは DB の行が決め、Gateway は「消えた」と言わない）。`isInGuild`・`registerGuildCommands`・`countChannelsIn`・`getParentId` は投げる（サーバーの形に触る物は、関所（WP3）の抜けを黙って通さない）
+  - 名前の出ていなかった 6 つ（WP2 で決めた）: `stop` は何もしない。`channelExists` は true（在るかは DB の行が決め、Gateway は「消えた」と言わない）。`isInGuild`・`registerGuildCommands`・`countChannelsIn`・`getParentId` は投げる
+  - 投げるのは、この Gateway に届いた呼び出しへの最後の網。関所そのものは呼び手の側で `place` を見て作る（WP3）。今の呼び手は管理の操作と `channelExists`・`messageExists` を既定の Bot の Gateway に直に呼び、`gatewayFor` を通らないので、網には届かない
 - **サーバー**: ローカルの場所も `guild_id` を持つ。既定の Bot と `/setup` は今まで通り要る。ただし `/setup` は Web だけの人格の入口を Discord に作らず、入口の番号も上書きしない
 - **知らせ**: ローカルの話題のターンの終わりは、今の L2 のまとめで右腕（Discord の #inbox）に出る。**履歴の行は今と同じ `終わりました: <#ID>` の形のまま**にし、Discord に投げる文だけ題名で書く（§3.3 の 1）。入口の返事は知らせない
 - **止まったとき**: 話題は今と同じく「あなたの番」に数える。入口は数えない（今の入口と同じ。§2.3）。入口で止まった事は、その入口を開けば理由の行で分かる
@@ -614,6 +615,7 @@ self-agent が自分でしない事: `agy` を入れる・サインインする�
   - 待ち・完了・進行中にしても `moveChannel` が呼ばれず、DB の状態だけ変わる。消すと `deleteChannel` が呼ばれない
   - カテゴリの空きの数え上げにローカルの話題が入らない
   - Web だけの人格が在る設定で `/setup` を打っても、その人格の入口のために `createTextChannel` が呼ばれず、`persona_channels` の行が変わらない
+  - 申し送り（WP2 のレビュー）: 関所は呼び手の側に作る。移動は `channelOps.enqueueMove` が要で、入れる所は `src/app/session-state.ts:55`・`src/app/session-ops.ts:554`・`src/app/scheduler.ts:258`。抜けると本物の Discord に 21 桁の番号が渡り、`src/app/channel-ops.ts:105` は Unknown Channel を log なしで捨てる。Discord が 21 桁の番号に何を返すか（10003 か 50035 か）は【未確認】
 - WP4
   - ローカルの話題のまとめ: 履歴の行は `終わりました: <#` で始まり（`isLeadText` が真）、Discord に投げた文には `<#` が無く、題名が在る。Discord の話題のまとめは 2 つとも今と同じ
   - まとめの投稿（Discord）に失敗したら、履歴の行も書かない（今と同じ。ローカルの話題のまとめも、既定の Bot が落ちている間は Web の右腕に出ない）
@@ -622,7 +624,8 @@ self-agent が自分でしない事: `agy` を入れる・サインインする�
   - ローカルの場所の `kb_delete` は、消さずに失敗を返す
   - ローカルの話題への Web の発言 1 つで、履歴に owner の行と agent の行ができる。返事の中の `<#ID>` は書き換わらない
   - その 1 ターンの間にローカルの Gateway に来た送信のうち、履歴に対応の行が無い物の一覧をテストが固定する
-  - ローカルの場所のリマインドは、履歴に残すか・置けないと返すかを決めてテストする
+  - ローカルの場所のリマインドは、履歴に残すか・置けないと返すかを決めてテストする。申し送り（WP2 のレビュー）: ローカルの `sendMessage` は成功を返すので、今のままでは知らせの型のリマインドは `src/app/reminders.ts:617-618` が「出した」と記録し、#tasks・#inbox に回らず、履歴にも書かないのでどこにも出ない
+  - 申し送り（WP2 のレビュー）: ローカルの `sendMessage` は成功を返すので、「送れなければ別の道」の呼び手が進まなくなる。ほかに、`/new` の最初の文（`src/app/session-ops.ts:260`。履歴に書かれないのでローカルでは消える）と、待ちに移した知らせ（`src/app/scheduler.ts:437`。履歴には在るがボタンは押せない）
 - WP5
   - `_SURFACE=web` でトークンも在ると、変数名を出して exit 1。知らない値でも同じ。`_SURFACE` 無し・トークン無しは今と同じ文で exit 1
   - `_SURFACE=web` の人格が在っても、Discord の Client の数は増えない
@@ -631,6 +634,7 @@ self-agent が自分でしない事: `agy` を入れる・サインインする�
   - `/new` の `persona` の選択肢に出ない。#system に接続の知らせが出ない
   - 既定の人格のシステムプロンプトとツールの定義が、変更の前とバイト単位で同じ
   - 実機: Claude で動く Web だけの人格の入口で 2 ターン話し、`session_open` で話題を 1 つ作り、終わりのまとめが右腕の #inbox に題名で出て、Web の右腕には札で出る
+  - 申し送り（WP2 のレビュー）: `ownerConnected`（`src/app/personas.ts:95`）は場所を見ない。設定に無い人格のローカルの場所は、既定の Bot が切れていると Web の発言が `bot_disconnected` で断られる（`src/app/handler.ts:637`）ので、`gatewayFor` と同じく場所を先に見る。`localGateway` を渡すと `gatewayFor` 1 回の DB の読みが 2 回から 4 回になる（途中経過の編集ごと）ので、持ち主と場所を 1 回で引く形にする
 - WP6
   - Web だけの人格の `persona` を付けると、その人格のローカルの話題ができる。既定の Bot が切れていても 201。知らない `persona` は 400。`place` や `model` と一緒なら 400。`persona` 無しは今と同じ（Bot が切れていれば 503）
   - ローカルの話題・入口の `link` は `null`。Discord の話題の `link` は今と同じ

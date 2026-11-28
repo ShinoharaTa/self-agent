@@ -1,7 +1,9 @@
 // Gateway のローカルの実装。Web だけの人格の、Discord に何も作らない場所（place = 'local'。docs/plan/personas-web-antigravity.md §3.1）に使う。
 // 引き受けるのは「場所に文を置く」事だけで、送信は捨てる（sendMessage は番号（LocalIdStore）を返し、send は戻り値が無いので番号を振らない）。
 // 編集・ピン・リアクション・入力中は何もしない。
-// Discord のサーバーの形（参加・コマンド・カテゴリ・チャンネル）に触る物は、関所（WP3）の抜けを黙って通さないために投げる。
+// Discord のサーバーの形（参加・コマンド・カテゴリ・チャンネル）に触る物は投げる。これはこの Gateway に届いた呼び出しへの最後の網で、
+// 関所そのものは呼び手の側で place を見て作る（WP3）。今の呼び手は管理の操作と channelExists・messageExists を既定の Bot の Gateway に
+// 直に呼び、gatewayFor を通らないので、この網には届かない。
 // 「在るか」を訊かれたら在ると答える（無いと答えると、呼び手が消えたと見て片付けや作り直しに進むため。在るかは DB の行が決める）。
 // ネットに出ず、log も出さない
 import type { LocalIdStore } from "../store/local-places.ts";
